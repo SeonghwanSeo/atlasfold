@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atlasfold"
+version = "0.0.1"
+authors = [
+  { name = "SeonghwanSeo", email = "shwan0106@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT License" }
+dependencies = [
+  "numpy", 
+  "torch",
+]
+
+[project.optional-dependencies]
+fold = [
+  "scipy",
+  "einops",
+  "gemmi",
+]
+cuequiv = [
+  "cuequivariance_torch>=0.6.0",
+  "cuequivariance_ops_cu12>=0.6.0",
+  "cuequivariance_ops_torch_cu12>=0.6.0",
+]
+train = [
+  "lightning", # for training loop
+  "wandb", # for experiment tracking
+  "lmdb", # for training dataset storage
+]

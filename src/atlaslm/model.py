@@ -1,0 +1,174 @@
+import contextlib
+import dataclasses
+
+import numpy as np
+import torch
+
+from atlaslm.alphabet import Alphabet
+from atlaslm.layers import RegressionHead, TransformerStack
+
+
+@dataclasses.dataclass(slots=True)
+class PLMOutput:
+    embeddings: torch.Tensor
+    sequence_logits: torch.Tensor | None = None
+    hidden_states: list[torch.Tensor] | None = None
+    attentions: list[torch.Tensor] | None = None
+
+
+class AtlasLM(torch.nn.Module):
+    """
+    Protein language model for AtlasFold.
+
+    Reference: "https://github.com/evolutionaryscale/esm"
+
+    Args:
+        d_model (int): The dimensionality of the input and output feature vectors.
+        n_heads (int): The number of attention heads in the transformer layers.
+        n_layers (int): The number of transformer layers.
+    """
+
+    def __init__(
+        self,
+        d_model: int = 1152,
+        n_heads: int = 18,
+        n_layers: int = 36,
+    ) -> None:
+        super().__init__()
+        self.d_model: int = d_model
+        self.n_heads: int = n_heads
+        self.n_layers: int = n_layers
+
+        self.alphabet: Alphabet = Alphabet()
+        self.vocab_size: int = len(self.alphabet)
+
+        self.embed = torch.nn.Embedding(64, d_model)
+        self.transformer = TransformerStack(d_model, n_heads, n_layers)
+        self.sequence_head = RegressionHead(d_model, 64)
+
+    @property
+    def device(self) -> torch.device:
+        return next(self.parameters()).device
+
+    @torch.inference_mode()
+    def embed_sequences(
+        self,
+        sequences: list[str],
+        return_logits: bool = False,
+        return_hidden_states: bool = False,
+        return_attentions: bool = False,
+    ) -> PLMOutput:
+        """
+        Performs forward pass through the PLM.
+
+        Args:
+            sequences (list[str]): The amino acid sequences.
+            return_logits (bool): Whether to return logits. (default: False)
+            return_hidden_states (bool): Whether to return list of hidden states.
+                hidden_states shape: (batch_size, seq_len, d_model)
+            return_attentions (bool): Whether to return list of attentions.
+                attentions shape: (batch_size, n_heads, seq_len, seq_len)
+
+        Returns:
+            PLMOutput: The output of the PLM.
+        """
+        device = self.device
+        with (
+            torch.autocast(enabled=True, device_type=device.type, dtype=torch.bfloat16)
+            if self.device.type == "cuda"
+            else contextlib.nullcontext(),
+        ):
+            input_ids = self.encode(sequences)
+            attn_mask = input_ids != self.alphabet.pad_idx
+            out = self(
+                input_ids,
+                seq_id=attn_mask,
+                return_logits=return_logits,
+                return_hidden_states=return_hidden_states,
+                return_attentions=return_attentions,
+            )
+        return out
+
+    def encode(self, sequences: list[str]) -> torch.Tensor:
+        """
+        Encode a batch of sequences into token IDs.
+
+        Args:
+            sequences (list[str]): List of amino acid sequences.
+
+        Returns:
+            input_ids (torch.Tensor): Tensor of shape (batch_size, max_seq_len)
+        """
+        batch_size = len(sequences)
+        max_len = max(len(seq) + 2 for seq in sequences)
+        out = np.full((batch_size, max_len), self.alphabet.pad_idx, dtype=np.int64)
+        for i, seq in enumerate(sequences):
+            out[i, : len(seq) + 2] = self.alphabet.encode(sequences[i])
+        return torch.from_numpy(out).to(device=self.device, non_blocking=True)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        seq_id: torch.Tensor | None = None,
+        pos_id: torch.Tensor | None = None,
+        return_logits: bool = False,
+        return_hidden_states: bool = False,
+        return_attentions: bool = False,
+    ) -> PLMOutput:
+        """
+        Performs forward pass through the PLM.
+
+        Args:
+            input_ids (torch.Tensor): The amino acid tokens.
+            seq_id (torch.Tensor): The sequence ID. (int or bool tensor)
+            pos_id (torch.Tensor): The position ID. (int tensor)
+            return_logits (bool): Whether to return logits. (default: False)
+            return_hidden_states (bool): Whether to return hidden states.
+            return_attentions (bool): Whether to return attentions.
+
+        Returns:
+            PLLMOutput: The output of the PLM.
+        """
+        if seq_id is None:
+            seq_id = input_ids != self.alphabet.pad_idx
+        else:
+            if input_ids.shape != seq_id.shape:
+                raise ValueError(
+                    "input_ids and seq_id must have the same shape. "
+                    f"Got input_ids shape {input_ids.shape} and "
+                    f"seq_id shape {seq_id.shape}."
+                )
+        if pos_id is not None:
+            if pos_id.shape != input_ids.shape:
+                raise ValueError(
+                    "input_ids and pos_id must have the same shape. "
+                    f"Got input_ids shape {input_ids.shape} and "
+                    f"pos_id shape {pos_id.shape}."
+                )
+
+        # Forward pass
+        x = self.embed(input_ids)
+        x, hiddens, attentions = self.transformer(
+            x,
+            seq_id=seq_id,
+            pos_id=pos_id,
+            return_attn=return_attentions,
+        )
+
+        if not return_hidden_states:
+            hiddens = []
+
+        if not return_attentions:
+            attentions = []
+
+        if return_logits:
+            sequence_logits = self.sequence_head(x)
+        else:
+            sequence_logits = None
+
+        return PLMOutput(
+            embeddings=x,
+            sequence_logits=sequence_logits,
+            hidden_states=hiddens if hiddens else None,
+            attentions=attentions if attentions else None,
+        )
