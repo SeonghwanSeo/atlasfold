@@ -15,39 +15,44 @@ class AtlasLMConfig:
     n_layers: int
 
 
-MODEL_CONFIGS = {
-    "atlaslm-600m": AtlasLMConfig(d_model=1152, n_heads=18, n_layers=36),
-    "atlaslm-3b": AtlasLMConfig(d_model=2304, n_heads=36, n_layers=48),
+# MODEL LIST
+ATLASLM_600M_BASE = "atlaslm-600m-base"
+ATLASLM_3B_BASE = "atlaslm-3b-base"
+SUPPORTED_MODELS = [
+    ATLASLM_600M_BASE,
+    ATLASLM_3B_BASE,
+]
+
+# User input -> model name mapping.
+MODEL_NAME_MAP = {
+    "atlaslm-600m": ATLASLM_600M_BASE,
+    "atlaslm-600m-base": ATLASLM_600M_BASE,
+    "atlaslm-3b": ATLASLM_3B_BASE,
+    "atlaslm-3b-base": ATLASLM_3B_BASE,
 }
 
-MODEL_NAME_MAP = {
-    "atlaslm-600m": "atlaslm-600m",
-    "atlaslm_600m": "atlaslm-600m",
-    "600m": "atlaslm-600m",
-    "atlaslm-3b": "atlaslm-3b",
-    "atlaslm_3b": "atlaslm-3b",
-    "3b": "atlaslm-3b",
+WEIGHT_PATH = {
+    ATLASLM_600M_BASE: (
+        "SeonghwanSeo/atlaslm-600m-base",
+        "weights/atlaslm_600m_base.pth",
+    ),
+    ATLASLM_3B_BASE: (
+        "SeonghwanSeo/atlaslm-3b-base",
+        "weights/atlaslm_3b_base.pth",
+    ),
 }
-SUPPORTED_MODELS = [
-    "atlaslm-600m",
-    "atlaslm-3b",
-]
+MODEL_CONFIG_MAP = {
+    ATLASLM_600M_BASE: "600m",
+    ATLASLM_3B_BASE: "3b",
+}
+MODEL_CONFIGS = {
+    "600m": AtlasLMConfig(d_model=1152, n_heads=18, n_layers=36),
+    "3b": AtlasLMConfig(d_model=2304, n_heads=36, n_layers=48),
+}
 # TODO: Add the links to the pretrained model checkpoints once they are available.
 
 
 def get_model_name(model_name: str) -> str:
-    """Get the standardized model name for a given input.
-
-    Parameters
-    ----------
-    model_name : str
-        The input model name, which can be in various formats.
-
-    Returns
-    -------
-    str
-        The standardized model name corresponding to the input.
-    """
     if model_name not in MODEL_NAME_MAP:
         raise ValueError(
             f"Unknown model name: {model_name}. "
@@ -57,30 +62,28 @@ def get_model_name(model_name: str) -> str:
 
 
 def get_model(model_name: str) -> AtlasLM:
-    """Load a pretrained AtlasLM model by name.
-
-    Parameters
-    ----------
-    model_name : str
-        The name of the pretrained model to load. Options include:
-        - "atlaslm-600m"
-        - "atlaslm-3b"
-
-    Returns
-    -------
-    model: AtlasLM
-        The loaded AtlasLM model.
-    """
-    model_name = get_model_name(model_name)
-    config = MODEL_CONFIGS[model_name]
+    config_name = MODEL_CONFIG_MAP[model_name]
+    config = MODEL_CONFIGS[config_name]
     model = AtlasLM(config.d_model, config.n_heads, config.n_layers)
     return model.eval()
 
 
+def download_model_weights(model_name: str, cache_dir: str | Path | None = None) -> Path:
+    from huggingface_hub import snapshot_download
+
+    repo_id, filename = WEIGHT_PATH[model_name]
+    path = snapshot_download(
+        repo_id=repo_id,
+        repo_type="model",
+        local_dir=cache_dir,
+    )
+    return Path(path) / filename
+
+
 def load_model(
     model_name: str,
-    path: str | Path,
     device: str | torch.device = "cpu",
+    cache_dir: str | Path | None = None,
 ) -> AtlasLM:
     """Load a pretrained ESMC model by name.
 
@@ -90,16 +93,23 @@ def load_model(
         The name of the pretrained model to load. Options include:
         - "atlaslm-600m"
         - "atlaslm-3b"
-    path : str | Path
-        The path to the pretrained model checkpoint.
     device : str | torch.device, optional
         The device to load the model onto, by default "cpu".
+    cache_dir : str | Path, optional
+        Directory to cache the downloaded model weights, by default None.
 
     Returns
     -------
     model : AtlasLM
         The loaded AtlasLM model.
     """
+    # Canonicalize the model name
+    model_name = get_model_name(model_name)
+
+    # Download the model weights
+    path = download_model_weights(model_name, cache_dir)
+
+    # Load the model architecture and weights
     model = get_model(model_name)
     state_dict = torch.load(path, map_location=device, weights_only=True)
 

@@ -14,6 +14,7 @@ license = { text = "MIT License" }
 dependencies = [
   "numpy", 
   "torch",
+  "huggingface_hub",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +22,7 @@ fold = [
   "scipy",
   "einops",
   "gemmi",
+  "omegaconf",
 ]
 cuequiv = [
   "cuequivariance_torch>=0.6.0",
@@ -28,7 +30,9 @@ cuequiv = [
   "cuequivariance_ops_torch_cu12>=0.6.0",
 ]
 train = [
+  "msgpack",
   "lightning", # for training loop
   "wandb", # for experiment tracking
   "lmdb", # for training dataset storage
+  "zstandard"
 ]

@@ -1,44 +1,78 @@
 # AtlasFold
 
-**AtlasFold**: Next-generation protein structure prediction powered by a protein language model trained on an unprecedented atlas of protein sequences.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![PyPI version](https://badge.fury.io/py/atlaslm.svg)](https://badge.fury.io/py/atlaslm)
 
-This repository contains code and pre-trained weights for the **AtlasLM** protein language model and the **AtlasFold** structure prediction model.
+This repository contains the official code and pre-trained weights for two core models:
+* **AtlasLM:** A state-of-the-art protein language model. Trained on a massive metagenomic protein atlas, it outperforms many existing open-source protein language models on unsupervised contact map prediction.
+* **AtlasFold:** A protein monomer folding model. Built on the top of AtlasLM, it provides accurate structure predictions without the need for multiple sequence alignments (MSAs).
 
-AtlasLM outperforms many existing single-sequence protein language models across a range of tasks. AtlasFold harnesses AtlasLM to generate accurate structure predictions directly from the sequence of a protein.
+All models are free for both academic and commercial use under the **MIT** License.
+
+## Citation
+
+TODO
+
+## Table of Contents
+
+- [Main Models](#main-models-)
+- [Installation ](#installation-)
+- [AtlasLM](#atlaslm-)
+- [AtlasFold](#atlasfold-)
 
 ## Main Models
 
-| Shorthand | Description |
-|-----------|-------------|
-| **AtlasLM** | SOTA general-purpose protein language model. Available in `600m` and `3b` sizes. Can be used to extract sequence features, predict function, and other properties. |
-| **AtlasFold** | End-to-end single sequence 3D structure predictor, powered by AtlasLM. |
+| Shorthand | Available | Description |
+|-----------|-----------| ------------|
+| **AtlasLM** | `atlaslm-600m` `atlaslm-3b` | State-of-the-art protein language model for general purpose. Available in `600m` and `3b` sizes. |
+| **AtlasFold** | `atlasfold-3b-base` | End-to-end single sequence 3D structure predictor, powered by AtlasLM. |
 
-## Usage
 
-### Installation
+## Installation
 
-AtlasFold requires Python >= 3.10 and PyTorch.
+AtlasLM requires Python >= 3.10 and PyTorch.
 
 ```bash
-pip install -e .
+# Install from PyPI
+pip install atlaslm
+
+# From github
+git clone [https://github.com/SeonghwanSeo/atlasfold.git](https://github.com/SeonghwanSeo/atlasfold.git)
+pip install .
 ```
 
-To install optional dependencies for specific features:
-- **Folding:** `pip install -e ".[fold]"`
-- **Training:** `pip install -e ".[train]"`
-- **CUDA Kernels:** `pip install -e ".[cuequiv]"`
+To use AtlasFold, you will also need to install the additional dependencies.
 
-### Quick Start: AtlasLM
+```bash
+# Install AtlasFold with optional cuEquivariance kernels
+pip install "atlaslm[fold, cuequiv]"
+```
+
+## AtlasLM protein language model.
+
+**AtlasLM** is an open-source reproduction of [**ESM Cambrian (ESM-C)**](https://www.evolutionaryscale.ai/blog/esm-cambrian), the state-of-the-art protein language model developed by EvolutionaryScale.
+While the original model has restrictive licensing, this repository provides pre-trained weights under the **MIT License**, facilitating unrestricted research and commercial application.
+
+### Available Models
+
+We provide the following models under the **MIT License**:
+
+| Model | Params | Layers | Width | Heads |
+| --- | --- | --- | --- | --- |
+| `atlaslm-600m` | 575M | 36 | 1152 | 18 |
+| `atlaslm-3b` | 3.1B | 48 | 2304 | 36 |
+
+
+### Quick Start
 
 You can load and use a pretrained AtlasLM model as follows:
 
 ```python
-import torch
 from atlaslm import load_model
 
 # Load AtlasLM model
-# path: path to your model checkpoint
-model = load_model("atlaslm-600m", path="atlaslm_600m.pt", device='cuda')
+model = load_model("atlaslm-600m", device='cuda')
 model.eval()
 
 sequences = [
@@ -58,36 +92,25 @@ out = model.embed_sequences(sequences, return_attentions=True)
 attentions = out.attentions  # List of attention maps: (batch_size, n_heads, seq_len, seq_len)
 ```
 
-### Quick Start: AtlasFold
+## AtlasFold protein structure prediction
 
-AtlasFold uses AtlasLM as a feature extractor to predict protein structures.
-
-```python
-from atlasfold.model.model import AtlasFold
-
-# Initialize AtlasFold with default configuration
-cfg = AtlasFold.Config(lm_name="atlaslm-600m")
-model = AtlasFold(cfg)
-model.eval().cuda()
-
-# Example sequence
-aa = torch.randint(1, 21, (1, 64)).cuda() # (B, L)
-
-# Predict structure (returns dict with distograms, etc.)
-# Note: Full PDB inference implementation is in progress
-with torch.no_grad():
-    results = model(aa, num_recycles=3)
-```
-
-## Available Models
-
-We provide the following models under the **MIT License**:
-
-| Model | Params | Layers | Width | Heads |
-| --- | --- | --- | --- | --- |
-| `atlaslm-600m` | 575M | 36 | 1152 | 18 |
-| `atlaslm-3b` | 3.1B | 48 | 2304 | 36 |
+TODO.
 
 ## License
 
 This source code is licensed under the MIT license found in the `LICENSE` file in the root directory of this source tree.
+
+## Acknowledgements
+
+This project is built upon the pioneering work of EvolutionaryScale and Google DeepMind.
+We are deeply grateful to the open-source community for advancing the fields of biomolecular language modeling and structure prediction.
+
+**Foundations of AtlasLM:**
+- **ESM3**: Hayes, Thomas, et al. "Simulating 500 million years of evolution with a language model." Science 387.6736 (2025): 850-858.
+- **ESM C**: ESM Team. "ESM Cambrian: Revealing the mysteries of proteins with unsupervised learning." EvolutionaryScale Website, December 4, 2024. https://evolutionaryscale.ai/blog/esm-cambrian."
+
+**Foundations of AtlasFold:**
+- **AlphaFold2**: Jumper, John, et al. "Highly accurate protein structure prediction with AlphaFold." nature 596.7873 (2021): 583-589.
+- **ESMFold**: Lin, Zeming, et al. "Evolutionary-scale prediction of atomic-level protein structure with a language model." Science 379.6637 (2023): 1123-1130.
+- **AlphaFold3**: Abramson, Josh, et al. "Accurate structure prediction of biomolecular interactions with AlphaFold 3." Nature 630.8016 (2024): 493-500.
+
