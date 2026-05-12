@@ -106,16 +106,18 @@ def load_model(
     # Canonicalize the model name
     model_name = get_model_name(model_name)
 
+    # Initialize the model architecture
+    model = get_model(model_name)
+    model.eval()
+
     # Download the model weights
     path = download_model_weights(model_name, cache_dir)
 
     # Load the model architecture and weights
-    model = get_model(model_name)
     state_dict = torch.load(path, map_location=device, weights_only=True)
-
     # Remove 'model.' prefix if present
     if all(key.startswith("model.") for key in state_dict.keys()):
         state_dict = {key[len("model.") :]: value for key, value in state_dict.items()}
-
     model.load_state_dict(state_dict)
+
     return model.to(device)
