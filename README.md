@@ -25,7 +25,7 @@ TODO
 
 | Shorthand | Available | Description |
 |-----------|-----------| ------------|
-| **AtlasLM** | `atlaslm-600m` `atlaslm-3b` | State-of-the-art protein language model for general purpose. Available in `600m` and `3b` sizes. |
+| **AtlasLM** | `atlaslm-600m` `atlaslm-3b` | State-of-the-art protein language models with unsupervised learning for general purpose. Available in `600m` and `3b` sizes. |
 | **AtlasFold** | `atlasfold-3b-base` | End-to-end single sequence 3D structure predictor, powered by AtlasLM. |
 
 
@@ -38,7 +38,7 @@ AtlasLM requires Python >= 3.10 and PyTorch.
 pip install atlaslm
 
 # From github
-git clone [https://github.com/SeonghwanSeo/atlasfold.git](https://github.com/SeonghwanSeo/atlasfold.git)
+git clone https://github.com/SeonghwanSeo/atlasfold.git
 pip install .
 ```
 
@@ -51,7 +51,7 @@ pip install "atlaslm[fold, cuequiv]"
 
 ## AtlasLM protein language model.
 
-**AtlasLM** is an open-source reproduction of [**ESM Cambrian (ESM-C)**](https://www.evolutionaryscale.ai/blog/esm-cambrian), the state-of-the-art protein language model developed by EvolutionaryScale.
+**AtlasLM** is the reproduction of [**ESM Cambrian (ESM C)**](https://www.evolutionaryscale.ai/blog/esm-cambrian), the state-of-the-art protein language model developed by EvolutionaryScale.
 While the original model has restrictive licensing, this repository provides pre-trained weights under the **MIT License**, facilitating unrestricted research and commercial application.
 
 ### Available Models
@@ -96,16 +96,22 @@ attentions = out.attentions  # List of attention maps: (batch_size, n_heads, seq
 
 TODO.
 
-## License
-
-This source code is licensed under the MIT license found in the `LICENSE` file in the root directory of this source tree.
+---
 
 ## Acknowledgements
 
-This project is built upon the pioneering work of EvolutionaryScale and Google DeepMind.
-We are deeply grateful to the open-source community for advancing the fields of biomolecular language modeling and structure prediction.
+This project was developed as part of the **K-Fold** initiative supported by the Ministry of Science and ICT (MSIT) of the Republic of Korea.
+The K-Fold for biomolecular complex prediction is currently under active development with numerous contributors in KAIST and will be released soon!
+
+---
+
+I would like to thank [Dr. Hyeongwoo Kim](https://scholar.google.com/citations?user=YpiY1q8AAAAJ&hl=en&oi=ao) and [Prof. Woo Youn Kim](https://scholar.google.com/citations?user=elJ5KrcAAAAJ&hl=en) for their guidance and support during the development of AtlasFold.
+
+This project is built upon the pioneering works of Google DeepMind, Meta AI, and EvolutionaryScale in the fields of biomolecular language modeling and structure prediction.
+I am deeply grateful to the open-source community for advancing the fields of biomolecular language modeling and structure prediction.
 
 **Foundations of AtlasLM:**
+- **ESM2**: Lin, Zeming, et al. "Evolutionary-scale prediction of atomic-level protein structure with a language model." Science 379.6637 (2023): 1123-1130.
 - **ESM3**: Hayes, Thomas, et al. "Simulating 500 million years of evolution with a language model." Science 387.6736 (2025): 850-858.
 - **ESM C**: ESM Team. "ESM Cambrian: Revealing the mysteries of proteins with unsupervised learning." EvolutionaryScale Website, December 4, 2024. https://evolutionaryscale.ai/blog/esm-cambrian."
 
@@ -113,4 +119,9 @@ We are deeply grateful to the open-source community for advancing the fields of 
 - **AlphaFold2**: Jumper, John, et al. "Highly accurate protein structure prediction with AlphaFold." nature 596.7873 (2021): 583-589.
 - **ESMFold**: Lin, Zeming, et al. "Evolutionary-scale prediction of atomic-level protein structure with a language model." Science 379.6637 (2023): 1123-1130.
 - **AlphaFold3**: Abramson, Josh, et al. "Accurate structure prediction of biomolecular interactions with AlphaFold 3." Nature 630.8016 (2024): 493-500.
+- **SimpleFold**: Wang, Yuyang, et al. "Simplefold: Folding proteins is simpler than you think." arXiv preprint arXiv:2509.18480 (2025).
+
+## License
+
+This source code and weights are licensed under the **MIT license**.
 
