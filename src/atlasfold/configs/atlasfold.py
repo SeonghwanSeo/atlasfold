@@ -1,0 +1,45 @@
+from atlasfold.model import model
+
+base_config = model.AtlasFoldConfig(
+    name="atlasfold-3b-base",
+    lm_name="SeonghwanSeo/atlaslm-3b-base",
+    lm_path=None,
+    trunk=model.TrunkConfig(
+        channel_s=1024,
+        channel_z=128,
+        num_head_attn=32,
+        num_head_tri_attn=4,
+        dropout_s=0.15,
+        dropout_z=0.25,
+        num_blocks=48,
+    ),
+    diffusion_head=model.DiffusionHeadConfig(
+        channel_a=384,
+        channel_atom=96,
+        num_heads=8,
+        num_blocks=16,
+        num_atom_enc_heads=3,
+        num_atom_enc_blocks=2,
+        num_atom_dec_heads=3,
+        num_atom_dec_blocks=2,
+    ),
+    distogram_head=model.DistogramHeadConfig(
+        num_bins=64,
+        min_dist=2.0,
+        max_dist=22.0,
+    ),
+    confidence_head=model.ConfidenceHeadConfig(
+        channel_a=384,
+        num_heads_attn=12,
+        dropout_s=0.15,
+        dropout_z=0.25,
+        num_blocks=4,
+        num_pae_blocks=2,
+        num_bins=39,
+        min_dist=3.25,
+        max_dist=50.75,
+        max_pae_dist=32.0,
+        num_pae_bins=64,
+        num_plddt_bins=50,
+    ),
+)
