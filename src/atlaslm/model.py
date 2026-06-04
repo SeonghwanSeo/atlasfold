@@ -118,16 +118,29 @@ class AtlasLM(torch.nn.Module):
         """
         Performs forward pass through the PLM.
 
-        Args:
-            input_ids (torch.Tensor): The amino acid tokens.
-            seq_id (torch.Tensor): The sequence ID. (int or bool tensor)
-            pos_id (torch.Tensor): The position ID. (int tensor)
-            return_logits (bool): Whether to return logits. (default: False)
-            return_hidden_states (bool): Whether to return hidden states.
-            return_attentions (bool): Whether to return attentions.
+        Parameters
+        ----------
+        input_ids: torch.Tensor
+            The amino acid tokens of shape (batch_size, seq_len).
+        seq_id: torch.Tensor | None
+            Optional tensor of shape (batch_size, seq_len) identifying sequence boundaries
+            for masking within a packed batch.
+        pos_id: torch.Tensor | None
+            Optional tensor of shape (batch_size, seq_len) providing specific position
+            indices for rotary embeddings.
+        return_logits: bool
+            Whether to return logits. (default: False)
+        return_hidden_states: bool
+            Whether to return list of hidden states.
+            hidden_states shape: (batch_size, seq_len, d_model)
+        return_attentions: bool
+            Whether to return list of attentions.
+            attentions shape: (batch_size, n_heads, seq_len, seq_len)
 
-        Returns:
-            PLLMOutput: The output of the PLM.
+        Return
+        ------
+        out: PLMOutput
+            The output of the PLM containing embeddings, sequence logits, hidden states,
         """
         if seq_id is None:
             seq_id = input_ids != self.alphabet.pad_idx
@@ -148,12 +161,7 @@ class AtlasLM(torch.nn.Module):
 
         # Forward pass
         x = self.embed(input_ids)
-        x, hiddens, attentions = self.transformer(
-            x,
-            seq_id=seq_id,
-            pos_id=pos_id,
-            return_attn=return_attentions,
-        )
+        x, hiddens, attentions = self.transformer(x, seq_id, pos_id, return_attentions)
 
         if not return_hidden_states:
             hiddens = []

@@ -52,11 +52,12 @@ class TransformerBlock(torch.nn.Module):
         seq_id: torch.Tensor | None = None,
         pos_id: torch.Tensor | None = None,
         return_attn: bool = False,
+        return_attn_logits: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         (B, L, D) -> (B, L, D)
         """
-        r1, attn = self.attn(x, seq_id=seq_id, pos_id=pos_id, return_attn=return_attn)
+        r1, attn = self.attn(x, seq_id, pos_id, return_attn, return_attn_logits)
         x = torch.add(x, r1, alpha=self.scaling_factor)
         r2 = self.ffn(x)
         x = torch.add(x, r2, alpha=self.scaling_factor)
@@ -69,12 +70,16 @@ class TransformerStack(torch.nn.Module):
 
     Reference: "Simulating 500 million years of evolution with a language model"
 
-    Args:
-        d_model (int): The dimensionality of the input and output feature vectors.
-        n_heads (int): The number of attention heads.
-        n_layers (int): The number of transformer blocks in the stack.
-        scale_residue (bool, optional): Whether to scale the residue connections in each
-            transformer block.
+    Parameters
+    ----------
+    d_model: int
+        The dimensionality of the input and output feature vectors.
+    n_heads: int
+        The number of attention heads.
+    n_layers: int
+        The number of transformer blocks in the stack.
+    scale_residue: bool
+        Whether to scale the residue connections in each transformer block.
     """
 
     def __init__(
@@ -115,27 +120,33 @@ class TransformerStack(torch.nn.Module):
         seq_id: torch.Tensor | None = None,
         pos_id: torch.Tensor | None = None,
         return_attn: bool = False,
+        return_attn_logits: bool = False,
     ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
         """
         Forward pass of the TransformerStack.
 
-        Args:
-            x (torch.Tensor): The input tensor of shape (batch_size, seq_len, d_model).
-            return_attn (bool): Whether to return attention weights.
+        Parameters
+        ----------
+        x: torch.Tensor
+            The input tensor of shape (batch_size, seq_len, d_model).
 
-        Returns:
-            post_norm: The output tensor of shape (batch_size, seq_len, d_model).
-            hiddens: A list of hidden states from each transformer block.
-            attns: A list of attention weights from each transformer block.
+        Returns
+        -------
+        out: torch.Tensor
+            The output tensor of shape (batch_size, seq_len, d_model)
+        hiddens: list[torch.Tensor]
+            A list of length n_layers containing the hidden states from
+            each transformer block.
+        attns: list[torch.Tensor]
+            A list of length n_layers containing the attention maps from
+            each transformer block (if return_attn is True), otherwise None.
         """
         hiddens: list[torch.Tensor] = []
         attns: list[torch.Tensor] = []
 
-        assert x.ndim == 3, (
-            "Input tensor must be of shape (batch_size, seq_len, d_model)"
-        )
+        assert x.ndim == 3, "Input tensor must be of shape (batch_size, seq_len, d_model)"
         for block in self.blocks:
-            x, attn = block(x, seq_id, pos_id, return_attn)
+            x, attn = block(x, seq_id, pos_id, return_attn, return_attn_logits)
             hiddens.append(x)
             attns.append(attn)
 

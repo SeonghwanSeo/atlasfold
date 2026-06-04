@@ -22,7 +22,8 @@ class MultiHeadAttention(nn.Module):
         self.d_head: int = self.d_model // self.n_heads
 
         self.layernorm_qkv = nn.Sequential(
-            nn.LayerNorm(d_model), nn.Linear(d_model, d_model * 3, bias=bias)
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model * 3, bias=bias),
         )
         self.out_proj = nn.Linear(d_model, d_model, bias=bias)
 
@@ -41,24 +42,35 @@ class MultiHeadAttention(nn.Module):
         seq_id: torch.Tensor | None = None,
         pos_id: torch.Tensor | None = None,
         return_attn: bool = False,
+        return_attn_logits: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         Forward pass for Multi-Head Attention.
 
-        Args:
-            x: Input tensor of shape (batch, seq_len, d_model).
-            seq_id: Optional tensor of shape (batch, seq_len) identifying sequence boundaries
-                for masking within a packed batch.
-            pos_id: Optional tensor of shape (batch, seq_len) providing specific position
-                indices for rotary embeddings.
-            return_attn: If True, manually computes attention and returns weights.
-                If False, uses efficient `scaled_dot_product_attention`.
+        Parameters
+        ----------
+        x: torch.Tensor
+            Input tensor of shape (batch, seq_len, d_model).
+        seq_id: torch.Tensor | None
+            Optional tensor of shape (batch, seq_len) identifying sequence boundaries
+            for masking within a packed batch.
+        pos_id: torch.Tensor | None
+            Optional tensor of shape (batch, seq_len) providing specific position
+            indices for rotary embeddings.
+        return_attn: bool
+            If True, manually computes attention and returns weights.
+            If False, uses efficient `scaled_dot_product_attention`.
+        return_attn_logits: bool
+            If True, returns raw attention logits instead of probabilities.
 
-        Returns:
-            A tuple containing:
-                - out: Output tensor of shape (batch, seq_len, d_model).
-                - attn_weights: Attention weights of shape (batch, n_heads, seq_len, seq_len)
-                  if return_attn is True, otherwise None.
+
+        Return
+        ------
+        out: torch.Tensor
+            Output tensor of shape (batch, seq_len, d_model).
+        attn_weights:
+            Attention weights or logits of shape (batch, n_heads, seq_len, seq_len)
+            if return_attn is True, otherwise None.
         """
         B, L, D = x.shape
         H, Dh = self.n_heads, self.d_head
@@ -84,11 +96,13 @@ class MultiHeadAttention(nn.Module):
 
         if return_attn:
             q *= Dh**-0.5
-            attn_weights = torch.matmul(q, k.transpose(-2, -1))  # [B, H, L, L]
+            a = torch.matmul(q, k.transpose(-2, -1))  # [B, H, L, L]
             if mask is not None:
-                attn_weights.masked_fill_(~mask, float("-inf"))
-            attn_weights = F.softmax(attn_weights, dim=-1).to(v.dtype)
+                a.masked_fill_(~mask, float("-inf"))
+            attn_weights = F.softmax(a, dim=-1).to(v.dtype)
             out = torch.matmul(attn_weights, v)  # [B, H, L, Dh]
+            if return_attn_logits:
+                attn_weights = a
         else:
             out = F.scaled_dot_product_attention(q, k, v, mask)
             attn_weights = None
