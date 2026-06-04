@@ -52,7 +52,7 @@ pip install "atlaslm[fold, cuequiv]"
 ## AtlasLM protein language model.
 
 **AtlasLM** is the reproduction of [**ESM Cambrian (ESM C)**](https://www.evolutionaryscale.ai/blog/esm-cambrian), the state-of-the-art protein language model developed by EvolutionaryScale.
-While the original model has restrictive licensing, this repository provides pre-trained weights under the **MIT License**, facilitating unrestricted research and commercial application.
+~~While the original model has restrictive licensing, this repository provides pre-trained weights under the **MIT License**, facilitating unrestricted research and commercial application.~~
 
 ### Available Models
 
@@ -72,8 +72,7 @@ You can load and use a pretrained AtlasLM model as follows:
 from atlaslm import load_model
 
 # Load AtlasLM model
-model = load_model("atlaslm-600m", device='cuda')
-model.eval()
+model = load_model("atlaslm-600m", device='cuda', dtype=torch.bfloat16)
 
 sequences = [
     "MKTAYIAKQRQISFVKSHFSRQDILDLWIYHTQGYFPDWQNYTPGPGIRYPLKF",
