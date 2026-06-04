@@ -18,9 +18,7 @@ Modified from OpenFold-3 initialize.py
 
 import math
 
-import numpy as np
 import torch
-from scipy.stats import truncnorm
 
 
 def _prod(nums):
@@ -43,20 +41,6 @@ def _calculate_fan(linear_weight_shape, fan="fan_in"):
         raise ValueError("Invalid fan option")
 
     return f
-
-
-@torch.no_grad()
-def trunc_normal_init_openfold_(weights, scale=1.0, fan="fan_in"):
-    shape = weights.shape
-    f = _calculate_fan(shape, fan)
-    scale = scale / max(1, f)
-    a = -2
-    b = 2
-    std = math.sqrt(scale) / truncnorm.std(a=a, b=b, loc=0, scale=1)
-    size = _prod(shape)
-    samples = truncnorm.rvs(a=a, b=b, loc=0, scale=std, size=size)
-    samples = np.reshape(samples, shape)
-    weights.copy_(torch.as_tensor(samples, device=weights.device))
 
 
 @torch.no_grad()
