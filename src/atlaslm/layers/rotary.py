@@ -45,21 +45,27 @@ class RotaryEmbedding(torch.nn.Module):
         super().__init__()
         self.dim: int = dim
         self.base: float = float(base)
+        self.max_seqlen: int = max_seqlen
+        self.init_buffers()
 
-        # Precompute the inverse frequencies and register
+    def init_buffers(self, device: str | torch.device | None = None):
         self.inv_freq: torch.Tensor
         inv_freq = 1 / (
-            self.base ** (torch.arange(0, self.dim, 2, dtype=torch.float32) / self.dim)
-        ).to(torch.float32)
+            self.base
+            ** (
+                torch.arange(0, self.dim, 2, dtype=torch.float32, device=device)
+                / self.dim
+            )
+        )
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
         # Cache for the cos and sin tables
-        cos, sin = self._get_cos_sin(max_seqlen)
+        cos, sin = self._get_cos_sin(self.max_seqlen)
         self.register_buffer("_cos_cached", cos, persistent=False)
         self.register_buffer("_sin_cached", sin, persistent=False)
 
     def _get_cos_sin(self, seqlen: int) -> tuple[torch.Tensor, torch.Tensor]:
-        t = torch.arange(seqlen, dtype=torch.float32)
+        t = torch.arange(seqlen, dtype=torch.float32, device=self.inv_freq.device)
         freqs = torch.outer(t, self.inv_freq)
         cos = torch.cos(freqs).tile(1, 2)  # [seqlen, dim]
         sin = torch.sin(freqs).tile(1, 2)  # [seqlen, dim]

@@ -82,7 +82,9 @@ def download_model_weights(model_name: str, cache_dir: str | Path | None = None)
 
 def load_model(
     model_name: str,
+    dtype: torch.dtype = torch.float32,
     device: str | torch.device = "cpu",
+    path: str | Path | None = None,
     cache_dir: str | Path | None = None,
 ) -> AtlasLM:
     """Load a pretrained ESMC model by name.
@@ -103,21 +105,27 @@ def load_model(
     model : AtlasLM
         The loaded AtlasLM model.
     """
+    device = torch.device(device)
+
     # Canonicalize the model name
     model_name = get_model_name(model_name)
 
+    # Download the model weights
+    if path is None:
+        path = download_model_weights(model_name, cache_dir)
+
     # Initialize the model architecture
-    model = get_model(model_name)
+    with torch.device("meta"):
+        model = get_model(model_name).to(dtype)
+
+    # Load the model weights
+    model = model.to_empty(device=device)
+    state_dict = torch.load(path, map_location=device, weights_only=True)
+    model.load_state_dict(state_dict)
     model.eval()
 
-    # Download the model weights
-    path = download_model_weights(model_name, cache_dir)
+    for module in model.modules():
+        if hasattr(module, "init_buffers"):
+            module.init_buffers(device=device)
 
-    # Load the model architecture and weights
-    state_dict = torch.load(path, map_location=device, weights_only=True)
-    # Remove 'model.' prefix if present
-    if all(key.startswith("model.") for key in state_dict.keys()):
-        state_dict = {key[len("model.") :]: value for key, value in state_dict.items()}
-    model.load_state_dict(state_dict)
-
-    return model.to(device)
+    return model
