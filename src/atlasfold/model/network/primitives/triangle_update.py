@@ -7,6 +7,8 @@ import torch.nn as nn
 try:
     from cuequivariance_torch.primitives.triangle import (
         triangle_attention as _cueq_triangle_attention,
+    )
+    from cuequivariance_torch.primitives.triangle import (
         triangle_multiplicative_update as _cueq_triangle_multiplicative_update,
     )
 except ImportError:
@@ -138,7 +140,7 @@ class TriangleMultiplication(nn.Module):
             The output data of shape (*, L, L, C)
 
         """
-        if use_kernels:
+        if use_kernels and _cueq_triangle_multiplicative_update is not None:
             return cueq_tri_mul(
                 z,
                 direction=self.direction,
@@ -165,7 +167,14 @@ class TriangleMultiplication(nn.Module):
         g = self.linear_g_out(z).sigmoid()
 
         # Line 4
-        z = torch.einsum(self.equation, a, b)
+        # a, b shape: (*, L, L, C) -> move to (*, C, L, L)
+        a, b = a.movedim(-1, -3), b.movedim(-1, -3)
+        if self.direction == "outgoing":
+            z = a @ b.mT
+        else:
+            z = a.mT @ b
+        # move back to (*, L, L, C)
+        z = z.movedim(-3, -1)
         z = g * self.linear_out(self.layernorm_out(z))
 
         return z
@@ -260,7 +269,7 @@ class TriangleAttention(nn.Module):
         bias = self.linear_bias(z)
         bias = einops.rearrange(bias, "... i j h -> ... 1 h i j")
         # (*, L, 1, 1, L)
-        mask = mask[..., :, None, None, :]
+        mask = einops.rearrange(mask, "... i j -> ... i 1 1 j")
 
         # Line 4: Prepare gating
         # (*, L, L, H, C_h)
@@ -275,7 +284,7 @@ class TriangleAttention(nn.Module):
 
         # Line 5-6: Attention
         # (*, L, H, L, L)
-        if use_kernels:
+        if use_kernels and _cueq_triangle_attention is not None:
             out = cueq_tri_attn(
                 q,
                 k,
@@ -302,7 +311,7 @@ class TriangleAttention(nn.Module):
         # Gating
         out = g * out
 
-        # Line 7: Output proejection
+        # Line 7: Output projection
         out = self.linear_out(out.flatten(-2))
 
         if not self.starting:

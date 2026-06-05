@@ -9,11 +9,11 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from torchmetrics import MeanMetric, MetricCollection
 
-from atlasfold.model.model import AtlasFold, AtlasFoldConfig
 from atlasfold.model.network.diffusion_head import SamplingConfig
 from atlasfold.utils import structure_metrics
 
 from . import losses, validation_metrics
+from .model_train import AtlasFoldForTrain
 from .utils.ema import ExponentialMovingAverage
 from .utils.gradient_logging import gradient_norm, parameter_norm
 from .utils.lr_scheduler import AF2LRScheduler
@@ -44,10 +44,11 @@ class OptimizerConfig:
     """Optimizer configuration."""
 
     # optimizer
-    opt: str = "adam"
+    opt: str = "adamw"
     beta_1: float = 0.9
     beta_2: float = 0.95
-    eps: float = 1e-6
+    eps: float = 1e-8
+    weight_decay: float = 1e-4
     # lr scheduler
     lr_scheduler: str = "af2"
     base_lr: float = 1e-3
@@ -56,7 +57,7 @@ class OptimizerConfig:
     lr_decay_factor: float = 0.95
     # ema
     ema_decay: float = 0.999
-    ema_ignore_params: tuple[str] | None = ("plm",)
+    ema_ignore_params: tuple[str] | None = ("lm_embedder.lm.",)
     ema_update_params: tuple[str] | None = None
     # multi-phase training
     load_opt_state_from_checkpoint: bool = True
@@ -75,7 +76,7 @@ class TrainingConfig:
     # trunk recycling
     num_recycles: int = 3
     # for structure model training
-    diffusion_batch_size: int = 64
+    diffusion_batch_size: int = 48
     # for confidence module training
     num_mini_rollout_steps: int = 20
 
@@ -85,7 +86,7 @@ class ValidationConfig:
     """Validation step configuration."""
 
     num_recycles: int = 3
-    num_steps: int = 200
+    num_steps: int = 100
     num_diffusion_samples: int = 3
 
 
@@ -132,8 +133,7 @@ class TrainingModule(pl.LightningModule):
         self.train_pae_head: bool = self.training_config.train_pae_head
 
         # Initialize model here
-        model_config: AtlasFoldConfig = self.global_config.model
-        self.model: AtlasFold = AtlasFold(model_config)
+        self.model: AtlasFoldForTrain = AtlasFoldForTrain(self.global_config.model)
 
         # Freeze parts of the model if needed
         self.freeze_submodules()
@@ -163,11 +163,6 @@ class TrainingModule(pl.LightningModule):
         rng = np.random.default_rng(seed=42)
         self.recycles_per_step: np.ndarray = rng.integers(
             0, self.training_config.num_recycles + 1, size=1000_000
-        )
-
-        # Set up the kernel
-        self.model.set_forward_flags(
-            use_compiled_models=self.config.kernel.cuequivariance
         )
 
     def freeze_submodules(self):
@@ -246,6 +241,14 @@ class TrainingModule(pl.LightningModule):
                 eps=config.eps,
                 lr=config.base_lr,
             )
+        elif config.opt.lower() == "adamw":
+            optimizer = torch.optim.AdamW(
+                parameters,
+                betas=(config.beta_1, config.beta_2),
+                eps=config.eps,
+                weight_decay=config.weight_decay,
+                lr=config.base_lr,
+            )
         else:
             raise NotImplementedError(f"Optimizer {config.opt} not implemented yet.")
 
@@ -266,12 +269,13 @@ class TrainingModule(pl.LightningModule):
     def forward(
         self,
         batch: dict[str, torch.Tensor],
-        label: dict[str, torch.Tensor],
+        label: dict[str, torch.Tensor] | None,
         num_recycles: int,
         sampling_config: SamplingConfig,
         mode: str,
     ):
         if mode == "train":
+            assert label is not None, "Label cannot be None in training mode"
             return self.model.forward_train(
                 batch=batch,
                 label=label,
@@ -285,12 +289,11 @@ class TrainingModule(pl.LightningModule):
             )
 
         else:
-            return self.model.inference(
+            return self.model.sample_validation(
                 batch,
                 num_recycles=num_recycles,
                 sampling_config=sampling_config,
                 diffusion_seed=42,
-                compute_pae=False,
             )
 
     def training_step(
@@ -313,6 +316,7 @@ class TrainingModule(pl.LightningModule):
         # Compute the forward pass
         model_out: dict[str, torch.Tensor] = self(
             batch=batch["feat"],
+            label=batch["label"],
             num_recycles=num_recycles,
             sampling_config=sampling_config,
             mode="train",
@@ -418,6 +422,7 @@ class TrainingModule(pl.LightningModule):
         try:
             sample_out: dict[str, torch.Tensor] = self(
                 batch=feat,
+                label=None,
                 num_recycles=val_config.num_recycles,
                 sampling_config=sampling_config,
                 mode="validation",
@@ -596,8 +601,10 @@ class TrainingModule(pl.LightningModule):
         log("grad_norm/model", gradient_norm(model))
         log("param_norm/model", parameter_norm(model))
         if self.train_trunk:
-            log("grad_norm/trunk", gradient_norm(model.trunk))
-            log("param_norm/trunk", parameter_norm(model.trunk))
+            log("grad_norm/main_stack", gradient_norm(model.main_stack))
+            log("param_norm/main_stack", parameter_norm(model.main_stack))
+            log("grad_norm/lm_stack", gradient_norm(model.lm_stack))
+            log("param_norm/lm_stack", parameter_norm(model.lm_stack))
         if self.train_diffusion_head:
             log("grad_norm/diffusion_head", gradient_norm(model.diffusion_head))
             log("param_norm/diffusion_head", parameter_norm(model.diffusion_head))
@@ -618,21 +625,17 @@ class TrainingModule(pl.LightningModule):
         self.ema.update(self)
 
     def on_validation_start(self):
-        # Disable model compilation
-        self.model.set_forward_flags(use_compiled_models=False)
         # Cache current model parameters before validation
         model_state_dict = {
             k: p.clone().detach()
             for k, p in self.model.state_dict().items()
-            if not k.startswith("lm.")
+            if not k.startswith("lm_embedder.lm.")
         }
         self.stored_params = model_state_dict
         # Replace model parameters with EMA parameters
-        self.model.load_state_dict(self.ema.params, strict=False)
+        self.load_state_dict(self.ema.params, strict=False)
 
     def on_validation_end(self) -> None:
-        # Re-enable model compilation after validation
-        self.model.set_forward_flags(use_compiled_models=self.compile_config.enabled)
         # Restore original parameters after validation
         if self.stored_params is not None:
             self.load_state_dict(self.stored_params, strict=False)
@@ -642,7 +645,9 @@ class TrainingModule(pl.LightningModule):
         # Remove pretrained model keys
         state_dict = checkpoint["state_dict"]
         state_dict = {
-            k: v for k, v in state_dict.items() if not k.startswith("model.lm.")
+            k: v
+            for k, v in state_dict.items()
+            if not k.startswith("model.lm_embedder.lm.")
         }
         # Remove '._orig_mod.' from checkpoint keys
         state_dict = self._remove_orig_mod_from_state_dict(state_dict)

@@ -192,6 +192,15 @@ class TrainingDataset(LMDBDataset):
                         self.logger.warning(f"Cluster size is 0 for entry {m['id']}.")
                         cluster_size = 1
                     w *= 1 / cluster_size
+                elif strategy == "plddt":
+                    plddt = m["pred"]["plddt"]
+                    if plddt is None:
+                        self.logger.warning(
+                            f"PLDDT is missing for entry {m['id']}; treating as 0."
+                        )
+                        plddt = 0.0
+                    w *= min(max(plddt, 50), 70) - 30
+
             return w
 
         weights = np.array([get_weight(m) for m in self.metadatas])

@@ -7,31 +7,98 @@ from atlasfold.utils.checkpointing import checkpoint_blocks
 
 
 class TriangularUpdateTrunk(torch.nn.Module):
-    """Stack multiple triangular update blocks."""
+    """Main trunk of the AtlasFold model"""
 
     def __init__(
         self,
-        channel_s: int = 384,
-        channel_z: int = 128,
-        num_heads_attn: int = 12,
-        num_heads_tri_attn: int = 4,
-        dropout_s: float = 0.15,
+        channel_z: int = 192,
         dropout_z: float = 0.25,
         num_blocks: int = 48,
-        num_single_to_pair_blocks: int = 4,
         blocks_per_ckpt: int | None = None,
     ) -> None:
         super().__init__()
         self.blocks = torch.nn.ModuleList(
             [
                 PairBlock(
-                    channel_s,
-                    channel_z,
-                    num_heads_attn,
-                    num_heads_tri_attn,
-                    dropout_s,
-                    dropout_z,
-                    single_to_pair=i < num_single_to_pair_blocks,
+                    channel_z=channel_z,
+                    dropout_z=dropout_z,
+                    single_to_pair=False,
+                    pair_to_pair=True,
+                    pair_to_single=False,
+                    use_tri_mul=True,
+                    use_tri_attn=False,
+                )
+                for _ in range(num_blocks)
+            ]
+        )
+        self.blocks_per_ckpt: int | None = blocks_per_ckpt
+
+    def forward(
+        self,
+        z: torch.Tensor,
+        mask: torch.Tensor,
+        use_cuequiv_kernels: bool = False,
+    ) -> torch.Tensor:
+        """Perform the forward pass.
+
+        Parameters
+        ----------
+        z : torch.Tensor
+            The pair representations of shape (B, L, L, C_z)
+        mask : torch.Tensor
+            The token mask of shape (B, L)
+        use_cuequiv_kernels : bool, optional
+            Whether to use cuEQUIV kernels, by default False.
+
+        Returns
+        -------
+        z: torch.Tensor
+            The updated pair representations
+        """
+        pair_mask = mask[..., :, None] & mask[..., None, :]
+        blocks = [
+            partial(
+                b,
+                mask=mask,
+                pair_mask=pair_mask,
+                use_cuequiv_kernels=use_cuequiv_kernels,
+            )
+            for b in self.blocks
+        ]
+        _, z = checkpoint_blocks(
+            blocks,
+            (None, z),
+            self.blocks_per_ckpt,
+            use_reentrant=False,
+        )
+        return z
+
+
+class LMModule(torch.nn.Module):
+    """LM Module of the AtlasFold model"""
+
+    def __init__(
+        self,
+        channel_s: int = 768,
+        channel_z: int = 192,
+        num_heads_attn: int = 12,
+        dropout_z: float = 0.25,
+        num_blocks: int = 4,
+        blocks_per_ckpt: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.blocks = torch.nn.ModuleList(
+            [
+                PairBlock(
+                    channel_s=channel_s,
+                    channel_z=channel_z,
+                    num_heads_attn=num_heads_attn,
+                    dropout_z=dropout_z,
+                    single_to_pair=True,
+                    pair_to_pair=True,
+                    pair_to_single=(i < num_blocks - 1),
+                    use_tri_mul=True,
+                    use_tri_attn=False,
                 )
                 for i in range(num_blocks)
             ]
@@ -44,7 +111,7 @@ class TriangularUpdateTrunk(torch.nn.Module):
         z: torch.Tensor,
         mask: torch.Tensor,
         use_cuequiv_kernels: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """Perform the forward pass.
 
         Parameters
@@ -60,8 +127,6 @@ class TriangularUpdateTrunk(torch.nn.Module):
 
         Returns
         -------
-        s : torch.Tensor
-            The updated single representations
         z: torch.Tensor
             The updated pair representations
         """
@@ -75,10 +140,10 @@ class TriangularUpdateTrunk(torch.nn.Module):
             )
             for b in self.blocks
         ]
-        s, z = checkpoint_blocks(
+        _, z = checkpoint_blocks(
             blocks,
             (s, z),
             self.blocks_per_ckpt,
             use_reentrant=False,
         )
-        return s, z
+        return z

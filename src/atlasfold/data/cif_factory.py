@@ -3,7 +3,6 @@
 """
 
 import logging
-import pathlib
 from typing import Any
 
 import gemmi
@@ -175,7 +174,7 @@ def get_protein_chains(
                 )
                 continue
             auth_id = label_id_to_auth_id[label_id]
-            c = protein.Protein.get_empty_chain(auth_id, sequence)
+            c = protein.Protein.get_empty(auth_id, sequence)
             m = {
                 "label_id": label_id,
                 "auth_id": auth_id,

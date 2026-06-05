@@ -60,7 +60,7 @@ def get_center(coords: ArrayT, mask: ArrayT) -> ArrayT:
     else:
         assert isinstance(mask, torch.Tensor)
         # Sanitize coords
-        safe_coords = coords.masked_fill(~mask, 0.0)
+        safe_coords = coords.masked_fill(~mask[..., None], 0.0)
 
         total_mass = mask.sum(-1, keepdim=True).clamp(1)
         center = torch.sum(safe_coords, dim=-2, keepdim=True) / total_mass[..., None]
@@ -78,13 +78,11 @@ def do_centering(coords: ArrayT, mask: ArrayT, mask_to_zero: bool = True) -> Arr
         The boolean mask tensor of shape (*, L).
     mask_to_zero : bool, optional
         If True, positions where mask is False will be set to zero after centering.
-        # NOTE: this is not used in Boltz. (Boltz's masked coords is -center_pos)
 
     Returns
     -------
     np.ndarray | torch.Tensor
-        The centered coordinates tensor of shape (*, 3).
-
+        The centered coordinates tensor of shape (*, L, 3).
     """
     assert coords.ndim == mask.ndim + 1
     assert coords.ndim >= 2
@@ -139,7 +137,7 @@ def _center_random_augmentation_npy(
     R = random_rotations_npy(coords.shape[:-2], dtype=np.float32, rng=rng)  # [..., 3, 3]
 
     # Matrix multiplication is safe (NaNs stay local to invalid atoms)
-    coords = np.einsum("...md,...ds->...ms", coords, R)
+    coords = coords @ R
 
     if s_trans > 0.0:
         # Create random translation with same shape as coords[..., 0:1, :]
@@ -169,8 +167,7 @@ def _center_random_augmentation_torch(
     R = random_rotations_torch(
         coords.shape[:-2], coords.dtype, coords.device, rng=rng
     )  # [..., 3, 3]
-    # TODO: change einsum to bmm for higher precision
-    coords = torch.einsum("...md,...ds->...ms", coords, R)
+    coords = coords @ R
 
     if s_trans > 0.0:
         noise = torch.randn_like(coords[..., 0:1, :], generator=rng)

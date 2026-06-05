@@ -1,75 +1,45 @@
-"""Implemented by https://github.com/jwohlwend/boltz"""
+from collections.abc import Sequence
 
 import torch
-import torch.nn as nn
 
 
-def get_dropout_mask(
-    z: torch.Tensor,
-    dropout: float,
-    training: bool,
-    columnwise: bool = False,
-) -> torch.Tensor:
-    """Get the dropout mask.
-
-    Parameters
-    ----------
-    dropout : float
-        The dropout rate
-    z : torch.Tensor
-        The tensor to apply dropout to
-    training : bool
-        Whether the model is in training mode
-    columnwise : bool, optional
-        Whether to apply dropout columnwise
-
-    Returns
-    -------
-    torch.Tensor
-        The dropout mask
-
-    """
-    if (not training) or (dropout == 0.0):
-        return torch.ones_like(z[:, 0:1, :, 0:1] if columnwise else z[:, :, 0:1, 0:1])
-    v = z[:, 0:1, :, 0:1] if columnwise else z[:, :, 0:1, 0:1]
-    d = torch.rand_like(v) >= dropout
-    d = d * 1.0 / (1.0 - dropout)
-    return d
-
-
-class DropoutRowwise(nn.Module):
-    """Row-wise dropout layer."""
-
-    def __init__(self, dropout: float) -> None:
+class Dropout(torch.nn.Module):
+    def __init__(self, p: float, dim: int | Sequence[int] | None) -> None:
         super().__init__()
-        self.dropout: float = dropout
+        self.p: float = p
+        assert 0.0 <= self.p < 1.0, (
+            f"Dropout probability must be in the range [0.0, 1.0), got {self.p}"
+        )
+        if dim is None:
+            self.dim = []
+        elif isinstance(dim, int):
+            self.dim = [dim]
+        else:
+            self.dim = list(dim)
 
     def forward(self, x: torch.Tensor, training: bool | None = None) -> torch.Tensor:
-        if training is None:
-            training = self.training
-
-        if not training or self.dropout == 0.0:
+        training = training if training is not None else self.training
+        if not training or self.p == 0.0:
             return x
 
-        # Apply dropout
-        mask = get_dropout_mask(x, self.dropout, training, columnwise=False)
+        shape = list(x.shape)
+        for d in self.dim:
+            shape[d] = 1
+
+        mask = x.new_ones(shape)
+        mask = torch.nn.functional.dropout(mask, p=self.p, training=True)
         return x * mask
 
 
-class DropoutColumnwise(nn.Module):
+class DropoutRowwise(Dropout):
     """Row-wise dropout layer."""
 
-    def __init__(self, dropout: float) -> None:
-        super().__init__()
-        self.dropout: float = dropout
+    def __init__(self, p: float) -> None:
+        super().__init__(p, dim=-3)
 
-    def forward(self, x: torch.Tensor, training: bool | None = None) -> torch.Tensor:
-        if training is None:
-            training = self.training
 
-        if not training or self.dropout == 0.0:
-            return x
+class DropoutColumnwise(Dropout):
+    """Column-wise dropout layer."""
 
-        # Apply dropout
-        mask = get_dropout_mask(x, self.dropout, training, columnwise=True)
-        return x * mask
+    def __init__(self, p: float) -> None:
+        super().__init__(p, dim=-2)

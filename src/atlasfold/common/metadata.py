@@ -1,4 +1,4 @@
-from dataclasses import dataclass, fields
+import dataclasses
 
 from typing_extensions import Self
 
@@ -28,11 +28,11 @@ ALL_EXPERIMENT_METHODS = (
 )
 
 
-@dataclass(slots=True)
+@dataclasses.dataclass(slots=True, kw_only=True)
 class JsonSerializable:
     def to_dict(self) -> dict:
         """Convert to dictionary, excluding None values."""
-        data = {f.name: getattr(self, f.name) for f in fields(self)}
+        data = {f.name: getattr(self, f.name) for f in dataclasses.fields(self)}
         return {k: v for k, v in data.items() if v is not None}
 
     @classmethod
@@ -42,7 +42,7 @@ class JsonSerializable:
 
 
 # TODO: do we need separate rcsb from experiment record?
-@dataclass(slots=True)
+@dataclasses.dataclass(slots=True, kw_only=True)
 class ExperimentRecord(JsonSerializable):
     """Metadata record from RCSB PDB."""
 
@@ -73,7 +73,7 @@ class ExperimentRecord(JsonSerializable):
         )
 
 
-@dataclass(slots=True)
+@dataclasses.dataclass(slots=True, kw_only=True)
 class PredictionRecord(JsonSerializable):
     """Metadata record from structure prediction."""
 
@@ -82,13 +82,13 @@ class PredictionRecord(JsonSerializable):
     plddt: float | None = None
 
 
-@dataclass(slots=True)
+@dataclasses.dataclass(slots=True, kw_only=True)
 class Metadata(JsonSerializable):
-    id: str  # User/Author-defined chain name
-    label_asym_id: str
-    auth_asym_id: str
-    entity_id: int  # starts from 1
+    id: str  # User/Author-defined name
     num_residues: int
+    label_asym_id: str | None = None
+    auth_asym_id: str | None = None
+    entity_id: int | None = None  # starts from 1
     cluster_id: str | None = None
     cluster_size: int | None = None
     exp: ExperimentRecord | None = None
@@ -97,13 +97,16 @@ class Metadata(JsonSerializable):
     def to_dict(self) -> dict:
         data = {
             "id": self.id,
-            "label_asym_id": self.label_asym_id,
-            "auth_asym_id": self.auth_asym_id,
-            "entity_id": self.entity_id,
             "num_residues": self.num_residues,
         }
         # Add optional fields if they are not None
-        for field in ["cluster_id", "cluster_size"]:
+        for field in [
+            "cluster_id",
+            "cluster_size",
+            "label_asym_id",
+            "auth_asym_id",
+            "entity_id",
+        ]:
             if getattr(self, field) is not None:
                 data[field] = getattr(self, field)
         # Add nested records if they are not None
@@ -126,10 +129,10 @@ class Metadata(JsonSerializable):
 
         return cls(
             id=data["id"],
-            label_asym_id=data["label_asym_id"],
-            auth_asym_id=data["auth_asym_id"],
-            entity_id=data["entity_id"],
             num_residues=data["num_residues"],
+            label_asym_id=data.get("label_asym_id", None),
+            auth_asym_id=data.get("auth_asym_id", None),
+            entity_id=data.get("entity_id", None),
             cluster_id=data.get("cluster_id", None),
             cluster_size=data.get("cluster_size", None),
             exp=exp,

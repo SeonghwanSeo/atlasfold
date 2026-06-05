@@ -106,7 +106,7 @@ The K-Fold for biomolecular complex prediction is currently under active develop
 
 I would like to thank [Dr. Hyeongwoo Kim](https://scholar.google.com/citations?user=YpiY1q8AAAAJ&hl=en&oi=ao) and [Prof. Woo Youn Kim](https://scholar.google.com/citations?user=elJ5KrcAAAAJ&hl=en) for their guidance and support during the development of AtlasFold.
 
-This project is built upon the pioneering works of Google DeepMind, Meta AI, and EvolutionaryScale in the fields of biomolecular language modeling and structure prediction.
+This project is built upon the pioneering works of Google DeepMind, Meta AI, OpenFold Consortium, and EvolutionaryScale in the fields of biomolecular language modeling and structure prediction.
 I am deeply grateful to the open-source community for advancing the fields of biomolecular language modeling and structure prediction.
 
 **Foundations of AtlasLM:**
@@ -116,6 +116,7 @@ I am deeply grateful to the open-source community for advancing the fields of bi
 
 **Foundations of AtlasFold:**
 - **AlphaFold2**: Jumper, John, et al. "Highly accurate protein structure prediction with AlphaFold." nature 596.7873 (2021): 583-589.
+- **OpenFold**: Ahdritz, Gustaf, et al. "OpenFold: retraining AlphaFold2 yields new insights into its learning mechanisms and capacity for generalization." Nature methods 21.8 (2024): 1514-1524.
 - **ESMFold**: Lin, Zeming, et al. "Evolutionary-scale prediction of atomic-level protein structure with a language model." Science 379.6637 (2023): 1123-1130.
 - **AlphaFold3**: Abramson, Josh, et al. "Accurate structure prediction of biomolecular interactions with AlphaFold 3." Nature 630.8016 (2024): 493-500.
 - **SimpleFold**: Wang, Yuyang, et al. "Simplefold: Folding proteins is simpler than you think." arXiv preprint arXiv:2509.18480 (2025).
@@ -123,4 +124,3 @@ I am deeply grateful to the open-source community for advancing the fields of bi
 ## License
 
 This source code and weights are licensed under the **MIT license**.
-

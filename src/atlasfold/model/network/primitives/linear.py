@@ -45,7 +45,7 @@ class Linear(nn.Module):
     def reset_parameters(self, init: str) -> None:
         # Before initialization, set bias to zero if it exists
         if self.bias is not None:
-            initialize.zero_init_(self.bias)
+            initialize.bias_zero_init_(self.bias)
 
         if init == "default":
             initialize.lecun_normal_init_(self.weight)
@@ -53,24 +53,24 @@ class Linear(nn.Module):
             initialize.he_normal_init_(self.weight)
         elif init == "gating":
             # weight: zero
-            initialize.gating_init_(self.weight)
+            initialize.zero_init_(self.weight)
         elif init == "gating_closed":
             # weight: zero, bias: -2 (so that sigmoid(bias) ~= 0.12)
             assert self.bias is not None, (
                 "Bias must be True for gating_closed initialization."
             )
-            initialize.gating_init_(self.weight)
-            nn.init.constant_(self.bias, -2.0)
+            initialize.zero_init_(self.weight)
+            initialize.bias_init_(self.bias, value=-2.0)
         elif init == "gating_opened":
             # weight: zero, bias: +2 (so that sigmoid(bias) ~= 0.88)
             assert self.bias is not None, (
                 "Bias must be True for gating_opened initialization."
             )
-            initialize.gating_init_(self.weight)
-            nn.init.constant_(self.bias, +2.0)
+            initialize.zero_init_(self.weight)
+            initialize.bias_init_(self.bias, value=+2.0)
         elif init == "final":
             # weight: zero
-            initialize.final_init_(self.weight)
+            initialize.zero_init_(self.weight)
         elif init == "zero":
             # weight: zero
             initialize.zero_init_(self.weight)

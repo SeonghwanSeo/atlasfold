@@ -1,21 +1,19 @@
 import dataclasses
 import math
-from functools import cached_property
 from typing import TypeVar
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-from atlasfold.model.network.atom_attention import AtomAttentionStack, AtomEmbedder
+from atlasfold.model.network.atom_layer import AtomDecoder, AtomEncoder
 from atlasfold.model.network.diffusion_transformer import (
     DiffusionTransformerStack,
     PairConditioning,
     SingleConditioning,
 )
 from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
-from atlasfold.utils.geometry.random_augment import center_random_augmentation
-from atlasfold.utils.torch_utils import expand_dim
+from atlasfold.utils.geometry.random_augment import do_centering, random_rotations_torch
 
 SIGMA_DATA = 16.0
 
@@ -25,7 +23,7 @@ _ScalarOrTensor = TypeVar("_ScalarOrTensor", float, torch.Tensor)
 @dataclasses.dataclass(kw_only=True)
 class SamplingConfig:
     num_samples: int = 1
-    num_steps: int = 100
+    num_steps: int = 200
     sigma_min: float = 0.0004
     sigma_max: float = 160.0
     rho: float = 7
@@ -37,21 +35,15 @@ class SamplingConfig:
     # Optional configurations
     chunk_size: int | None = None  # For memory-efficient inference
 
-    @cached_property
-    def sigmas(self) -> list[float]:
+    def get_sigmas(self) -> list[float]:
         """Get the noise schedule."""
-        steps = np.linspace(0, 1, self.num_steps)
+        steps = np.linspace(0, 1, self.num_steps + 1)
         inv_rho = 1 / self.rho
         sigma_max_pow = self.sigma_max**inv_rho
         sigma_min_pow = self.sigma_min**inv_rho
         sigmas = sigma_max_pow + steps * (sigma_min_pow - sigma_max_pow)
         sigmas = (sigmas**self.rho) * SIGMA_DATA
-        return sigmas.tolist() + [0.0]
-
-    @cached_property
-    def gammas(self) -> list[float]:
-        """Get the gamma schedule."""
-        return [self.gamma_0 if s > self.gamma_min else 0.0 for s in self.sigmas]
+        return sigmas.tolist()
 
 
 class DiffusionModule(nn.Module):
@@ -59,13 +51,9 @@ class DiffusionModule(nn.Module):
         self,
         channel_a: int = 768,
         channel_s: int = 384,
-        channel_atom: int = 128,
-        num_heads: int = 16,
-        num_blocks: int = 24,
-        num_atom_enc_heads: int = 4,
-        num_atom_enc_blocks: int = 3,
-        num_atom_dec_heads: int = 4,
-        num_atom_dec_blocks: int = 3,
+        channel_atom: int = 96,
+        num_heads: int = 12,
+        num_blocks: int = 12,
         blocks_per_ckpt: int | None = None,
     ) -> None:
         """Initialize the diffusion module.
@@ -82,14 +70,6 @@ class DiffusionModule(nn.Module):
             The number of attention heads.
         num_blocks : int
             The number of transformer blocks.
-        num_atom_enc_heads : int
-            The number of attention heads in the atom encoder.
-        num_atom_enc_blocks : int
-            The number of blocks in the atom encoder.
-        num_atom_dec_heads : int
-            The number of attention heads in the atom decoder.
-        num_atom_dec_blocks : int
-            The number of blocks in the atom decoder.
         blocks_per_ckpt : int | None, optional
             The number of blocks per checkpoint for gradient checkpointing,
             by default None.
@@ -101,19 +81,12 @@ class DiffusionModule(nn.Module):
         self.num_heads: int = num_heads
 
         # Atom attention encoder
-        self.atom_embedder = AtomEmbedder(channel_atom, channel_s)
-        self.atom_encoder = AtomAttentionStack(
-            channel_atom, num_atom_enc_heads, num_atom_enc_blocks
-        )
+        self.atom_encoder = AtomEncoder(channel_atom, channel_s)
 
         # Global transformer stack
         self.proj_q_to_a = nn.Sequential(
-            LinearNoBias(channel_atom, channel_a, init="default"),
+            LinearNoBias(channel_atom * 14, channel_a, init="default"),
             nn.ReLU(),
-        )
-        self.proj_cond_to_a = nn.Sequential(
-            LayerNorm(channel_s, create_offset=False),
-            LinearNoBias(channel_s, channel_a, init="final"),
         )
         self.diffusion_transformer = DiffusionTransformerStack(
             channel_a=channel_a,
@@ -126,17 +99,10 @@ class DiffusionModule(nn.Module):
         # Atom attention decoder
         self.proj_a_to_q = nn.Sequential(
             LayerNorm(channel_a, create_offset=False),
-            LinearNoBias(channel_a, channel_atom, init="default"),
-        )
-        self.atom_decoder = AtomAttentionStack(
-            channel_atom, num_atom_dec_heads, num_atom_dec_blocks
+            LinearNoBias(channel_a, 14 * channel_atom, init="default"),
         )
 
-        # Residue to atom projection
-        self.proj_r_update = nn.Sequential(
-            LayerNorm(channel_atom, create_offset=False),
-            LinearNoBias(channel_atom, 3, precision=32, init="final"),
-        )
+        self.atom_decoder = AtomDecoder(channel_atom)
 
     # === Main forward function for training === #
     def forward(
@@ -165,23 +131,18 @@ class DiffusionModule(nn.Module):
         r_update : torch.Tensor
             The scaled updated atom positions, shape [B, N, L, 14, 3].
         """
-        B, N, L, _, _ = r_noisy.shape
+        # Atom encoder
+        # [B, N, L, 14, 3] -> [B, N, L, 14, c_atom] -> [B, N, L, c_a]
+        with torch.autocast(r_noisy.device.type, enabled=False):
+            # Encode atom positions with single conditioning
+            q = self.atom_encoder(batch, r_noisy, single_cond.float())
+            # Pool atom representations to residue level
+            a = self.proj_q_to_a(q.flatten(-2))
+            q_skip = q  # For skip connection to the atom decoder
 
-        # Atom attention encoder
-        q, c = self.atom_embedder(batch, r_noisy, single_cond)  # [B, N, L, 14, c_atom]
-        q = self.atom_encoder(batch, q, c)  # [B, N, L, 14, c_atom]
-
-        # Pool atom representations to residue level
-        mask = batch["atom14_mask"].view(B, 1, L, 14)  # [B, 1, L, 14]
-        num_atoms = mask.sum(dim=-1).clamp(min=1)  # [B, 1, L]
-        q_to_a = self.proj_q_to_a(q)  # [B, N, L, 14, c_a]
-        a = (q_to_a * mask[..., None]).sum(-2) / num_atoms[..., None]  # [B, N, L, c_a]
-
-        # Add projected single conditioning
-        a = a + self.proj_cond_to_a(single_cond)  # [B, N, L, c_a]
-
-        # Global transformer stack
-        mask = batch["seq_mask"].view(B, 1, 1, L)  # [B, 1, 1, L]
+        # Global transformer stack (bfloat16 context)
+        # [B, N, L, c_a] -> [B, N, L, c_a]
+        mask = batch["seq_mask"].unsqueeze(-2)  # [B, 1, L]
         a = self.diffusion_transformer(
             a,
             mask=mask,
@@ -189,15 +150,13 @@ class DiffusionModule(nn.Module):
             pair_bias=pair_bias,
         )  # [B, N, L, c_a]
 
-        # Project back to atom space for decoder
-        a_to_q = self.proj_a_to_q(a)  # [B, N, L, c_atom]
-        q = q + a_to_q.unsqueeze(-2)  # [*, N, L, 14, c_atom]
-
-        # Atom attention decoder
-        q = self.atom_decoder(batch, q, c)  # [B, N, L, 14, c_atom]
-
-        # Project to coordinate updates
-        r_update = self.proj_r_update(q)  # [B, N, L, 14, 3]
+        # Atom decoder
+        # [B, N, L, c_a] -> [B, N, L, 14, c_atom] -> [B, N, L, 14, 3]
+        with torch.autocast(r_noisy.device.type, enabled=False):
+            # Skip connection from the atom encoder
+            q = q_skip + self.proj_a_to_q(a).unflatten(-1, (14, -1))
+            # Decode to coordinates
+            r_update = self.atom_decoder(batch, q)
 
         return r_update
 
@@ -211,10 +170,6 @@ class DiffusionHead(nn.Module):
         channel_atom: int = 128,
         num_heads: int = 16,
         num_blocks: int = 16,
-        num_atom_enc_heads: int = 4,
-        num_atom_enc_blocks: int = 2,
-        num_atom_dec_heads: int = 4,
-        num_atom_dec_blocks: int = 2,
         # For training
         blocks_per_ckpt: int | None = None,
     ) -> None:
@@ -263,13 +218,8 @@ class DiffusionHead(nn.Module):
             channel_atom=channel_atom,
             num_heads=num_heads,
             num_blocks=num_blocks,
-            num_atom_enc_heads=num_atom_enc_heads,
-            num_atom_enc_blocks=num_atom_enc_blocks,
-            num_atom_dec_heads=num_atom_dec_heads,
-            num_atom_dec_blocks=num_atom_dec_blocks,
             blocks_per_ckpt=blocks_per_ckpt,
         )
-
         self.is_compiled = False
 
     def do_compile(self, **kwargs):
@@ -305,7 +255,6 @@ class DiffusionHead(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         config: SamplingConfig,
-        seed: int | None = None,
         use_compiled_model: bool = True,
     ) -> torch.Tensor:
         """Sample structures via diffusion sampling.
@@ -321,33 +270,32 @@ class DiffusionHead(nn.Module):
             The pair representation, shape [B, L, L, c_z].
         config : SamplingConfig
             The sampling configuration.
-        seed : int | None, optional
-            The random seed for diffusion sampling, by default None.
 
         Returns
         -------
         coords : torch.Tensor
             The sampled atom coordinates, shape [B, N, L, 14, 3].
         """
-        # Set random seed
-        rng = torch.Generator(device=s.device)
-        if seed is not None:
-            rng.manual_seed(seed)
-
-        # Get noise schedule
-        sigmas: list[float] = config.sigmas
-        gammas: list[float] = config.gammas
-
-        # sample prior
-        mask = batch["atom_mask"].unsqueeze(1)  # (B, L, 14)
-        B, _, L, _ = mask.shape
-        N = config.num_samples
         device = s.device
 
+        # Sample prior
+        mask = batch["atom14_mask"].unsqueeze(1)  # (B, 1, L, 14)
+        B, _, L, _ = mask.shape
+        N = config.num_samples
+
+        def sample_noise() -> torch.Tensor:
+            """Sample noise with synchronized randomness across different inputs.
+            This ensures that the resulting coordinates are the same regardless of
+            batch size.
+            """
+            return torch.randn(
+                size=(1, N, L, 14, 3), device=device, dtype=torch.float32
+            ).repeat(B, 1, 1, 1, 1)  # (B, N, L, 14, 3)
+
+        # Get noise schedule
+        sigmas: list[float] = config.get_sigmas()
         sigma_0 = sigmas[0]
-        x = sigma_0 * torch.randn(
-            size=(B, N, L, 14, 3), generator=rng, device=device, dtype=torch.float32
-        )
+        x = sigma_0 * sample_noise()  # (B, N, L, 14, 3)
         x.masked_fill_(~mask[..., None], 0.0)  # apply atom mask
 
         # Compute time-independent variables
@@ -369,15 +317,16 @@ class DiffusionHead(nn.Module):
 
         # Gradually denoise
         for step in range(1, config.num_steps + 1):
-            x = center_random_augmentation(x, mask, rng=rng)
+            # Apply centering and random augmentation.
+            x = self._sync_center_random_augmentation(x, mask)  # (B, N, L, 14, 3)
 
             sigma_tm, sigma_t = sigmas[step - 1], sigmas[step]
-            gamma = gammas[step]
+            gamma = config.gamma_0 * (sigma_t > config.gamma_min)
             t_hat: float = sigma_tm * (1 + gamma)
 
             # Add noise
             noise_var: float = config.noise_scale**2 * (t_hat**2 - sigma_tm**2)
-            eps = math.sqrt(noise_var) * torch.randn_like(x, generator=rng)
+            eps = math.sqrt(noise_var) * sample_noise()  # (B, N, L, 14, 3)
             eps.masked_fill_(~mask[..., None], 0.0)  # apply atom mask
             x_noisy = x + eps
 
@@ -388,6 +337,26 @@ class DiffusionHead(nn.Module):
             x = x_noisy + config.step_scale * dt * delta
 
         return x
+
+    @staticmethod
+    def _sync_center_random_augmentation(
+        x: torch.Tensor, mask: torch.Tensor
+    ) -> torch.Tensor:
+        # Centering
+        x = do_centering(x, mask, mask_to_zero=False)
+
+        # Random rotation
+        B, N, L, _, _ = x.shape  # [B, N, L, 14, 3]
+        R = random_rotations_torch((N,), torch.float32, device=x.device)  # [N, 3, 3]
+        coords = x @ R.view(N, 1, 3, 3)
+
+        # Random translation
+        noise = torch.randn(1, N, 1, 1, 3, device=x.device)
+        coords.add_(noise)
+
+        # Mask out
+        coords[~mask] = 0.0
+        return coords
 
     def inference_step(
         self,
@@ -420,6 +389,7 @@ class DiffusionHead(nn.Module):
         x_out : torch.Tensor
             Denoised atom coordinates. Shape (B, N, L, 14, 3).
         """
+        B, N, L, _, _ = x_noisy.shape
         score_model: DiffusionModule = self.score_model
         if self.is_compiled and not use_compiled_model:
             score_model = score_model._orig_mod
@@ -442,98 +412,8 @@ class DiffusionHead(nn.Module):
                 )
 
         # Output conditioning
+        mask = batch["atom14_mask"]
         x_out = c_skip * x_noisy + c_out * r_update
+        x_out = x_out * mask.view(B, 1, L, 14, 1)  # apply atom mask
 
-        return x_out
-
-    # ============================================================
-    # For training
-    # ============================================================
-    def forward_train(
-        self,
-        batch: dict[str, torch.Tensor],
-        label: dict[str, torch.Tensor],
-        s: torch.Tensor,
-        z: torch.Tensor,
-        diffusion_batch_size: int,
-    ) -> dict[str, torch.Tensor]:
-        """Perform a single training step for the structure module.
-        See Section 5 of EDM paper.
-        """
-        B, N = s.shape[0], diffusion_batch_size
-
-        # Sample noise levels
-        nt = torch.randn((B, N), dtype=torch.float32, device=s.device)
-        t_hat = self.sigma_data * torch.exp(-1.2 + 1.5 * nt)
-
-        # Repeat label coords with random augmentation for each diffusion sample
-        with torch.autocast(s.device.type, enabled=False):
-            label_coords = label["coords"]  # [B, L, 14, 3]
-            x_gt = expand_dim(label_coords, N, dim=1)  # [B, N, L, 14, 3]
-            resolved_mask = label["resolved_mask"]  # [B, L, 14]
-            mask = expand_dim(resolved_mask, N, dim=1)  # [B, N, L, 14]
-            x_gt = center_random_augmentation(x_gt, mask)  # [B, N, L, 14, 3]
-
-            # Add noise
-            noise = torch.randn_like(x_gt)  # [B, N, L, 14, 3]
-            x_noisy = x_gt + t_hat.view(B, N, 1, 1, 1) * noise
-
-        # Forward pass through the score model
-        x_out = self._forward_train(batch, x_noisy, t_hat, s, z)  # [B, N, L, 14, 3]
-
-        loss_weights = 1 / self.c_out(t_hat) ** 2  # [B, N]
-
-        return {
-            "x_noisy": x_noisy,
-            "x_out": x_out,
-            "x_gt": x_gt,
-            "resolved_mask": resolved_mask,
-            "loss_weights": loss_weights,
-        }
-
-    def _forward_train(
-        self,
-        batch: dict[str, torch.Tensor],
-        x_noisy: torch.Tensor,
-        t_hat: torch.Tensor,
-        s: torch.Tensor,
-        z: torch.Tensor,
-    ) -> torch.Tensor:
-        """Forward pass through the score model.
-        See Section 3.7: Diffusion Module, Algorithm 20 of AlphaFold3 paper.
-
-        Parameters
-        ----------
-        batch : dict[str, torch.Tensor]
-            The input batch.
-        x_noisy : torch.Tensor
-            Noisy atom coordinates. Shape (B, N, L, 14, 3).
-        t_hat : torch.Tensor
-            Diffusion noise level (or sigmas of EDM). Shape (B, N).
-        s : torch.Tensor
-            Trunk sequence embeddings. Shape (B, L, c_s).
-        z : torch.Tensor
-            Trunk pairwise embeddings. Shape (B, L, L, c_z).
-
-        Returns
-        -------
-        x_0_hat : torch.Tensor
-            Denoised atom coordinates. Shape (B, N, La, 3).
-        """
-        t_hat_expanded = t_hat[:, :, None, None, None]  # [B, N, 1, 1, 1]
-        c_in = self.c_in(t_hat_expanded)  # [B, N, 1, 1, 1]
-        c_skip = self.c_skip(t_hat_expanded)  # [B, N, 1, 1, 1]
-        c_out = self.c_out(t_hat_expanded)  # [B, N, 1, 1, 1]
-
-        # DiT Conditioning
-        c_noise = self.c_noise(t_hat)  # [B, N, 1, 1, 1]
-        single_cond = self.single_conditioning(batch, s, c_noise)  # [B, N, L, c_s]
-        pair_bias = self.pair_conditioning(batch, z)  # [B, L, L, Nblock, Nhead]
-
-        # Input EDM conditioning
-        r_noisy = c_in * x_noisy  # [B, N, L, 14, 3]
-        # Forward pass through the score model
-        r_update = self.score_model(batch, r_noisy, single_cond, pair_bias)
-        # Output EDM conditioning
-        x_out = c_skip * x_noisy + c_out * r_update
         return x_out

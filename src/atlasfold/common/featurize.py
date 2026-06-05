@@ -26,7 +26,6 @@ DEFAULT_BUCKETS = [
 def featurize(
     sequence: str,
     residue_index: Sequence[int] | None = None,
-    lm_mask: Sequence[bool] | None = None,
 ) -> dict[str, np.ndarray]:
     """Featurize the input sequence for the model."""
     # Sanitize the input sequence
@@ -56,13 +55,7 @@ def featurize(
     input_ids = np.array(
         [BOS_IDX] + [VOCAB_TO_IDX[aa] for aa in sequence] + [EOS_IDX], dtype=np.int64
     )
-    if lm_mask is not None:
-        if len(lm_mask) != len(sequence):
-            raise ValueError(
-                f"Length of lm_mask ({len(lm_mask)}) does not match "
-                f"length of sequence ({len(sequence)})."
-            )
-        input_ids[1:-1][lm_mask] = MASK_IDX
+
     pos_id = np.concatenate(([0], res_idx, [res_idx[-1] + 1]))
     seq_id = np.ones_like(input_ids, dtype=np.int64)
 
@@ -105,7 +98,6 @@ def featurize(
 def featurize_batch(
     sequence_list: list[str],
     residue_index_list: list[Sequence[int] | None] | None = None,
-    lm_mask_list: list[Sequence[bool] | None] | None = None,
     buckets: list[int] | None = None,
 ) -> dict[str, np.ndarray]:
     """Featurize the input sequence for the model."""
@@ -144,8 +136,7 @@ def featurize_batch(
         seq = sequence_list[i]
         length = len(seq)
         residue_index = residue_index_list[i] if residue_index_list else None
-        lm_mask = lm_mask_list[i] if lm_mask_list else None
-        featurized = featurize(seq, residue_index, lm_mask)
+        featurized = featurize(seq, residue_index)
         for k, v in featurized.items():
             if k.startswith("lm."):
                 batch[k][i, : length + 2] = v
@@ -155,7 +146,7 @@ def featurize_batch(
     return batch
 
 
-class InputFeaturizer(torch.nn.Module):
+class InputFeaturizer:
     """
     Featurizes input amino acid sequences into batched tensor representations.
 
@@ -183,10 +174,6 @@ class InputFeaturizer(torch.nn.Module):
         A list of master seeds used to generate reproducible stochastic masks for
         sampling multiple conformations. If None or empty, trunk featurization
         is deterministic.
-    prob_mlm : float or None, optional
-        The fixed probability of masking a given amino acid token when seeds are
-        provided. If None, a random probability between 0 and 0.15 is uniformly
-        sampled per seed. Default is 0.1.
     max_length : int, optional
         The maximum sequence length supported for the pre-computed shared masking
         patterns. Default is 20000.
@@ -194,50 +181,15 @@ class InputFeaturizer(torch.nn.Module):
 
     def __init__(
         self,
-        seeds: list[int] | None = None,
-        prob_mlm: float | None = 0.1,
         max_length: int = 20000,
         buckets: list[int] | None = None,
     ) -> None:
         super().__init__()
-        if seeds is not None and len(seeds) == 0:
-            seeds = None
-        if seeds is None:
-            prob_mlm = 0.0
         if buckets is None:
             buckets = DEFAULT_BUCKETS
 
-        self.seeds: list[int] | None = seeds
-        self.prob_mlm: float | None = prob_mlm
         self.max_length: int = max_length
         self.buckets: list[int] = sorted(buckets)
-
-        if seeds is not None and any(seed < 0 for seed in seeds):
-            raise ValueError(f"All seeds must be non-negative integers, but got {seeds}.")
-
-        if self.seeds is not None:
-            # Sample the shared masking patterns to ensure the reproducibility of
-            # the stochastic samples.
-            num_seeds = len(self.seeds)
-            shared_lm_mask = np.zeros((num_seeds, max_length), dtype=bool)
-            for i, master_seed in enumerate(self.seeds):
-                rng = np.random.default_rng(master_seed)
-                if prob_mlm is None:
-                    p_mask = rng.uniform(0, 0.15)
-                else:
-                    p_mask = prob_mlm
-                shared_lm_mask[i] = rng.random(max_length) < p_mask
-            self.shared_lm_mask = shared_lm_mask
-
-    @property
-    def is_trunk_deterministic(self) -> bool:
-        """Whether the trunk is deterministic (i.e., no mlm masking)."""
-        return self.seeds is None
-
-    @property
-    def is_trunk_stochastic(self) -> bool:
-        """Whether the trunk is stochastic (i.e., whether to apply stochastic masking)."""
-        return self.seeds is not None
 
     def iter_batched_inputs(
         self,
@@ -249,7 +201,6 @@ class InputFeaturizer(torch.nn.Module):
             feat = featurize_batch(
                 batch["sequences"],
                 residue_index_list=None,
-                lm_mask_list=batch["lm_masks"] if self.is_trunk_stochastic else None,
             )
             feat = {k: torch.from_numpy(v) for k, v in feat.items()}
             batch["feat"] = feat
@@ -272,31 +223,26 @@ class InputFeaturizer(torch.nn.Module):
 
         def get_empty_batch() -> dict[str, list]:
             """Returns an empty batch dictionary."""
-            return dict(headers=[], seeds=[], sequences=[], lm_masks=[])
+            return dict(headers=[], seeds=[], sequences=[])
 
         batch = get_empty_batch()
         max_len_in_batch = 0
-        seeds = self.seeds if self.seeds is not None else [None]
 
         for header, seq in input_list:
             seq_len = len(seq)
-            for i, seed in enumerate(seeds):
-                new_max_len = max(max_len_in_batch, seq_len)
-                bucketed_len = get_bucketed_length(new_max_len)
+            new_max_len = max(max_len_in_batch, seq_len)
+            bucketed_len = get_bucketed_length(new_max_len)
 
-                new_tokens = (len(batch["sequences"]) + 1) * bucketed_len
-                if new_tokens > max_tokens_per_batch and len(batch["sequences"]) > 0:
-                    yield batch
-                    batch = get_empty_batch()
-                    max_len_in_batch = seq_len
-                else:
-                    max_len_in_batch = new_max_len
+            new_tokens = (len(batch["sequences"]) + 1) * bucketed_len
+            if new_tokens > max_tokens_per_batch and len(batch["sequences"]) > 0:
+                yield batch
+                batch = get_empty_batch()
+                max_len_in_batch = seq_len
+            else:
+                max_len_in_batch = new_max_len
 
-                batch["headers"].append(header)
-                batch["seeds"].append(seed)
-                batch["sequences"].append(seq)
-                if self.is_trunk_stochastic:
-                    batch["lm_masks"].append(self.shared_lm_mask[i][:seq_len])
+            batch["headers"].append(header)
+            batch["sequences"].append(seq)
 
         if len(batch["sequences"]) > 0:
             yield batch

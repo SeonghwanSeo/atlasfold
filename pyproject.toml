@@ -23,6 +23,7 @@ fold = [
   "einops",
   "gemmi",
   "omegaconf",
+  "einops",
 ]
 cuequiv = [
   "cuequivariance_torch>=0.6.0",
@@ -34,5 +35,6 @@ train = [
   "lightning", # for training loop
   "wandb", # for experiment tracking
   "lmdb", # for training dataset storage
+  "pandas",
   "zstandard"
 ]

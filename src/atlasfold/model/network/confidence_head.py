@@ -146,7 +146,7 @@ class ConfidenceHead(nn.Module):
         self,
         channel_a: int = 384,
         channel_s: int = 768,
-        channel_z: int = 128,
+        channel_z: int = 196,
         num_heads_attn: int = 12,
         num_blocks: int = 4,
         num_pae_blocks: int = 2,
@@ -165,7 +165,7 @@ class ConfidenceHead(nn.Module):
         # Prepare single representation with amino acid identity features
         self.layernorm_s = LayerNorm(channel_s)
         self.linear_s = LinearNoBias(channel_s, channel_a, init="default")
-        self.embedding_aa = LinearNoBias(21, channel_a)
+        self.embed_aa = LinearNoBias(21, channel_a)
 
         # Prepare pair representation with distogram features
         boundaries = torch.linspace(min_dist, max_dist, num_bins - 1)
@@ -180,7 +180,9 @@ class ConfidenceHead(nn.Module):
             num_heads_attn=num_heads_attn,
             dropout_s=dropout_s,
             num_blocks=num_blocks,
+            single_to_pair=True,
             pair_to_pair=False,
+            pair_to_single=False,
         )
 
         self.plddt_head = PredictedLDDTHead(channel_a, num_plddt_bins)
@@ -247,7 +249,7 @@ class ConfidenceHead(nn.Module):
 
         # Prepare single representation with amino acid identity features
         s = self.linear_s(self.layernorm_s(s))  # [B, L, c_a]
-        s = s + self.embedding_aa(batch["aatype"])  # [B, L, c_a]
+        s = s + self.embed_aa(batch["aatype"])  # [B, L, c_a]
         s = s.float()
 
         # Prepare the mask

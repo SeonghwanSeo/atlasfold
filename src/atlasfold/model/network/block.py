@@ -35,7 +35,7 @@ class PairwiseProdDiff(torch.nn.Module):
         self.linear_in = Linear(channel_s, channel_z * 2, init="default")
         self.linear_out = LinearNoBias(channel_z, channel_z, init="final")
 
-    def forward(self, s: torch.Tensor, pair_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, s: torch.Tensor) -> torch.Tensor:
         """Compute pairwise embeddings from single embeddings.
 
         Parameters
@@ -52,11 +52,8 @@ class PairwiseProdDiff(torch.nn.Module):
         s_i, s_j = self.linear_in(s).chunk(2, dim=-1)  # 2 * (*, L, c_hid)
         s_i = s_i[..., :, None, :]
         s_j = s_j[..., None, :, :]
-
-        # Combine Diff (Asymmetry) and Prod (Correlation)
-        z = torch.cat([s_i - s_j, s_i * s_j], dim=-1)  # (*, L, L, c_out)
+        z = torch.cat([s_i - s_j, s_i * s_j], dim=-1)
         z = self.linear_out(z)  # (*, L, L, c_out)
-        z = z * pair_mask[..., None]  # Mask out invalid pairs
         return z
 
 
@@ -151,7 +148,7 @@ class PairBlock(torch.nn.Module):
         self,
         channel_s: int = 384,
         channel_z: int = 128,
-        num_heads_attn: int = 32,
+        num_heads_attn: int = 12,
         num_heads_tri_attn: int = 4,
         dropout_s: float = 0.15,
         dropout_z: float = 0.25,
@@ -162,9 +159,6 @@ class PairBlock(torch.nn.Module):
         use_tri_attn: bool = True,
     ) -> None:
         super().__init__()
-        self.channel_s: int = channel_s
-        self.channel_z: int = channel_z
-
         # Configurations for the block
         self.single_to_pair = single_to_pair
         self.pair_to_pair = pair_to_pair
@@ -173,6 +167,7 @@ class PairBlock(torch.nn.Module):
         # Single to pair
         if self.single_to_pair:
             self.pairwise_prod_diff = PairwiseProdDiff(channel_s, channel_z)
+            self.dropout_z = torch.nn.Dropout(dropout_z)
 
         # Pair to pair
         if self.pair_to_pair:
@@ -239,7 +234,12 @@ class PairBlock(torch.nn.Module):
 
         # Step 1: single_to_pair
         if self.single_to_pair:
-            z = _add(z, self.pairwise_prod_diff(s, pair_mask))
+            z = _add(
+                z,
+                self.dropout_z(
+                    self.pairwise_prod_diff(s),
+                ),
+            )
 
         # Step 2: pair to pair
         if self.pair_to_pair:
@@ -278,7 +278,9 @@ class PairBlock(torch.nn.Module):
             )  # [*, H, L, L]
             s = _add(
                 s,
-                self.dropout_s(self.attention(s, mask, pair_bias=pair_bias)),
+                self.dropout_s(
+                    self.attention(s, mask, pair_bias=pair_bias),
+                ),
             )
             s = _add(s, self.transition_s(s))
 

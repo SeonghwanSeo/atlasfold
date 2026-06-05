@@ -89,9 +89,10 @@ class ExperimentallyResolvedPredictionLoss(torch.nn.Module):
         loss = F.binary_cross_entropy_with_logits(logits, label, reduction="none")
 
         # Reduce loss
-        loss_sum = (loss * atom37_mask).sum(dim=(-1, -2))  # [B]
-        n_valid = atom37_mask.sum(dim=(-1, -2)).clamp(min=1)  # [B]
-        loss_mean = loss_sum / n_valid  # [B]
+        w = atom37_mask.float()  # [B, L, 37]
+        loss_sum = (loss * w).sum(dim=(-1, -2))  # [B]
+        w_sum = w.sum(dim=(-1, -2)).clamp(min=1)  # [B]
+        loss_mean = loss_sum / w_sum  # [B]
 
         return loss_mean
 
@@ -311,4 +312,5 @@ class PAELoss(torch.nn.Module):
         d_ca = x_ca.unsqueeze(-3) - x_ca.unsqueeze(-2)
 
         basis = torch.stack([e1, e2, e3], dim=-2)  # [B, L, 3, 3]
-        return torch.einsum("...ird,...ijd->...ijr", basis, d_ca)
+        local_coords = basis.unsqueeze(-3) @ d_ca.unsqueeze(-1)
+        return local_coords.squeeze(-1)

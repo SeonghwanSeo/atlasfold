@@ -21,14 +21,7 @@ import math
 import torch
 
 
-def _prod(nums):
-    out = 1
-    for n in nums:
-        out = out * n
-    return out
-
-
-def _calculate_fan(linear_weight_shape, fan="fan_in"):
+def _calculate_fan(linear_weight_shape: tuple[int, int], fan="fan_in") -> float:
     fan_out, fan_in = linear_weight_shape
 
     if fan == "fan_in":
@@ -44,7 +37,7 @@ def _calculate_fan(linear_weight_shape, fan="fan_in"):
 
 
 @torch.no_grad()
-def trunc_normal_init_(weights, scale=1.0, fan="fan_in"):
+def trunc_normal_init_(weights: torch.Tensor, scale=1.0, fan="fan_in"):
     """New truncated normal initialization consistent with
     pure PyTorch implementation.
     """
@@ -66,50 +59,24 @@ def trunc_normal_init_(weights, scale=1.0, fan="fan_in"):
     )
 
 
-def lecun_normal_init_(weights):
+def lecun_normal_init_(weights: torch.Tensor):
     trunc_normal_init_(weights, scale=1.0)
 
 
-def he_normal_init_(weights):
+def he_normal_init_(weights: torch.Tensor):
     trunc_normal_init_(weights, scale=2.0)
 
 
 @torch.no_grad()
-def glorot_uniform_init_(weights):
-    torch.nn.init.xavier_uniform_(weights, gain=1)
-
-
-@torch.no_grad()
-def zero_init_(weights):
+def zero_init_(weights: torch.Tensor):
     weights.fill_(0.0)
 
 
 @torch.no_grad()
-def final_init_(weights):
-    weights.fill_(0.0)
+def bias_init_(bias: torch.Tensor, value: float = 0.0):
+    bias.fill_(value)
 
 
 @torch.no_grad()
-def gating_init_(weights):
-    weights.fill_(0.0)
-
-
-@torch.no_grad()
-def bias_init_zero_(bias):
-    bias.fill_(0.0)
-
-
-@torch.no_grad()
-def bias_init_one_(bias):
-    bias.fill_(1.0)
-
-
-@torch.no_grad()
-def normal_init_(weights):
-    torch.nn.init.kaiming_normal_(weights, nonlinearity="linear")
-
-
-@torch.no_grad()
-def ipa_point_weights_init_(weights):
-    softplus_inverse_1 = 0.541324854612918
-    weights.fill_(softplus_inverse_1)
+def bias_zero_init_(bias: torch.Tensor):
+    bias_init_(bias, value=0.0)
