@@ -1,15 +1,13 @@
 """Folding Trunk."""
 
 import dataclasses
+import math
+from functools import partial
 
 import torch
 
-from atlasfold.model.network.confidence_head import ConfidenceHead
-from atlasfold.model.network.diffusion_head import DiffusionHead, SamplingConfig
-from atlasfold.model.network.distogram_head import DistogramHead
-from atlasfold.model.network.input_embedder import LMInputEmbedder
+from atlasfold.model.network import confidence_head, diffusion_head, distogram_head, trunk
 from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
-from atlasfold.model.network.trunk import LMModule, TriangularUpdateTrunk
 from atlasfold.model.utils import confidence_metrics
 from atlasfold.utils import torch_utils
 from atlaslm.model import AtlasLM
@@ -19,9 +17,9 @@ from atlaslm.pretrained import load_model
 @dataclasses.dataclass(kw_only=True)
 class TrunkConfig:
     dropout_z: float = 0.25
+    num_heads: int = 12
     num_lm_blocks: int = 4
     num_blocks: int = 48
-    num_heads: int = 12
     blocks_per_ckpt: int | None = None
 
 
@@ -29,8 +27,11 @@ class TrunkConfig:
 class DiffusionHeadConfig:
     channel_a: int = 768
     channel_atom: int = 96
-    num_heads: int = 12
-    num_blocks: int = 16
+    channel_cond: int = 384
+    num_heads: int = 16
+    num_blocks: int = 12
+    num_atom_heads: int = 2
+    num_atom_blocks: int = 3
     blocks_per_ckpt: int | None = None
 
 
@@ -44,17 +45,18 @@ class DistogramHeadConfig:
 @dataclasses.dataclass(kw_only=True)
 class ConfidenceHeadConfig:
     channel_a: int = 384
-    num_heads_attn: int = 12
+    num_heads: int = 12
     dropout_s: float = 0.15
     dropout_z: float = 0.25
-    num_blocks: int = 4
+    num_blocks: int = 2
     num_pae_blocks: int = 2
     num_bins: int = 39
     min_dist: float = 3.25
     max_dist: float = 50.75
-    max_pae_dist: float = 32.0
+    max_pae_error: float = 32.0
     num_pae_bins: int = 64
     num_plddt_bins: int = 50
+    blocks_per_ckpt: int | None = None
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -91,28 +93,51 @@ class AtlasFold(torch.nn.Module):
         self.channel_atom: int = cfg.diffusion_head.channel_atom
 
         # === Language model === #
-        lm: AtlasLM = load_model(cfg.lm_name, dtype=torch.bfloat16)
+        self.lm: AtlasLM = load_model(cfg.lm_name, dtype=torch.bfloat16)
         # Freeze LM parameters
-        lm.requires_grad_(False)
-        self.lm_embedder = LMInputEmbedder(
-            lm,
-            channel_s=self.channel_s,
-            channel_z=self.channel_z,
+        self.lm.requires_grad_(False)
+        self.alphabet = self.lm.alphabet
+
+        # === Representation initialization === #
+        self.w_lm_emb = torch.nn.Parameter(torch.zeros(self.lm.n_layers))
+        self.layernorm_lm_emb = LayerNorm(self.lm.d_model)
+        self.s_init = torch.nn.Sequential(
+            LinearNoBias(self.lm.d_model, self.channel_s, init="relu"),
+            torch.nn.ReLU(),
+            LinearNoBias(self.channel_s, self.channel_s, init="default"),
         )
+        self.embed_aa = LinearNoBias(21, self.channel_s)
+
+        self.proj_lm_attn = torch.nn.ModuleList(
+            [
+                torch.nn.Sequential(
+                    LayerNorm(self.lm.n_heads),
+                    LinearNoBias(self.lm.n_heads, self.channel_z),
+                )
+                for _ in range(self.lm.n_layers)
+            ]
+        )
+        self.z_init = torch.nn.Sequential(
+            torch.nn.ReLU(),
+            LinearNoBias(self.channel_z, self.channel_z, init="default"),
+        )
+        rel_pos_dim = (2 * 32 + 2) + (2 * 2 + 2) + 1  # r_max=32, s_max=2
+        self.linear_rel_pos = LinearNoBias(rel_pos_dim, self.channel_z, init="default")
 
         # === Trunk body === #
         self.recycle_z = torch.nn.Sequential(
             LayerNorm(self.channel_z),
             LinearNoBias(self.channel_z, self.channel_z, init="final"),
         )
-        self.lm_stack = LMModule(
+        self.lm_stack = trunk.LMStack(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
+            num_heads=cfg.trunk.num_heads,
             dropout_z=cfg.trunk.dropout_z,
             num_blocks=cfg.trunk.num_lm_blocks,
             blocks_per_ckpt=cfg.trunk.blocks_per_ckpt,
         )
-        self.main_stack = TriangularUpdateTrunk(
+        self.main_stack = trunk.TriangularUpdateStack(
             channel_z=self.channel_z,
             dropout_z=cfg.trunk.dropout_z,
             num_blocks=cfg.trunk.num_blocks,
@@ -120,35 +145,31 @@ class AtlasFold(torch.nn.Module):
         )
 
         # === Distogram head === #
-        self.distogram_head = DistogramHead(
+        self.distogram_head = distogram_head.DistogramHead(
             channel_z=self.channel_z,
             **dataclasses.asdict(cfg.distogram_head),
         )
 
         # === Structure prediction heads === #
-        self.diffusion_head = DiffusionHead(
+        self.diffusion_head = diffusion_head.DiffusionHead(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
             **dataclasses.asdict(cfg.diffusion_head),
         )
 
         # === Confidence prediction head === #
-        self.confidence_head = ConfidenceHead(
+        self.confidence_head = confidence_head.ConfidenceHead(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
             **dataclasses.asdict(cfg.confidence_head),
         )
 
         # Kernel option
-        self.use_cuequiv_kernels: bool = False
+        self.use_kernel: bool = False
 
     @property
     def device(self) -> torch.device:
         return next(self.parameters()).device
-
-    @property
-    def lm(self) -> AtlasLM:
-        return self.lm_embedder.lm
 
     def set_forward_flags(
         self,
@@ -156,7 +177,7 @@ class AtlasFold(torch.nn.Module):
     ) -> None:
         """Set the flags for the forward pass."""
         if use_cuequiv_kernels is not None:
-            self.use_cuequiv_kernels = use_cuequiv_kernels
+            self.use_kernel = use_cuequiv_kernels
 
     # ==================================================
     # Inference
@@ -167,7 +188,7 @@ class AtlasFold(torch.nn.Module):
         batch: dict[str, torch.Tensor],
         num_recycles: int,
         mode: str,
-        sampling_config: SamplingConfig,
+        sampling_config: diffusion_head.SamplingConfig,
         compute_pae: bool = True,
         return_representations: bool = False,
         # Advanced options
@@ -183,7 +204,8 @@ class AtlasFold(torch.nn.Module):
             - "lm.input_ids": Tensor of shape (B, L+2) containing the input
                 token IDs for the language model, including special tokens.
             - "lm.pos_id": Tensor of shape (B, L+2) containing the positional
-                IDs for the language model.
+                IDs for the language model. Same to 1-based residue indices
+                for valid positions, where 0 for CLS and L+1 for SEP.
             - "lm.seq_id": Tensor of shape (B, L+2) containing the sequence
                 IDs for the language model, where padding positions are marked
                 with 0.
@@ -194,6 +216,8 @@ class AtlasFold(torch.nn.Module):
                 amino acid types.
             - "aatype_int": Tensor of shape (B, L) containing the amino acid type.
             - "res_idx": Tensor of shape (B, L) containing the residue indices.
+            - "seq_idx": Tensor of shape (B, L) containing the lm sequence indices
+                corresponding to each residue, where padding positions are marked with 0.
             - "seq_mask": Tensor of shape (B, L) containing boolean mask for valid
                 sequence positions (True for valid positions, False for padding).
             - "atom14_mask": Tensor of shape (B, L, 14) containing boolean mask for
@@ -242,16 +266,18 @@ class AtlasFold(torch.nn.Module):
             out["trunk.z"] = z
 
         # Run distogram head
-        distogram_out = self.run_distogram_head(z)
+        distogram_out = self.distogram_head(z)
         out["distogram.logits"] = distogram_out["logits"]
         out["distogram.boundaries"] = distogram_out["boundaries"]
 
         # Run diffusion heads
-        sample_coords = self.run_diffusion_head(batch, s, z, sampling_config)
+        sample_coords = self.diffusion_head.sample(batch, s, z, sampling_config)
         out["sample_coords"] = sample_coords
 
         # Run confidence head
-        confidence_out = self.run_confidence_head(batch, s, z, sample_coords, compute_pae)
+        confidence_out = self.confidence_head(
+            batch, s, z, sample_coords, compute_pae, self.use_kernel
+        )
         del s, z
 
         # Compute confidence metrics
@@ -311,7 +337,10 @@ class AtlasFold(torch.nn.Module):
         mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
 
         # Extract LM features
-        s_lm, z_lm = self.lm_embedder(batch, mlm_mask, train)
+        s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, train)
+        # Run LM module
+        mask = batch["seq_mask"]
+        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
         return s_lm, z_lm
 
     def run_trunk_base(
@@ -322,17 +351,16 @@ class AtlasFold(torch.nn.Module):
         train: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the trunk with shared LM features."""
-        mlm_prob = mlm_prob if mlm_prob is not None else 0.0
-
         # Sample a single MLM mask for all recycling steps
+        mlm_prob = mlm_prob if mlm_prob is not None else 0.0
         mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
 
         # Extract LM features
-        s_lm, z_lm = self.lm_embedder(batch, mlm_mask, train)
+        s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, train)
 
-        # Run LM stack
+        # Run LM module once and reuse the features for all recycling steps
         mask = batch["seq_mask"]
-        z_init = self.lm_stack(s_lm, z_lm, mask, self.use_cuequiv_kernels)
+        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
 
         # Recycling iteration with shared LM features
         z_prev = torch.zeros_like(z_lm)  # [B, L, L, c_z]
@@ -342,9 +370,9 @@ class AtlasFold(torch.nn.Module):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
                 # Recycling embedding
-                z = z_init + self.recycle_z(z_prev)
+                z = z_lm + self.recycle_z(z_prev)
                 # Run main stack
-                z = self.main_stack(z, mask, self.use_cuequiv_kernels)
+                z = self.main_stack(z, mask, self.use_kernel)
                 z_prev = z
         return s_lm, z
 
@@ -376,15 +404,15 @@ class AtlasFold(torch.nn.Module):
                 # For each recycle step, sample a MLM mask to extract new LM features.
                 mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
                 # Extract LM features with different MLM masks for each recycle step
-                s_lm, z_lm = self.lm_embedder(batch, mlm_mask, enable_grad)
+                s, z = self.run_lm_embedder(batch, mlm_mask, enable_grad)
                 # Run LM module
-                z = self.lm_stack(s_lm, z_lm, mask, self.use_cuequiv_kernels)
+                s, z = self.lm_stack(s, z, mask, self.use_kernel)
                 # Recycling
                 z += self.recycle_z(z_prev)
                 # Run main trunk
-                z = self.main_stack(z, mask, self.use_cuequiv_kernels)
+                z = self.main_stack(z, mask, self.use_kernel)
                 z_prev = z
-        return s_lm, z
+        return s, z
 
     def sample_mlm_mask(
         self,
@@ -392,7 +420,11 @@ class AtlasFold(torch.nn.Module):
         prob: float,
         synchronized: bool = True,
     ) -> torch.Tensor:
-        """Sample a random MLM mask for the input batch."""
+        """Sample a random MLM mask for the input batch.
+        NOTE: synchronized masking is used for inference to ensure that
+        the prediction is not changed by the batch size or the order of
+        the sequences in the batch.
+        """
         input_ids = batch["lm.input_ids"]  # [B, L+2]
         B, L = input_ids.shape
         shape = (1, L) if synchronized else (B, L)
@@ -402,29 +434,61 @@ class AtlasFold(torch.nn.Module):
         else:
             return torch.rand(shape, device=input_ids.device) < prob
 
-    def run_distogram_head(self, z: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Run the distogram head."""
-        return self.distogram_head(z)
-
-    def run_diffusion_head(
+    def run_lm_embedder(
         self,
         batch: dict[str, torch.Tensor],
-        s: torch.Tensor,
-        z: torch.Tensor,
-        sampling_config: SamplingConfig,
-    ) -> torch.Tensor:
-        """Run the diffusion head."""
-        return self.diffusion_head.sample(batch, s, z, sampling_config)
+        mlm_mask: torch.Tensor | None = None,
+        train: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Extract LM features and project them to single and pair representations."""
+        _add = partial(torch_utils.add, inplace=not train)
 
-    def run_confidence_head(
-        self,
-        batch: dict[str, torch.Tensor],
-        s: torch.Tensor,
-        z: torch.Tensor,
-        sample_coords: torch.Tensor,
-        compute_pae: bool = True,
-    ) -> dict[str, dict[str, torch.Tensor]]:
-        """Run the confidence head."""
-        return self.confidence_head(
-            batch, s, z, sample_coords, compute_pae, self.use_cuequiv_kernels
-        )
+        # Prepare LM inputs
+        input_ids = batch["lm.input_ids"]  # [B, Seq]
+        pos_id = batch["lm.pos_id"]  # [B, Seq]
+        seq_id = batch["lm.seq_id"]  # [B, Seq]
+
+        # Map sequence positions to amino acid indices
+        b_i = torch.arange(input_ids.shape[0], device=input_ids.device)
+        b_i_s, b_i_z = b_i[:, None], b_i[:, None, None]
+        row_s = batch["seq_idx"]  # [B, L]
+        row_z, col_z = row_s[:, :, None], row_s[:, None, :]
+
+        if mlm_mask is not None:
+            # Replace masked positions with the mask token ID
+            aa_idxs = torch.tensor(self.alphabet.aa_idxs, device=input_ids.device)
+            mlm_mask = mlm_mask & torch.isin(input_ids, aa_idxs[None, None, :])
+            input_ids = input_ids.masked_fill(mlm_mask, self.alphabet.mask_idx)
+
+        # Embed input tokens
+        with torch.no_grad():
+            x = self.lm.embed(input_ids)
+
+        # Initialize single and pair representations to accumulate
+        # hidden states and attention maps from all layers of the language model
+        B, L = batch["aatype"].shape[:2]
+        s = torch.zeros((B, L, self.lm.d_model), device=x.device, dtype=x.dtype)
+        z = torch.zeros((B, L, L, self.channel_z), device=x.device, dtype=x.dtype)
+
+        # Iterate language model layers and extract hidden states and attention maps
+        w = self.w_lm_emb.softmax(dim=0)  # [n_layers,]
+        for i, block in enumerate(self.lm.transformer.blocks):
+            with torch.no_grad():
+                x, attn = block(x, seq_id, pos_id, return_attn_logits=True)
+                attn = attn.moveaxis(1, -1)  # [B, Seq, Seq, n_heads]
+                _x = x[b_i_s, row_s, :]  # [B, L, d_model]
+                _attn = attn[b_i_z, row_z, col_z, :]  # [B, L, L, n_heads]
+            s = _add(s, w[i] * self.layernorm_lm_emb(_x))
+            z = _add(z, self.proj_lm_attn[i](_attn))
+
+        s = self.s_init(s)
+        s = _add(s, self.embed_aa(batch["aatype"]))  # [B, L, c_s]
+
+        z = self.z_init(z / math.sqrt(self.lm.n_layers))
+        z = _add(z, self.linear_rel_pos(batch["rel_pos"]))  # [B, L, L, c_z]
+
+        mask = batch["seq_mask"]  # [B, L]
+        pair_mask = mask[:, :, None] & mask[:, None, :]  # [B, L, L]
+        s = s * mask[:, :, None]
+        z = z * pair_mask[:, :, :, None]
+        return s, z

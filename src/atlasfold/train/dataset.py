@@ -53,7 +53,7 @@ class DatasetConfig:
     """
 
     name: str
-    data_dir: str
+    data_dir: str | None = None
     metadata_path: str | None = None
 
 
@@ -92,6 +92,8 @@ class LMDBDataset(torch.utils.data.Dataset):
         self.lm_alphabet: Alphabet = Alphabet()
 
         # Set path
+        if config.data_dir is None:
+            raise ValueError("data_dir is not specified in the config.")
         data_dir = pathlib.Path(config.data_dir)
         self.lmdb_path: str = str(data_dir / "structure.lmdb")
         if config.metadata_path is not None:
@@ -199,7 +201,7 @@ class TrainingDataset(LMDBDataset):
                             f"PLDDT is missing for entry {m['id']}; treating as 0."
                         )
                         plddt = 0.0
-                    w *= min(max(plddt, 50), 70) - 30
+                    w *= min(max(plddt - 30, 0), 40)
 
             return w
 
@@ -270,6 +272,8 @@ class TrainingDataset(LMDBDataset):
             - 'is_in_crop': Boolean mask indicating folding crop [L].
             - 'mask': Attention mask for valid tokens [L].
         """
+        # NOTE: We simply ensure that there is no missing residue.
+
         # Expand the crop indices to include neighboring residues
         seq_length = len(sequence)
         seq_crop_indices = self._expand_crop_indices_for_lm(crop_indices, seq_length)
@@ -278,15 +282,19 @@ class TrainingDataset(LMDBDataset):
         input_ids = np.array(self.lm_alphabet.encode(sequence, add_special_tokens=True))
         pos_id = np.arange(len(input_ids))
         seq_id = np.ones_like(input_ids, dtype=int)
-        is_in_crop = np.isin(pos_id, crop_indices + 1)  # Shift by 1 for BOS token
 
         # Crop the input IDs, positional IDs, and masks to the expanded crop indices
         lm_input = {
             "lm.input_ids": input_ids[seq_crop_indices],
             "lm.pos_id": pos_id[seq_crop_indices],
             "lm.seq_id": seq_id[seq_crop_indices],
-            "lm.is_in_crop": is_in_crop[seq_crop_indices],
         }
+
+        # Add sequence to aa mapping for the cropped sequence
+        is_in_crop = np.isin(crop_indices + 1, lm_input["lm.pos_id"])
+        seq_to_aa = np.where(is_in_crop)[0]
+        lm_input["lm.seq_to_aa"] = seq_to_aa
+
         return {k: torch.from_numpy(v) for k, v in lm_input.items()}
 
     def _expand_crop_indices_for_lm(

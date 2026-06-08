@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from atlasfold.model.network.block import PairStack
 from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
-from atlasfold.utils.torch_utils import gather_dim
+from atlasfold.utils.torch_utils import gather_dim, get_context_dtype
 
 
 def get_bin_centers(
@@ -93,22 +93,25 @@ class PredictedAlignedErrorHead(nn.Module):
 
     def __init__(
         self,
-        channel_s: int = 384,
-        channel_z: int = 128,
+        channel_z: int = 192,
         dropout_z: float = 0.25,
         num_blocks: int = 2,
         num_bins: int = 64,
+        blocks_per_ckpt: int | None = None,
     ):
+        super().__init__()
         self.num_bins: int = num_bins
         # Pair-to-pair updates only.
         self.stack: PairStack = PairStack(
-            channel_s=channel_s,
+            channel_s=0,
             channel_z=channel_z,
             dropout_z=dropout_z,
             num_blocks=num_blocks,
             single_to_pair=False,
+            pair_to_pair=True,
             pair_to_single=False,
             use_tri_attn=False,
+            blocks_per_ckpt=blocks_per_ckpt,
         )
         self.head = nn.Sequential(
             LayerNorm(channel_z),
@@ -117,18 +120,18 @@ class PredictedAlignedErrorHead(nn.Module):
 
     def forward(
         self,
-        s: torch.Tensor,
         z: torch.Tensor,
+        mask: torch.Tensor,
         use_cuequiv_kernels: bool = False,
     ) -> torch.Tensor:
         """Forward pass of predicted aligned error head module.
 
         Parameters
         ----------
-        s : torch.Tensor
-            The single representation, shape [B, L, c_s].
         z : torch.Tensor
             The pair representation, shape [B, L, L, c_z].
+        mask : torch.Tensor
+            The mask for valid residues, shape [B, L].
         use_cuequiv_kernels : bool, optional
             Whether to use cuEQUIV kernels, by default False.
 
@@ -137,8 +140,9 @@ class PredictedAlignedErrorHead(nn.Module):
         logits: torch.Tensor
             The predicted PAE logits, shape [B, L, L, num_bins].
         """
-        _, z = self.stack(s, z, mask=None, use_cuequiv_kernels=use_cuequiv_kernels)
-        return self.head(z)  # [B, L, L, num_bins]
+        _, z = self.stack(None, z, mask, use_cuequiv_kernels=use_cuequiv_kernels)
+        with torch.autocast(z.device.type, enabled=False):
+            return self.head(z.float())  # [B, L, L, num_bins]
 
 
 class ConfidenceHead(nn.Module):
@@ -147,9 +151,9 @@ class ConfidenceHead(nn.Module):
         channel_a: int = 384,
         channel_s: int = 768,
         channel_z: int = 196,
-        num_heads_attn: int = 12,
+        num_heads: int = 12,
         num_blocks: int = 4,
-        num_pae_blocks: int = 2,
+        num_pae_blocks: int = 4,
         dropout_s: float = 0.15,
         dropout_z: float = 0.25,
         # distogram bins
@@ -160,29 +164,31 @@ class ConfidenceHead(nn.Module):
         num_plddt_bins: int = 50,
         num_pae_bins: int = 64,
         max_pae_error: float = 32.0,
+        # for train
+        blocks_per_ckpt: int | None = None,
     ) -> None:
         super().__init__()
-        # Prepare single representation with amino acid identity features
-        self.layernorm_s = LayerNorm(channel_s)
-        self.linear_s = LinearNoBias(channel_s, channel_a, init="default")
-        self.embed_aa = LinearNoBias(21, channel_a)
+        self.proj_s = nn.Sequential(
+            LayerNorm(channel_s),
+            LinearNoBias(channel_s, channel_a),
+        )
+        self.embed_aa = LinearNoBias(21, channel_z)
 
         # Prepare pair representation with distogram features
         boundaries = torch.linspace(min_dist, max_dist, num_bins - 1)
         self.register_buffer("distogram_boundaries", boundaries, persistent=False)
         self.linear_distogram = LinearNoBias(num_bins, channel_z, init="default")
 
-        # Non-triangular stack without pair-to-pair updates
-        # PairProdDiff -> AttentionPairBias
+        # Attention stack for confidence prediction
         self.stack: PairStack = PairStack(
             channel_s=channel_a,
             channel_z=channel_z,
-            num_heads_attn=num_heads_attn,
+            num_heads_attn=num_heads,
             dropout_s=dropout_s,
             num_blocks=num_blocks,
-            single_to_pair=True,
+            single_to_pair=False,
             pair_to_pair=False,
-            pair_to_single=False,
+            pair_to_single=True,
         )
 
         self.plddt_head = PredictedLDDTHead(channel_a, num_plddt_bins)
@@ -190,11 +196,11 @@ class ConfidenceHead(nn.Module):
 
         # PAE head with pair-to-pair updates
         self.pae_head = PredictedAlignedErrorHead(
-            channel_s=channel_a,
             channel_z=channel_z,
             dropout_z=dropout_z,
             num_blocks=num_pae_blocks,
             num_bins=num_pae_bins,
+            blocks_per_ckpt=blocks_per_ckpt,
         )
 
         # Store PAE and lDDT binning parameters
@@ -226,8 +232,6 @@ class ConfidenceHead(nn.Module):
         compute_pae: bool, optional
             Whether to compute PAE logits, by default True.
             PAE computation is expensive, so it can be skipped if only plddt is needed.
-        use_compiled_model: bool
-            Whether to use the compiled model.
         use_cuequiv_kernels : bool, optional
             Whether to use cuEQUIV kernels, by default False.
 
@@ -245,12 +249,14 @@ class ConfidenceHead(nn.Module):
         s, z, x_pred = map(lambda x: x.detach(), (s, z, x_pred))
 
         # Get the device and dtype for computations
-        device = x_pred.device
+        device = s.device
+        dtype = get_context_dtype(device.type)
+        s, z = s.to(dtype, copy=True), z.to(dtype, copy=True)
 
-        # Prepare single representation with amino acid identity features
-        s = self.linear_s(self.layernorm_s(s))  # [B, L, c_a]
-        s = s + self.embed_aa(batch["aatype"])  # [B, L, c_a]
-        s = s.float()
+        s = self.proj_s(s)  # [B, L, c_a]
+
+        aa_emb = self.embed_aa(batch["aatype"])  # [B, L, c_z]
+        z = z + aa_emb[:, :, None, :] + aa_emb[:, None, :, :]
 
         # Prepare the mask
         mask = batch["seq_mask"]  # [B, L]
@@ -262,26 +268,24 @@ class ConfidenceHead(nn.Module):
             coords: torch.Tensor,
             compute_pae: bool = True,
         ) -> dict[str, torch.Tensor]:
-            # Copy s to avoid in-place modifications
-            s = s.to(torch.float32, copy=True)  # [B, L, c_a]
-
             # Prepare pair representation with distogram features
             cbeta_idx = batch["pseudo_beta"]  # [B, L]
             distogram = get_distogram(coords, cbeta_idx, self.distogram_boundaries)
             z = z + self.linear_distogram(distogram.to(z.dtype))  # [B, L, L, c_z]
 
             # Run the stack
-            s, z = self.stack(s, z, mask)
+            s, _ = self.stack(s, z, mask)
 
             # Compute the confidence logits
             logits = {}
             with torch.autocast(device.type, enabled=False):
+                s = s.float()
                 logits["plddt"] = self.plddt_head(s)
                 logits["experimentally_resolved"] = self.experimentally_resolved_head(s)
-            if compute_pae and self.pae_head is not None:
-                logits["pae"] = self.pae_head(
-                    s, z, use_cuequiv_kernels=use_cuequiv_kernels
-                )
+                if compute_pae:
+                    logits["pae"] = self.pae_head(
+                        z, mask, use_cuequiv_kernels=use_cuequiv_kernels
+                    )
             return logits
 
         B, N, L, _, _ = x_pred.shape

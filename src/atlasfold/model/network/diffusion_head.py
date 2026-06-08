@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from atlasfold.model.network.atom_layer import AtomDecoder, AtomEncoder
+from atlasfold.model.network.atom_attention import AtomDecoder, AtomEncoder
 from atlasfold.model.network.diffusion_transformer import (
     DiffusionTransformerStack,
     PairConditioning,
@@ -50,10 +50,12 @@ class DiffusionModule(nn.Module):
     def __init__(
         self,
         channel_a: int = 768,
-        channel_s: int = 384,
         channel_atom: int = 96,
-        num_heads: int = 12,
+        channel_cond: int = 384,
+        num_heads: int = 16,
         num_blocks: int = 12,
+        num_atom_heads: int = 2,
+        num_atom_blocks: int = 2,
         blocks_per_ckpt: int | None = None,
     ) -> None:
         """Initialize the diffusion module.
@@ -76,12 +78,14 @@ class DiffusionModule(nn.Module):
         """
         super().__init__()
         self.channel_a: int = channel_a
-        self.channel_s: int = channel_s
         self.num_blocks: int = num_blocks
+        self.channel_cond: int = channel_cond
         self.num_heads: int = num_heads
 
         # Atom attention encoder
-        self.atom_encoder = AtomEncoder(channel_atom, channel_s)
+        self.atom_encoder = AtomEncoder(
+            channel_atom, channel_cond, num_atom_heads, num_atom_blocks
+        )
 
         # Global transformer stack
         self.proj_q_to_a = nn.Sequential(
@@ -90,7 +94,7 @@ class DiffusionModule(nn.Module):
         )
         self.diffusion_transformer = DiffusionTransformerStack(
             channel_a=channel_a,
-            channel_cond=channel_s,
+            channel_cond=channel_cond,
             num_blocks=num_blocks,
             num_heads=num_heads,
             blocks_per_ckpt=blocks_per_ckpt,
@@ -102,7 +106,7 @@ class DiffusionModule(nn.Module):
             LinearNoBias(channel_a, 14 * channel_atom, init="default"),
         )
 
-        self.atom_decoder = AtomDecoder(channel_atom)
+        self.atom_decoder = AtomDecoder(channel_atom, num_atom_heads, num_atom_blocks)
 
     # === Main forward function for training === #
     def forward(
@@ -135,10 +139,10 @@ class DiffusionModule(nn.Module):
         # [B, N, L, 14, 3] -> [B, N, L, 14, c_atom] -> [B, N, L, c_a]
         with torch.autocast(r_noisy.device.type, enabled=False):
             # Encode atom positions with single conditioning
-            q = self.atom_encoder(batch, r_noisy, single_cond.float())
+            q, c = self.atom_encoder(batch, r_noisy, single_cond.float())
             # Pool atom representations to residue level
             a = self.proj_q_to_a(q.flatten(-2))
-            q_skip = q  # For skip connection to the atom decoder
+            q_skip, c_skip = q, c  # For skip connection to the atom decoder
 
         # Global transformer stack (bfloat16 context)
         # [B, N, L, c_a] -> [B, N, L, c_a]
@@ -156,7 +160,7 @@ class DiffusionModule(nn.Module):
             # Skip connection from the atom encoder
             q = q_skip + self.proj_a_to_q(a).unflatten(-1, (14, -1))
             # Decode to coordinates
-            r_update = self.atom_decoder(batch, q)
+            r_update = self.atom_decoder(batch, q, c_skip)
 
         return r_update
 
@@ -165,11 +169,14 @@ class DiffusionHead(nn.Module):
     def __init__(
         self,
         channel_a: int = 768,
-        channel_s: int = 384,
-        channel_z: int = 128,
-        channel_atom: int = 128,
+        channel_atom: int = 96,
+        channel_cond: int = 384,
+        channel_s: int = 768,
+        channel_z: int = 192,
         num_heads: int = 16,
-        num_blocks: int = 16,
+        num_blocks: int = 12,
+        num_atom_heads: int = 2,
+        num_atom_blocks: int = 2,
         # For training
         blocks_per_ckpt: int | None = None,
     ) -> None:
@@ -179,12 +186,14 @@ class DiffusionHead(nn.Module):
         ----------
         channel_a : int
             The single representation dimension.
+        channel_atom : int
+            The atom representation dimension.
+        channel_cond : int
+            The conditioning dimension for the diffusion module.
         channel_s : int
             The single conditioning dimension.
         channel_z : int
             The pair conditioning dimension.
-        channel_atom : int
-            The atom representation dimension.
         num_heads : int
             The number of attention heads.
         num_blocks : int
@@ -208,24 +217,22 @@ class DiffusionHead(nn.Module):
         self.sigma_data: float = SIGMA_DATA
 
         # Diffusion conditioning
-        self.single_conditioning = SingleConditioning(channel_s, dim_fourier=256)
+        self.single_conditioning = SingleConditioning(
+            channel_s, channel_cond, dim_fourier=256
+        )
         self.pair_conditioning = PairConditioning(channel_z)
 
         # Diffusion module
         self.score_model = DiffusionModule(
             channel_a=channel_a,
-            channel_s=channel_s,
             channel_atom=channel_atom,
+            channel_cond=channel_cond,
             num_heads=num_heads,
             num_blocks=num_blocks,
+            num_atom_heads=num_atom_heads,
+            num_atom_blocks=num_atom_blocks,
             blocks_per_ckpt=blocks_per_ckpt,
         )
-        self.is_compiled = False
-
-    def do_compile(self, **kwargs):
-        """Compile the trunk module."""
-        self.is_compiled = True
-        self.score_model: DiffusionModule = torch.compile(self.score_model, **kwargs)
 
     # ============================================================
     # EDM Pre-conditioning
@@ -255,7 +262,6 @@ class DiffusionHead(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         config: SamplingConfig,
-        use_compiled_model: bool = True,
     ) -> torch.Tensor:
         """Sample structures via diffusion sampling.
         See Section 3.7: Algorithm 18 of AlphaFold3 paper.
@@ -312,7 +318,6 @@ class DiffusionHead(nn.Module):
                 single_cond,
                 pair_bias,
                 chunk_size=config.chunk_size,
-                use_compiled_model=use_compiled_model,
             )
 
         # Gradually denoise
@@ -366,7 +371,6 @@ class DiffusionHead(nn.Module):
         single_cond: torch.Tensor,
         pair_bias: torch.Tensor,
         chunk_size: int | None = None,
-        use_compiled_model: bool = True,
     ) -> torch.Tensor:
         """Forward pass through the score model.
         See Section 3.7: Diffusion Module, Algorithm 20 of AlphaFold3 paper.
@@ -390,9 +394,6 @@ class DiffusionHead(nn.Module):
             Denoised atom coordinates. Shape (B, N, L, 14, 3).
         """
         B, N, L, _, _ = x_noisy.shape
-        score_model: DiffusionModule = self.score_model
-        if self.is_compiled and not use_compiled_model:
-            score_model = score_model._orig_mod
 
         c_in, c_skip, c_out = self.c_in(t_hat), self.c_skip(t_hat), self.c_out(t_hat)
 
@@ -400,14 +401,14 @@ class DiffusionHead(nn.Module):
         r_noisy = c_in * x_noisy
 
         if chunk_size is None:
-            r_update = score_model(batch, r_noisy, single_cond, pair_bias)
+            r_update = self.score_model(batch, r_noisy, single_cond, pair_bias)
         else:
             r_update = torch.zeros_like(r_noisy)
             for st in range(0, r_noisy.shape[1], chunk_size):
                 end = min(st + chunk_size, r_noisy.shape[1])
                 _r_noisy = r_noisy[:, st:end]
                 _single_cond = single_cond[:, st:end]
-                r_update[:, st:end] = score_model(
+                r_update[:, st:end] = self.score_model(
                     batch, _r_noisy, _single_cond, pair_bias
                 )
 

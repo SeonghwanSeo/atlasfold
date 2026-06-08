@@ -6,7 +6,7 @@ from atlasfold.model.network.block import PairBlock
 from atlasfold.utils.checkpointing import checkpoint_blocks
 
 
-class TriangularUpdateTrunk(torch.nn.Module):
+class TriangularUpdateStack(torch.nn.Module):
     """Main trunk of the AtlasFold model"""
 
     def __init__(
@@ -74,14 +74,14 @@ class TriangularUpdateTrunk(torch.nn.Module):
         return z
 
 
-class LMModule(torch.nn.Module):
+class LMStack(torch.nn.Module):
     """LM Module of the AtlasFold model"""
 
     def __init__(
         self,
         channel_s: int = 768,
         channel_z: int = 192,
-        num_heads_attn: int = 12,
+        num_heads: int = 12,
         dropout_z: float = 0.25,
         num_blocks: int = 4,
         blocks_per_ckpt: int | None = None,
@@ -92,15 +92,15 @@ class LMModule(torch.nn.Module):
                 PairBlock(
                     channel_s=channel_s,
                     channel_z=channel_z,
-                    num_heads_attn=num_heads_attn,
+                    num_heads_attn=num_heads,
                     dropout_z=dropout_z,
                     single_to_pair=True,
                     pair_to_pair=True,
-                    pair_to_single=(i < num_blocks - 1),
+                    pair_to_single=True,
                     use_tri_mul=True,
                     use_tri_attn=False,
                 )
-                for i in range(num_blocks)
+                for _ in range(num_blocks)
             ]
         )
         self.blocks_per_ckpt: int | None = blocks_per_ckpt
@@ -111,7 +111,7 @@ class LMModule(torch.nn.Module):
         z: torch.Tensor,
         mask: torch.Tensor,
         use_cuequiv_kernels: bool = False,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
         Parameters
@@ -127,6 +127,8 @@ class LMModule(torch.nn.Module):
 
         Returns
         -------
+        s : torch.Tensor
+            The updated single representations
         z: torch.Tensor
             The updated pair representations
         """
@@ -140,10 +142,10 @@ class LMModule(torch.nn.Module):
             )
             for b in self.blocks
         ]
-        _, z = checkpoint_blocks(
+        s, z = checkpoint_blocks(
             blocks,
             (s, z),
             self.blocks_per_ckpt,
             use_reentrant=False,
         )
-        return z
+        return s, z

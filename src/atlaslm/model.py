@@ -30,9 +30,9 @@ class AtlasLM(torch.nn.Module):
 
     def __init__(
         self,
-        d_model: int = 1152,
-        n_heads: int = 18,
-        n_layers: int = 36,
+        d_model: int = 2304,
+        n_heads: int = 36,
+        n_layers: int = 48,
     ) -> None:
         super().__init__()
         self.d_model: int = d_model

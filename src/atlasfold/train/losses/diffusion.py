@@ -2,9 +2,9 @@ from functools import partial
 
 import torch
 
+from atlasfold.train.kernels.cdist import cdist as kernel_cdist
 from atlasfold.utils.checkpointing import checkpoint_fn
 from atlasfold.utils.geometry.rigid_align import rigid_align
-from atlasfold.utils.kernels.cdist import cdist as kernel_cdist
 
 
 def safe_cdist(x: torch.Tensor, y: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:

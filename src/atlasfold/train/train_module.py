@@ -9,6 +9,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from torchmetrics import MeanMetric, MetricCollection
 
+from atlasfold.model import AtlasFoldConfig
 from atlasfold.model.network.diffusion_head import SamplingConfig
 from atlasfold.utils import structure_metrics
 
@@ -57,7 +58,7 @@ class OptimizerConfig:
     lr_decay_factor: float = 0.95
     # ema
     ema_decay: float = 0.999
-    ema_ignore_params: tuple[str] | None = ("lm_embedder.lm.",)
+    ema_ignore_params: tuple[str] | None = ("lm.",)
     ema_update_params: tuple[str] | None = None
     # multi-phase training
     load_opt_state_from_checkpoint: bool = True
@@ -133,7 +134,10 @@ class TrainingModule(pl.LightningModule):
         self.train_pae_head: bool = self.training_config.train_pae_head
 
         # Initialize model here
-        self.model: AtlasFoldForTrain = AtlasFoldForTrain(self.global_config.model)
+        model_cfg = OmegaConf.to_object(
+            OmegaConf.merge(AtlasFoldConfig, self.global_config.model)
+        )
+        self.model: AtlasFoldForTrain = AtlasFoldForTrain(model_cfg)
 
         # Freeze parts of the model if needed
         self.freeze_submodules()
@@ -144,7 +148,7 @@ class TrainingModule(pl.LightningModule):
 
         # Compile
         if self.compile_config.enabled:
-            self.model.compile_submodules(
+            self.model.compile_train(
                 mode=self.compile_config.mode, dynamic=self.compile_config.dynamic
             )
 
@@ -192,7 +196,8 @@ class TrainingModule(pl.LightningModule):
         module_groups = self.model.get_module_groups()
         for group in self.modules_to_freeze:
             for m in module_groups[group]:
-                m.eval()
+                if isinstance(m, torch.nn.Module):
+                    m.eval()
         return out
 
     def setup_losses(self):
@@ -289,11 +294,14 @@ class TrainingModule(pl.LightningModule):
             )
 
         else:
-            return self.model.sample_validation(
+            return self.model.inference(
                 batch,
                 num_recycles=num_recycles,
+                mode="base",
                 sampling_config=sampling_config,
-                diffusion_seed=42,
+                compute_pae=False,
+                return_representations=False,
+                mlm_prob=0.0,
             )
 
     def training_step(
@@ -516,14 +524,17 @@ class TrainingModule(pl.LightningModule):
         L_mse = (L_mse * w).sum() / n_valid_samples
         metrics["mse_loss"] = L_mse.detach()
 
-        L_smooth_lddt = self.smooth_lddt_loss.forward(
-            x_pred=pred["x_0_hat"],
-            x_gt=label["coordinates"],
-            mask=label["resolved_mask"],
-        )  # [B, N]
-        L_smooth_lddt = L_smooth_lddt.mean(-1)
-        L_smooth_lddt = (L_smooth_lddt * w).sum() / n_valid_samples
-        metrics["smooth_lddt_loss"] = L_smooth_lddt.detach()
+        if self.loss_weights["smooth_lddt"] > 0:
+            L_smooth_lddt = self.smooth_lddt_loss.forward(
+                x_pred=pred["x_0_hat"],
+                x_gt=label["coordinates"],
+                mask=label["resolved_mask"],
+            )  # [B, N]
+            L_smooth_lddt = L_smooth_lddt.mean(-1)
+            L_smooth_lddt = (L_smooth_lddt * w).sum() / n_valid_samples
+            metrics["smooth_lddt_loss"] = L_smooth_lddt.detach()
+        else:
+            L_smooth_lddt = 0.0
 
         # Mean over diffusion samples
         L_diffusion = L_mse + L_smooth_lddt
@@ -629,7 +640,7 @@ class TrainingModule(pl.LightningModule):
         model_state_dict = {
             k: p.clone().detach()
             for k, p in self.model.state_dict().items()
-            if not k.startswith("lm_embedder.lm.")
+            if not k.startswith("lm.")
         }
         self.stored_params = model_state_dict
         # Replace model parameters with EMA parameters
@@ -645,20 +656,12 @@ class TrainingModule(pl.LightningModule):
         # Remove pretrained model keys
         state_dict = checkpoint["state_dict"]
         state_dict = {
-            k: v
-            for k, v in state_dict.items()
-            if not k.startswith("model.lm_embedder.lm.")
+            k: v for k, v in state_dict.items() if not k.startswith("model.lm.")
         }
-        # Remove '._orig_mod.' from checkpoint keys
-        state_dict = self._remove_orig_mod_from_state_dict(state_dict)
         checkpoint["state_dict"] = state_dict
 
         # Add EMA state dict if EMA is used
         ema_state_dict = self.ema.state_dict()
-        # Remove '._orig_mod.' from EMA state dict keys
-        ema_state_dict["params"] = self._remove_orig_mod_from_state_dict(
-            ema_state_dict["params"]
-        )
         checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
@@ -676,44 +679,10 @@ class TrainingModule(pl.LightningModule):
         self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
     ):  # type: ignore[override]
         """Override load_state_dict to handle EMA state dict."""
-        # Remove '._orig_mod.' from state dict keys if present
-        state_dict = self._remove_orig_mod_from_state_dict(state_dict)
-        # Then, add '._orig_mod.' to state dict keys if required by the model
-        state_dict = self._add_orig_mod_to_state_dict(state_dict, self.state_dict())
         # Remove 'model.' prefix from state dict keys if present
         state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
         return self.model.load_state_dict(state_dict, strict=strict)
 
     def load_ema_state_dict(self, state_dict: Mapping[str, Any]):
         """Load EMA state dict."""
-        # Add '._orig_mod.' to EMA state dict keys if required by the model.
-        state_dict = self._add_orig_mod_to_state_dict(state_dict, self.ema.params)
         self.ema.load_state_dict(state_dict)
-
-    def _remove_orig_mod_from_state_dict(
-        self, state_dict: Mapping[str, Any]
-    ) -> Mapping[str, Any]:
-        """Remove '._orig_mod.' from state dict keys if present."""
-        return {
-            k.replace("._orig_mod.", ".") if "._orig_mod." in k else k: v
-            for k, v in state_dict.items()
-        }
-
-    def _add_orig_mod_to_state_dict(
-        self, state_dict: Mapping[str, Any], model_state_dict: Mapping[str, Any]
-    ) -> Mapping[str, Any]:
-        """Add '._orig_mod.' to state dict keys if required"""
-        model_keys = set(model_state_dict.keys())
-        state_keys = set(state_dict.keys())
-
-        # Keys expected by the compiled model but missing in the checkpoint
-        remaining_keys = model_keys - state_keys
-        if len(remaining_keys) == 0:
-            return state_dict  # No modification needed
-
-        new_state_dict = dict(state_dict)
-        for rk in remaining_keys:
-            k = rk.replace("._orig_mod.", ".")
-            if k in state_dict:
-                new_state_dict[rk] = new_state_dict.pop(k)
-        return new_state_dict

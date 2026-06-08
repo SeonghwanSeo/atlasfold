@@ -188,3 +188,107 @@ class SelfAttention(nn.Module):
             assert single_cond is not None
             a = torch.sigmoid(self.linear_ada_out(single_cond)) * a
         return a
+
+
+class CrossAttention(nn.Module):
+    def __init__(
+        self,
+        channel_a: int,
+        num_heads: int,
+        channel_cond: int | None,
+        *,
+        use_pair_bias: bool = True,
+        use_high_precision: bool = False,
+    ) -> None:
+        """Initialize the attention pair bias layer.
+
+        Parameters
+        ----------
+        channel_a : int
+            The atom/token dimension.
+        num_heads : int
+            The number of heads.
+        channel_cond : int | None
+            The single conditioning dimension.
+        use_pair_bias : bool
+            Whether to use attention pair bias.
+        """
+        super().__init__()
+        self.attn = Attention(channel_a, num_heads, use_high_precision)
+        self.linear_g = LinearNoBias(channel_a, channel_a, init="gating")
+
+        self.use_pair_bias: bool = use_pair_bias
+        self.use_conditioning: bool = channel_cond is not None
+
+        if self.use_conditioning:
+            assert channel_cond is not None
+            self.linear_o = LinearNoBias(channel_a, channel_a)
+            self.adaln_a_q = AdaLN(channel_a, channel_cond)
+            self.adaln_a_k = AdaLN(channel_a, channel_cond)
+            self.linear_ada_out = Linear(channel_cond, channel_a, init="gating_closed")
+        else:
+            self.linear_o = LinearNoBias(channel_a, channel_a, init="zero")
+            self.layernorm_a_q = LayerNorm(channel_a, create_offset=True)
+            self.layernorm_a_k = LayerNorm(channel_a, create_offset=True)
+
+    def forward(
+        self,
+        a_q: torch.Tensor,
+        a_k: torch.Tensor,
+        mask: torch.Tensor,
+        pair_bias: torch.Tensor | None = None,
+        single_cond_q: torch.Tensor | None = None,
+        single_cond_k: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Forward pass.
+
+        Parameters
+        ----------
+        a_q : torch.Tensor
+            The query input tensor (*, Lq, c_a).
+        a_k : torch.Tensor
+            The key/value input tensor (*, Lk, c_a).
+        mask : torch.Tensor
+            The attention mask tensor (*, Lk) or (*, Lq, Lk)
+        pair_bias : torch.Tensor | None
+            The attention bias tensor (*, H, Lq, Lk)
+        single_cond_q : torch.Tensor | None
+            The query single conditioning tensor (*, Lq, c_cond).
+        single_cond_k : torch.Tensor | None
+            The key/value single conditioning tensor (*, Lk, c_cond).
+
+
+        Returns
+        -------
+        a_q : torch.Tensor
+            The output query tensor. (*, W, Lq, c_a)
+        """
+        if self.use_conditioning:
+            assert single_cond_q is not None and single_cond_k is not None
+            a_q = self.adaln_a_q(a_q, single_cond_q)
+            a_k = self.adaln_a_k(a_k, single_cond_k)
+        else:
+            assert single_cond_q is None and single_cond_k is None
+            a_q = self.layernorm_a_q(a_q)
+            a_k = self.layernorm_a_k(a_k)
+
+        if self.use_pair_bias:
+            assert pair_bias is not None
+        else:
+            assert pair_bias is None
+
+        if mask.ndim == a_q.ndim - 1:
+            mask = mask.unsqueeze(-2)  # [*, Lk] -> [*, 1, Lk]
+
+        # Prepare attention pair bias input
+        # [*, W, Lq/k, c] -> [*, W, H, Lq/k, c_h]
+        out = self.attn(a_q, a_k, mask, pair_bias)  # [*, Lq, c]
+
+        # Gate output
+        g = torch.sigmoid(self.linear_g(a_q))  # [*, Lq, c]
+        a_q = self.linear_o(g * out)  # [*, Lq, c]
+
+        if self.use_conditioning:
+            assert single_cond_q is not None
+            a_q = torch.sigmoid(self.linear_ada_out(single_cond_q)) * a_q
+        return a_q

@@ -1,11 +1,11 @@
 import math
-from functools import partial
 
 import einops
 import torch
 import torch.nn as nn
 
-from atlasfold.model.network.misc import relative_position_encoding
+from atlasfold.model.network.attention import CrossAttention, SelfAttention
+from atlasfold.model.network.misc import LocalAttentionIndex, relative_position_encoding
 from atlasfold.model.network.primitives import (
     AdaLN,
     LayerNorm,
@@ -15,9 +15,6 @@ from atlasfold.model.network.primitives import (
     Transition,
 )
 from atlasfold.utils.checkpointing import checkpoint_blocks
-from atlasfold.utils.torch_utils import add
-
-from .attention import SelfAttention
 
 
 class FourierEmbedding(nn.Module):
@@ -65,17 +62,24 @@ class SingleConditioning(nn.Module):
     See Section 3.7 Algorithm 21 Diffusion Conditioning in the AF3 paper.
     """
 
-    def __init__(self, channel_s: int = 384, dim_fourier: int = 256):
+    def __init__(
+        self,
+        channel_s: int = 768,
+        channel_cond: int = 384,
+        dim_fourier: int = 256,
+    ):
         super().__init__()
-        self.layernorm = LayerNorm(channel_s, create_offset=False)
-        self.linear = LinearNoBias(channel_s, channel_s, init="default")
-        self.embedding_aa = LinearNoBias(21, channel_s)
+        self.proj_single_cond = nn.Sequential(
+            LayerNorm(channel_s, create_offset=False),
+            LinearNoBias(channel_s, channel_cond, init="default"),
+        )
+        self.embedding_aa = LinearNoBias(21, channel_cond)
 
         self.fourier_embed = FourierEmbedding(dim_fourier)
         self.layernorm_fourier = LayerNorm(dim_fourier, create_offset=False)
-        self.linear_fourier = LinearNoBias(dim_fourier, channel_s, init="default")
+        self.linear_fourier = LinearNoBias(dim_fourier, channel_cond, init="default")
         self.transitions = nn.ModuleList(
-            [Transition(channel_s, expansion_factor=2) for _ in range(2)]
+            [Transition(channel_cond, expansion_factor=2) for _ in range(2)]
         )
 
     def forward(
@@ -98,12 +102,10 @@ class SingleConditioning(nn.Module):
         cond : torch.Tensor
             Tensor of shape (B, N, L, c_s) containing conditioned single embeddings.
         """
-        _add = partial(add, inplace=not self.training)
-
-        s = self.linear(self.layernorm(s))  # [B, L, c_s]
+        s = self.proj_single_cond(s)  # [B, L, c_s]
 
         # Embed residue type
-        s = _add(s, self.embedding_aa(batch["aatype"]))  # [B, L, c_s]
+        s = s + self.embedding_aa(batch["aatype"])  # [B, L, c_s]
 
         # Embed fourier embedding of noise level
         fourier_embed = self.fourier_embed(c_noise)  # [B, N, d_fourier]
@@ -112,7 +114,7 @@ class SingleConditioning(nn.Module):
 
         # Apply transitions
         for transition in self.transitions:
-            s = _add(s, transition(s))
+            s = s + transition(s)
         return s
 
 
@@ -158,8 +160,6 @@ class PairConditioning(nn.Module):
         pair_bias : torch.Tensor
             Tensor of shape (n_block, B, n_head, L, L) containing attention bias.
         """
-        _add = partial(add, inplace=not self.training)
-
         # Concatenate relative positional encoding
         rel_pos = relative_position_encoding(
             batch["res_idx"], batch["asym_id"], batch["entity_id"], batch["sym_id"]
@@ -169,7 +169,7 @@ class PairConditioning(nn.Module):
 
         # Apply transitions
         for transition in self.transitions:
-            z = _add(z, transition(z))
+            z = z + transition(z)
 
         # Convert to attention bias
         pair_bias = self.linear_bias(self.layernorm_bias(z))
@@ -327,3 +327,176 @@ class DiffusionTransformerBlock(nn.Module):
         else:
             a = a + self.transition(a)
         return a
+
+
+# ============================================================
+# Local attention transformer (atom-level)
+# ============================================================
+class AtomTransformerStack(nn.Module):
+    """Diffusion Transformer Stack with Local Attention."""
+
+    def __init__(
+        self,
+        channel_a: int,
+        channel_cond: int,
+        num_heads: int,
+        num_blocks: int,
+        use_pair_bias: bool = True,
+    ):
+        """Initialize the diffusion transformer.
+
+        Parameters
+        ----------
+        channel_a : int
+            The single representation dimension.
+        channel_cond : int
+            The single conditioning dimension.
+        num_heads : int
+            The number of heads.
+        num_blocks : int
+            The number of blocks.
+        use_pair_bias : bool, optional
+            Whether to use pair bias in attention, by default True
+        """
+        super().__init__()
+        self.blocks = nn.ModuleList(
+            [
+                AtomTransformerBlock(channel_a, channel_cond, num_heads, use_pair_bias)
+                for _ in range(num_blocks)
+            ]
+        )
+
+    def forward(
+        self,
+        a: torch.Tensor,
+        mask: torch.Tensor,
+        local_attn_index: LocalAttentionIndex,
+        single_cond: torch.Tensor,
+        pair_bias: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """See Section 3.7 Algorithm 23 Diffusion Transformer
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            The single representation tensor (*, L, 14, c_a)
+        mask : torch.Tensor
+            The attention mask tensor (*, L, 14)
+        local_attn_index : LocalAttentionIndex
+            The local attention index
+        single_cond : torch.Tensor
+            The single conditioning tensor (*, L, 14, c_cond)
+        pair_bias : torch.Tensor | None
+            The pair bias tensor (num_blocks, *, num_heads, Lq, 14, Lk, L14)
+
+        Returns
+        -------
+        a : torch.Tensor
+            The output single representation tensor (*, L, 14, c_a)
+        """
+        # Create attention mask for local attention
+        attn_mask = local_attn_index.attn_mask  # [*, W, Lq, Lk]
+        # Expand attention mask to atom level
+        attn_mask = einops.repeat(attn_mask, "... Q K -> ... (Q 14) (K 14)")
+
+        # Apply input mask to attention mask
+        mask_k = local_attn_index.to_k(mask, dim=-2)  # [*, W, Lk, 14]
+        attn_mask &= einops.rearrange(mask_k, "... W K 14 -> ... W 1 (K 14)")
+
+        # Create windowed q/k for local attention
+        # [*, L, 14, c_cond] -> [*, W, Lq/Lk, 14, c_cond]
+        single_cond_q, single_cond_k = local_attn_index(single_cond, dim=-3)
+        # [*, W, Lq/Lk, 14, c_cond] -> [*, W, Nq/Nk, c_cond]
+        single_cond_q, single_cond_k = map(
+            lambda x: einops.rearrange(x, "... W L 14 c -> ... W (L 14) c"),
+            (single_cond_q, single_cond_k),
+        )
+
+        W, Lq = local_attn_index.W, local_attn_index.Lq
+        for i, block in enumerate(self.blocks):
+            # [*, L, 14, c_a] -> [*, W, Lq/Lk, 14, c_a]
+            a_q, a_k = local_attn_index(a, dim=-3)
+            # [*, W, Lq/Lk, 14, c_a] -> [*, W, Nq/Nk, c_a]
+            a_q, a_k = map(
+                lambda x: einops.rearrange(x, "... W L 14 c -> ... W (L 14) c"),
+                (a_q, a_k),
+            )
+            # Apply attention block
+            pair_bias_i = pair_bias[i] if pair_bias is not None else None
+            a_q = block(a_q, a_k, attn_mask, single_cond_q, single_cond_k, pair_bias_i)
+            # [*, W, Nq, c_a] -> [*, L, 14, c_a]
+            a = einops.rearrange(a_q, "... W (Q 14) c -> ... (W Q) 14 c", Q=Lq, W=W)
+        return a
+
+
+class AtomTransformerBlock(nn.Module):
+    def __init__(
+        self,
+        channel_a: int,
+        channel_cond: int | None,
+        num_heads: int,
+        use_pair_bias: bool = True,
+    ):
+        """Initialize the diffusion transformer block.
+
+        Parameters
+        ----------
+        channel_a : int
+            The single representation dimension.
+        channel_cond : int
+            The single conditioning dimension.
+        num_heads : int
+            The number of heads.
+        use_pair_bias : bool, optional
+            Whether to use pair bias in attention, by default True
+        """
+        super().__init__()
+        self.use_conditioning = channel_cond is not None
+        self.attention = CrossAttention(
+            channel_a, num_heads, channel_cond, use_pair_bias=use_pair_bias
+        )
+        if self.use_conditioning:
+            assert channel_cond is not None
+            self.transition = ConditionedTransitionBlock(channel_a, channel_cond)
+        else:
+            self.transition = Transition(channel_a, expansion_factor=2)
+
+    def forward(
+        self,
+        a_q: torch.Tensor,
+        a_k: torch.Tensor,
+        mask: torch.Tensor,
+        single_cond_q: torch.Tensor,
+        single_cond_k: torch.Tensor,
+        pair_bias: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """See Section 3.7 Algorithm 23 Diffusion Transformer
+
+        Parameters
+        ----------
+        a_q : torch.Tensor
+            The query single representation tensor (*, Lq, c_a)
+        a_k : torch.Tensor
+            The key single representation tensor (*, Lk, c_a)
+        mask : torch.Tensor
+            The attention mask tensor (*, Lk)
+        pair_bias : torch.Tensor | None
+            The pair bias tensor (*, n_head, Lq, Lk)
+        cond_q : torch.Tensor
+            The single conditioning tensor (*, Lq, c_s)
+        cond_k : torch.Tensor
+            The key single conditioning tensor (*, Lk, c_s)
+
+        Returns
+        -------
+        a_q : torch.Tensor
+            The output single representation tensor (*, Lq, c_a)
+        """
+        a_q = a_q + self.attention(
+            a_q, a_k, mask, pair_bias, single_cond_q, single_cond_k
+        )
+        if self.use_conditioning:
+            a_q = a_q + self.transition(a_q, single_cond_q)
+        else:
+            a_q = a_q + self.transition(a_q)
+        return a_q
