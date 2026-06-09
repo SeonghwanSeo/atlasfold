@@ -177,6 +177,7 @@ class DiffusionHead(nn.Module):
         num_blocks: int = 12,
         num_atom_heads: int = 2,
         num_atom_blocks: int = 2,
+        multimer: bool = False,
         # For training
         blocks_per_ckpt: int | None = None,
     ) -> None:
@@ -220,7 +221,9 @@ class DiffusionHead(nn.Module):
         self.single_conditioning = SingleConditioning(
             channel_s, channel_cond, dim_fourier=256
         )
-        self.pair_conditioning = PairConditioning(channel_z)
+        self.pair_conditioning = PairConditioning(
+            channel_z, (num_heads, num_blocks), multimer=multimer
+        )
 
         # Diffusion module
         self.score_model = DiffusionModule(

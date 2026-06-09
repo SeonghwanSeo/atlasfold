@@ -9,7 +9,7 @@ class DistogramLoss(torch.nn.Module):
         logits: torch.Tensor,
         boundaries: torch.Tensor,
         x_gt: torch.Tensor,
-        mask: torch.Tensor,
+        mask_gt: torch.Tensor,
         cbeta_idx: torch.Tensor,
     ) -> torch.Tensor:
         """Compute the  distogram loss.
@@ -23,7 +23,7 @@ class DistogramLoss(torch.nn.Module):
             the distogram.
         x_gt : torch.Tensor
             Tensor of shape (B, L, 14, 3) containing ground truth coordinates.
-        mask : torch.Tensor
+        mask_gt : torch.Tensor
             Tensor of shape (B, L, 14) containing boolean mask for valid coordinates.
         cbeta_idx : torch.Tensor
             Tensor of shape (B, L) containing the index of the C-beta atom
@@ -37,7 +37,7 @@ class DistogramLoss(torch.nn.Module):
 
         # Gather the C-beta atom coordinates and mask (CB, or CA for Gly)
         x_gt_beta = index_select_dim(x_gt, dim=-2, index=cbeta_idx)  # [B, L, 3]
-        mask_beta = index_select_dim(mask, dim=-1, index=cbeta_idx)  # [B, L]
+        mask_beta = index_select_dim(mask_gt, dim=-1, index=cbeta_idx)  # [B, L]
 
         # NOTE: This doesn't require backprop, so use norm().
         d_beta = (x_gt_beta[..., None, :, :] - x_gt_beta[..., :, None, :]).norm(-1)

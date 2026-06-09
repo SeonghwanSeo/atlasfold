@@ -38,7 +38,7 @@ def pad_input(
     return {k: pad_fn(v) for k, v in data.items()}
 
 
-@dataclasses.dataclass(slots=True)
+@dataclasses.dataclass(slots=True, kw_only=True)
 class DatasetConfig:
     """Configuration for the training dataset.
 
@@ -48,7 +48,7 @@ class DatasetConfig:
         Name of the dataset, e.g., "pdb", "afdb"
     data_dir: str
         Path to the preprocessed data directory.
-    metadata_path: str | str
+    metadata_path: str | None
         Path to the custom metadata file in msgpack format.
     """
 
@@ -57,7 +57,7 @@ class DatasetConfig:
     metadata_path: str | None = None
 
 
-@dataclasses.dataclass(slots=True)
+@dataclasses.dataclass(slots=True, kw_only=True)
 class TrainingDatasetConfig(DatasetConfig):
     """Configuration for the training dataset.
 
@@ -66,21 +66,17 @@ class TrainingDatasetConfig(DatasetConfig):
     is_distillation: bool
         Whether the dataset is for distillation,
         i.e., using predicted structures as labels.
-    max_length: int
-        Maximum sequence length for the folding model input (default: 256).
-    max_seq_length: int
-        Maximum sequence length for the language model input (default: 384).
     sampling_strategy: str
         Strategy for sampling training examples.
     """
 
-    is_distillation: bool
     weight: float
+    is_distillation: bool = True
     filters: list[dict] = dataclasses.field(default_factory=list)
     sampling_strategy: tuple[str, ...] = ("length",)
 
 
-@dataclasses.dataclass(slots=True)
+@dataclasses.dataclass(slots=True, kw_only=True)
 class ValidationDatasetConfig(DatasetConfig):
     """Configuration for the validation dataset."""
 
@@ -99,7 +95,7 @@ class LMDBDataset(torch.utils.data.Dataset):
         if config.metadata_path is not None:
             self.metadata_path = config.metadata_path
         else:
-            self.metadata_path = str(data_dir / "metadata.msgpack")
+            self.metadata_path = str(data_dir / "manifest.msgpack")
 
         # Load metadatas
         with open(self.metadata_path, "rb") as f:
@@ -149,7 +145,7 @@ class TrainingDataset(LMDBDataset):
 
         self.sampling_strategy = config.sampling_strategy
         for strategy in config.sampling_strategy:
-            if strategy not in ("length", "cluster"):
+            if strategy not in ("length", "cluster", "plddt"):
                 raise ValueError(f"Invalid sampling strategy: {strategy}")
         self.filters = config.filters
         for filter_info in config.filters:
@@ -186,10 +182,14 @@ class TrainingDataset(LMDBDataset):
             w = 1.0
             for strategy in self.sampling_strategy:
                 if strategy == "length":
-                    length = m["length"]
+                    length = m["num_residues"]
                     w *= min(max(length, 256), 512)
                 elif strategy == "cluster":
-                    cluster_size = m["cluster_size"]
+                    try:
+                        cluster_size = m["cluster_size"]
+                    except KeyError as e:
+                        print(self.name, m)
+                        raise e
                     if cluster_size == 0:
                         self.logger.warning(f"Cluster size is 0 for entry {m['id']}.")
                         cluster_size = 1
@@ -220,82 +220,43 @@ class TrainingDataset(LMDBDataset):
         m = metadata.Metadata.from_dict(metadata_dict)
         prot = self.fetch_protein(m.id)
 
-        feat = self.prepare_folding_input(prot.sequence)
+        feat = featurize.featurize(prot.sequence)
         label = self.prepare_labels(prot)
         loss_mask = self.prepare_loss_masks(m)
 
-        # Crop the input and label if the sequence length exceeds the maximum length.
+        fold_input = {k: v for k, v in feat.items() if not k.startswith("lm.")}
+        lm_input = {k: v for k, v in feat.items() if k.startswith("lm.")}
+
+        # Crop the folding input and label to the maximum length.
         crop_indices = self.cropper.crop(prot, self.max_length, rng)
-        folding_input = {k: v[crop_indices] for k, v in feat.items()}
+        fold_input = {k: v[crop_indices] for k, v in fold_input.items()}
         label = {k: v[crop_indices] for k, v in label.items()}
 
         # Prepare the LM input with expanded crop indices and BOS/EOS tokens.
-        lm_input = self.prepare_lm_input(prot.sequence, crop_indices)
+        lm_crop_indices = self._expand_crop_indices_for_lm(crop_indices, len(prot))
+        lm_input = {k: v[lm_crop_indices] for k, v in lm_input.items()}
+
+        # Add lm to fold input mapping manually since the LM input are
+        # cropped with expanded indices.
+        is_in_crop = np.isin(lm_input["lm.pos_id"], fold_input["res_idx"])
+        seq_tok_idx = np.where(is_in_crop)[0]
+        fold_input["seq_tok_idx"] = seq_tok_idx
+
+        # Convert to torch tensors.
+        fold_input = {k: torch.from_numpy(v) for k, v in fold_input.items()}
+        lm_input = {k: torch.from_numpy(v) for k, v in lm_input.items()}
+        label = {k: torch.from_numpy(v) for k, v in label.items()}
+        loss_mask = {k: torch.tensor(v) for k, v in loss_mask.items()}
 
         # Pad the input and label to the maximum length.
-        folding_input = pad_input(folding_input, max_length=self.max_length)
+        fold_input = pad_input(fold_input, max_length=self.max_length)
         label = pad_input(label, max_length=self.max_length)
         lm_input = pad_input(lm_input, max_length=self.max_seq_length)
         return {
-            "feat": {**folding_input, **lm_input},
+            "feat": {**fold_input, **lm_input},
             "label": label,
             "loss_mask": loss_mask,
         }
-
-    def prepare_folding_input(self, sequence: str) -> dict[str, torch.Tensor]:
-        """Prepare the folding model input features."""
-        # PLM input features will be prepared separately in prepare_lm_input.
-        feat = {k: torch.from_numpy(v) for k, v in featurize.featurize(sequence)}
-        return {k: v for k, v in feat.items() if not k.startswith("lm.")}
-
-    def prepare_lm_input(
-        self,
-        sequence: str,
-        crop_indices: np.ndarray,
-    ) -> dict[str, torch.Tensor]:
-        """Get the indices of the sequence tokens to include in the crop,
-        expand margins if space allows, and append BOS/EOS tokens.
-
-        Parameters
-        ----------
-        sequence: str
-            The amino acid sequence of the protein.
-        crop_indices: np.ndarray
-            The indices selected by the structure cropper.
-
-        Returns
-        -------
-        dict[str, torch.Tensor]
-            A dictionary containing:
-            - 'input_ids': Tokenized sequence including BOS/EOS [L].
-            - 'pos_id': Positional indices for the tokens [L].
-            - 'is_in_crop': Boolean mask indicating folding crop [L].
-            - 'mask': Attention mask for valid tokens [L].
-        """
-        # NOTE: We simply ensure that there is no missing residue.
-
-        # Expand the crop indices to include neighboring residues
-        seq_length = len(sequence)
-        seq_crop_indices = self._expand_crop_indices_for_lm(crop_indices, seq_length)
-
-        # Create the input IDs with BOS/EOS tokens
-        input_ids = np.array(self.lm_alphabet.encode(sequence, add_special_tokens=True))
-        pos_id = np.arange(len(input_ids))
-        seq_id = np.ones_like(input_ids, dtype=int)
-
-        # Crop the input IDs, positional IDs, and masks to the expanded crop indices
-        lm_input = {
-            "lm.input_ids": input_ids[seq_crop_indices],
-            "lm.pos_id": pos_id[seq_crop_indices],
-            "lm.seq_id": seq_id[seq_crop_indices],
-        }
-
-        # Add sequence to aa mapping for the cropped sequence
-        is_in_crop = np.isin(crop_indices + 1, lm_input["lm.pos_id"])
-        seq_to_aa = np.where(is_in_crop)[0]
-        lm_input["lm.seq_to_aa"] = seq_to_aa
-
-        return {k: torch.from_numpy(v) for k, v in lm_input.items()}
 
     def _expand_crop_indices_for_lm(
         self,
@@ -351,22 +312,16 @@ class TrainingDataset(LMDBDataset):
 
         return np.where(seq_crop_mask)[0]
 
-    def prepare_labels(self, prot: protein.Protein) -> dict[str, torch.Tensor]:
+    def prepare_labels(self, prot: protein.Protein) -> dict[str, np.ndarray]:
         """Prepare the label tensors for training."""
         # Extract the coordinates and the mask for resolved residues.
-        coords = torch.from_numpy(prot.coordinates)  # [L, 14, 3]
-        resolved_mask = coords.isfinite().all(dim=-1)  # [L, 14]
-        return {
-            "coordinates": coords,
-            "resolved_mask": resolved_mask,
-        }
+        coords = prot.coordinates  # [L, 14, 3]
+        resolved_mask = np.isfinite(coords).all(axis=-1)  # [L, 14]
+        return {"coordinates": coords, "resolved_mask": resolved_mask}
 
-    def prepare_loss_masks(self, m: metadata.Metadata) -> dict[str, torch.Tensor]:
+    def prepare_loss_masks(self, m: metadata.Metadata) -> dict[str, bool]:
         """Prepare the confidence mask for training."""
-        distogram_loss = True
-        diffusion_loss = True
         confidence_loss = False
-
         # Train confidence head only on high-quality X-ray crystal/Cyro-EM structures
         # NMR structures have resolution value of None or 0.0.
         if not self.config.is_distillation:
@@ -375,9 +330,7 @@ class TrainingDataset(LMDBDataset):
             if resolution is not None and 0.1 <= resolution <= 3.0:
                 confidence_loss = True
         return {
-            "distogram": torch.tensor(distogram_loss),
-            "diffusion": torch.tensor(diffusion_loss),
-            "confidence": torch.tensor(confidence_loss),
+            "confidence": confidence_loss,
         }
 
 
@@ -425,9 +378,12 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
 
 class ValidationDataset(LMDBDataset):
     def __init__(self, config: ValidationDatasetConfig):
-        super().__init__(config.metadata_path, config.lmdb_path)
+        super().__init__(config)
         self.config = config
         self.name = config.name
+
+        # Sort the metadatas by sequence length for efficient batching
+        self.metadatas.sort(key=lambda m: m["num_residues"])
 
     def __getitem__(
         self,
@@ -437,9 +393,12 @@ class ValidationDataset(LMDBDataset):
         m = metadata.Metadata.from_dict(metadata_dict)
         prot = self.fetch_protein(m.id)
 
+        # NOTE: For validation, we directly use lm features from featurization.
         feat = featurize.featurize(prot.sequence)
-        feat = {k: torch.from_numpy(v) for k, v in feat.items()}
         label = self.prepare_labels(prot)
+
+        feat = {k: torch.from_numpy(v) for k, v in feat.items()}
+        label = {k: torch.from_numpy(v) for k, v in label.items()}
 
         # Pad the input and label to multiple of 32.
         return {
@@ -447,12 +406,9 @@ class ValidationDataset(LMDBDataset):
             "label": pad_input(label, multiple_of=32),
         }
 
-    def prepare_labels(self, prot: protein.Protein) -> dict[str, torch.Tensor]:
+    def prepare_labels(self, prot: protein.Protein) -> dict[str, np.ndarray]:
         """Prepare the label tensors for training."""
         # Extract the coordinates and the mask for resolved residues.
-        coords = torch.from_numpy(prot.coordinates)  # [L, 14, 3]
-        resolved_mask = coords.isfinite().all(dim=-1)  # [L, 14]
-        return {
-            "coordinates": coords,
-            "resolved_mask": resolved_mask,
-        }
+        coords = prot.coordinates  # [L, 14, 3]
+        resolved_mask = np.isfinite(coords).all(axis=-1)  # [L, 14]
+        return {"coordinates": coords, "resolved_mask": resolved_mask}

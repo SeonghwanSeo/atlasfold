@@ -73,12 +73,15 @@ def featurize(
 
     # Create masks
     seq_mask = np.ones(length, dtype=bool)
-    atom14_mask = residue_utils.restype_atom14_mask[aatype_onehot]
-    atom37_mask = residue_utils.restype_atom37_mask[aatype_onehot]
+    atom14_mask = residue_utils.restype_atom14_mask[aatype]
+    atom37_mask = residue_utils.restype_atom37_mask[aatype]
 
     # Get the pseudo-beta index (CB for most residues, CA for glycine)
     cbeta_idx = np.full((length,), 4, dtype=np.int64)  # CB: index=4
     cbeta_idx[aatype == residue_utils.restype_orders["G"]] = 1
+
+    # Add lm input to folding input mapping
+    seq_tok_idx = np.arange(1, length + 1, dtype=np.int64)
 
     folding_input = {
         "entity_id": entity_id,  # [L]
@@ -87,11 +90,13 @@ def featurize(
         "aatype": aatype_onehot,  # [L, 21]
         "aatype_int": aatype,  # [L]
         "res_idx": res_idx,  # [L]
+        "seq_tok_idx": seq_tok_idx,  # [L]
         "seq_mask": seq_mask,  # [L]
         "atom14_mask": atom14_mask,  # [L, 14]
         "atom37_mask": atom37_mask,  # [L, 37]
         "pseudo_beta": cbeta_idx,  # [L]
     }
+
     return {**lm_input, **folding_input}
 
 

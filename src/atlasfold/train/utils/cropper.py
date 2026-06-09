@@ -7,8 +7,8 @@ from atlasfold.utils.misc import spawn_rng
 class ProteinCropper:
     def __init__(
         self,
-        prob_contiguous: float = 0.6,
-        prob_spatial: float = 0.2,
+        prob_contiguous: float = 0.2,
+        prob_spatial: float = 0.6,
         prob_multi_contiguous: float = 0.2,
         max_num_segments: int = 4,
         min_segment_length: int = 32,

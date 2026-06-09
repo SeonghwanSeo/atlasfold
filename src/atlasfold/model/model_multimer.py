@@ -6,6 +6,7 @@ from functools import partial
 
 import torch
 
+from atlasfold.model.model import AtlasFoldConfig
 from atlasfold.model.network import confidence_head, diffusion_head, distogram_head, trunk
 from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
 from atlasfold.model.network.rel_pos_encoding import RelativePositionEncoding
@@ -13,71 +14,6 @@ from atlasfold.model.utils import confidence_metrics
 from atlasfold.utils import torch_utils
 from atlaslm.model import AtlasLM
 from atlaslm.pretrained import load_model
-
-
-@dataclasses.dataclass(kw_only=True)
-class TrunkConfig:
-    dropout_z: float = 0.25
-    num_heads: int = 12
-    num_lm_blocks: int = 4
-    num_blocks: int = 48
-    blocks_per_ckpt: int | None = None
-
-
-@dataclasses.dataclass(kw_only=True)
-class DiffusionHeadConfig:
-    channel_a: int = 768
-    channel_atom: int = 96
-    channel_cond: int = 384
-    num_heads: int = 16
-    num_blocks: int = 12
-    num_atom_heads: int = 2
-    num_atom_blocks: int = 3
-    blocks_per_ckpt: int | None = None
-
-
-@dataclasses.dataclass(kw_only=True)
-class DistogramHeadConfig:
-    num_bins: int = 64
-    min_dist: float = 2.0
-    max_dist: float = 22.0
-
-
-@dataclasses.dataclass(kw_only=True)
-class ConfidenceHeadConfig:
-    channel_a: int = 384
-    num_heads: int = 12
-    dropout_s: float = 0.15
-    dropout_z: float = 0.25
-    num_blocks: int = 2
-    num_pae_blocks: int = 2
-    num_bins: int = 39
-    min_dist: float = 3.25
-    max_dist: float = 50.75
-    max_pae_error: float = 32.0
-    num_pae_bins: int = 64
-    num_plddt_bins: int = 50
-    blocks_per_ckpt: int | None = None
-
-
-@dataclasses.dataclass(kw_only=True)
-class AtlasFoldConfig:
-    name: str = "atlasfold-base"
-    lm_name: str = "atlaslm-3b"
-    lm_path: str | None = None
-
-    channel_s: int = 768
-    channel_z: int = 192
-    trunk: TrunkConfig = dataclasses.field(default_factory=TrunkConfig)
-    distogram_head: DistogramHeadConfig = dataclasses.field(
-        default_factory=DistogramHeadConfig
-    )
-    diffusion_head: DiffusionHeadConfig = dataclasses.field(
-        default_factory=DiffusionHeadConfig
-    )
-    confidence_head: ConfidenceHeadConfig = dataclasses.field(
-        default_factory=ConfidenceHeadConfig
-    )
 
 
 class AtlasFold(torch.nn.Module):
@@ -122,7 +58,7 @@ class AtlasFold(torch.nn.Module):
             torch.nn.ReLU(),
             LinearNoBias(self.channel_z, self.channel_z, init="default"),
         )
-        self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=None)
+        self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
         self.linear_rel_pos = LinearNoBias(
             self.rel_pos_encoding.dim, self.channel_z, init="default"
         )
@@ -157,7 +93,7 @@ class AtlasFold(torch.nn.Module):
         self.diffusion_head = diffusion_head.DiffusionHead(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
-            multimer=False,
+            multimer=True,
             **dataclasses.asdict(cfg.diffusion_head),
         )
 
@@ -205,10 +141,16 @@ class AtlasFold(torch.nn.Module):
         batch: dict[str, torch.Tensor]
             The input batch with the following keys:
             # Folding trunk inputs
-            - "aatype"          : [B, L, 21] float
+            - "aatype"          : [B, L, 21] float/int
                 One-hot encoded amino acid types.
             - "aatype_int"      : [B, L] int
                 Amino acid type indices.
+            - "entity_id"       : [B, L] int
+                Entity IDs for multimer structures.
+            - "asym_id"         : [B, L] int
+                Asymmetry IDs (chain IDs) for multimer structures.
+            - "sym_id"          : [B, L] int
+                Symmetry IDs for multimer structures.
             - "res_idx"         : [B, L] int
                 1-based residue indices.
             - "seq_tok_idx"     : [B, L] int
@@ -258,10 +200,8 @@ class AtlasFold(torch.nn.Module):
             batch = {k: v.unsqueeze(0) for k, v in batch.items()}
 
         out: dict[str, torch.Tensor] = {}
-        if mode not in ["flash", "base", "full"]:
-            raise ValueError(
-                f"Invalid mode: {mode}. Must be one of 'flash', 'base', or 'full'."
-            )
+        if mode not in ["base", "full"]:
+            raise ValueError(f"Invalid mode: {mode}. Must be one of 'base' or 'full'.")
 
         # Run trunk
         s, z = self.run_trunk(batch, num_recycles, mode, mlm_prob)
@@ -316,11 +256,7 @@ class AtlasFold(torch.nn.Module):
         train: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the trunk."""
-        if mode == "flash":
-            if num_recycles != -1:
-                raise ValueError("num_recycles must be -1 for flash mode.")
-            return self.run_trunk_flash(batch, mlm_prob, train)
-        elif mode == "base":
+        if mode == "base":
             if num_recycles < 0:
                 raise ValueError("num_recycles must be non-negative for base mode.")
             return self.run_trunk_base(batch, num_recycles, mlm_prob, train)
@@ -328,24 +264,6 @@ class AtlasFold(torch.nn.Module):
             if num_recycles <= 0:
                 raise ValueError("num_recycles must be positive for full mode.")
             return self.run_trunk_full(batch, num_recycles, mlm_prob, train)
-
-    def run_trunk_flash(
-        self,
-        batch: dict[str, torch.Tensor],
-        mlm_prob: float | None = None,
-        train: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run the trunk without triangular updates for fast inference."""
-        # Sample a single MLM mask
-        mlm_prob = mlm_prob if mlm_prob is not None else 0.0
-        mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
-
-        # Extract LM features
-        s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, train)
-        # Run LM module
-        mask = batch["seq_mask"]
-        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
-        return s_lm, z_lm
 
     def run_trunk_base(
         self,
@@ -450,7 +368,7 @@ class AtlasFold(torch.nn.Module):
         # === Prepare LM inputs === #
         input_ids = batch["lm.input_ids"]  # [B, S]
         pos_id = batch["lm.pos_id"]  # [B, S]
-        seq_id = batch["lm.seq_id"]  # [B, S]. 1 for valid, 0 for padding
+        seq_id = batch["lm.seq_id"]  # [B, S]
 
         # Apply MLM mask to input IDs for stochastic feature extraction
         if mlm_mask is not None:
@@ -479,6 +397,10 @@ class AtlasFold(torch.nn.Module):
             attn = attn.moveaxis(1, -1)  # [B, S, S, n_heads]
             s = _add(s, w[i + 1] * self.layernorm_lm_emb(x))
             z = _add(z, self.proj_lm_attn[i](attn))
+
+        # Mask out inter-chain attention
+        intra_mask = seq_id[:, :, None] == seq_id[:, None, :]  # [B, S, S]
+        z = z * intra_mask[:, :, :, None]
 
         # Extract the single and pair representations for the valid sequence positions
         # [B, S, c_s], [B, S, S, c_z] -> [B, L, c_s], [B, L, L, c_z]

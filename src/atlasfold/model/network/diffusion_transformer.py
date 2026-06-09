@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 from atlasfold.model.network.attention import CrossAttention, SelfAttention
-from atlasfold.model.network.misc import LocalAttentionIndex, relative_position_encoding
+from atlasfold.model.network.misc import LocalAttentionIndex
 from atlasfold.model.network.primitives import (
     AdaLN,
     LayerNorm,
@@ -14,6 +14,7 @@ from atlasfold.model.network.primitives import (
     SwiGLU,
     Transition,
 )
+from atlasfold.model.network.rel_pos_encoding import RelativePositionEncoding
 from atlasfold.utils.checkpointing import checkpoint_blocks
 
 
@@ -127,13 +128,17 @@ class PairConditioning(nn.Module):
         self,
         channel_z: int = 128,
         channel_bias: tuple[int, int] = (12, 16),
+        multimer: bool = False,
     ):
         super().__init__()
         self.channel_z: int = channel_z
         self.channel_bias: tuple[int, int] = channel_bias
 
-        rel_pos_dim = (32 * 2 + 2) + (2 * 2 + 2) + 1
-        in_channel = channel_z + rel_pos_dim
+        self.rel_pos_encoding = RelativePositionEncoding(
+            r_max=32, s_max=2 if multimer else None
+        )
+
+        in_channel = channel_z + self.rel_pos_encoding.dim
         self.layernorm = LayerNorm(in_channel, create_offset=False)
         self.linear = LinearNoBias(in_channel, channel_z, init="default")
         self.transitions = nn.ModuleList(
@@ -144,6 +149,7 @@ class PairConditioning(nn.Module):
         nblock, nhead = channel_bias
         self.layernorm_bias = LayerNorm(channel_z, create_offset=False)
         self.linear_bias = LinearNoBias(channel_z, nblock * nhead)
+        self.multimer = multimer
 
     def forward(self, batch: dict[str, torch.Tensor], z: torch.Tensor) -> torch.Tensor:
         """See Section 3.7 Algorithm 21 Diffusion Conditioning in the AF3 paper.
@@ -161,9 +167,7 @@ class PairConditioning(nn.Module):
             Tensor of shape (n_block, B, n_head, L, L) containing attention bias.
         """
         # Concatenate relative positional encoding
-        rel_pos = relative_position_encoding(
-            batch["res_idx"], batch["asym_id"], batch["entity_id"], batch["sym_id"]
-        )
+        rel_pos = self.rel_pos_encoding(batch)
         z = torch.cat((z, rel_pos.to(z.device)), dim=-1)
         z = self.linear(self.layernorm(z))  # [B, L, L, c_z]
 

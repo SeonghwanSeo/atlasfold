@@ -231,7 +231,7 @@ class TrainingModule(pl.LightningModule):
         """Setup metrics for validation"""
         val_metrics = {}
         for prefix in ["top", "avg", "rank"]:
-            for k in ["rmsd", "lddt", "lddt_ca"]:
+            for k in ["rmsd", "lddt", "lddt-ca"]:
                 val_metrics[f"{prefix}/{k}"] = MeanMetric()
         self.val_metrics = MetricCollection(val_metrics, prefix="val/")
 
@@ -358,38 +358,28 @@ class TrainingModule(pl.LightningModule):
         metrics: dict[str, torch.Tensor] = {}
         if self.train_trunk:
             distogram_loss, distogram_metrics = self.compute_distogram_loss(
-                model_out["distogram"], batch, label, loss_mask["distogram"]
+                model_out["distogram"], batch, label
             )
             loss += loss_weights["distogram"] * distogram_loss
             metrics |= {f"distogram/{k}": v for k, v in distogram_metrics.items()}
 
             # Augmented distogram loss directly from LM features.
             distogram_loss_aug, distogram_aug_metrics = self.compute_distogram_loss(
-                model_out["distogram_aug"], batch, label, loss_mask["distogram"]
+                model_out["distogram_aug"], batch, label
             )
             loss += loss_weights["distogram_aug"] * distogram_loss_aug
             metrics |= {f"distogram_aug/{k}": v for k, v in distogram_aug_metrics.items()}
 
         if self.train_diffusion_head:
             diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
-                model_out["diffusion"], batch, label, loss_mask["diffusion"]
+                model_out["diffusion"], batch, label
             )
             loss += loss_weights["diffusion"] * diffusion_loss
             metrics |= {f"diffusion/{k}": v for k, v in diffusion_metrics.items()}
 
         if self.train_confidence_head:
             confidence_out = model_out["confidence"]
-            # Remove the sample dimension
-            # [B, 1, ...] -> [B, ...]
-            for k, v in confidence_out.items():
-                for kk, vv in v.items():
-                    assert vv.shape[1] == 1, (
-                        f"Expected sample dimension to be 1, but got {vv.shape}"
-                        f"for key {k}/{kk}"
-                    )
-                    confidence_out[k][kk] = vv.squeeze(1)
-
-            x_pred = confidence_out["mini_rollout"]["sample_coords"]  # [B, 1, L, 14, 3]
+            x_pred = confidence_out["mini_rollout"]["sample_coords"]  # [B, L, 14, 3]
 
             # Get aligned GT structure (rigid alignment + atom swapping)
             x_gt, mask = structure_metrics.get_aligned_gt_structure(
@@ -411,7 +401,7 @@ class TrainingModule(pl.LightningModule):
                 rmsd = structure_metrics.compute_rmsd(x_pred, x_gt, mask)
                 lddt_ca = structure_metrics.compute_lddt_ca(x_pred, x_gt, mask)
                 metrics |= {"mini_rollout/rmsd": rmsd.mean()}
-                metrics |= {"mini_rollout/lddt_ca": lddt_ca.mean()}
+                metrics |= {"mini_rollout/lddt-ca": lddt_ca.mean()}
 
         metrics["loss"] = loss.detach()
         return loss, metrics
@@ -489,18 +479,15 @@ class TrainingModule(pl.LightningModule):
         pred: dict[str, torch.Tensor],
         batch: dict[str, torch.Tensor],
         label: dict[str, torch.Tensor],
-        loss_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        w = loss_mask.float()
-        n_valid_samples = w.sum().clamp(1)
         loss = self.distogram_loss(
             logits=pred["logits"],
             boundaries=pred["boundaries"],
             x_gt=label["coordinates"],
-            mask_gt=label["resolved_mask"],
+            mask=label["resolved_mask"],
             cbeta_idx=batch["cbeta_idx"],
         )  # [B,]
-        loss = (loss * w).sum() / n_valid_samples
+        loss = loss.mean()
         metrics = {"loss": loss.detach()}
         return loss, metrics
 
@@ -509,29 +496,25 @@ class TrainingModule(pl.LightningModule):
         pred: dict[str, torch.Tensor],
         batch: dict[str, torch.Tensor],
         label: dict[str, torch.Tensor],
-        loss_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        w = loss_mask.float()
-        n_valid_samples = w.sum().clamp(1)
-
         metrics: dict[str, torch.Tensor] = {}
         L_mse = self.mse_loss.forward(
-            x_pred=pred["x_0_hat"],
+            x_pred=pred["x_out"],
             x_gt=label["coordinates"],
             mask=label["resolved_mask"],
         )  # [B, N]
         L_mse = (L_mse * pred["loss_weights"]).mean(-1)
-        L_mse = (L_mse * w).sum() / n_valid_samples
+        L_mse = L_mse.mean()
         metrics["mse_loss"] = L_mse.detach()
 
         if self.loss_weights["smooth_lddt"] > 0:
             L_smooth_lddt = self.smooth_lddt_loss.forward(
-                x_pred=pred["x_0_hat"],
+                x_pred=pred["x_out"],
                 x_gt=label["coordinates"],
                 mask=label["resolved_mask"],
             )  # [B, N]
             L_smooth_lddt = L_smooth_lddt.mean(-1)
-            L_smooth_lddt = (L_smooth_lddt * w).sum() / n_valid_samples
+            L_smooth_lddt = L_smooth_lddt.mean()
             metrics["smooth_lddt_loss"] = L_smooth_lddt.detach()
         else:
             L_smooth_lddt = 0.0
@@ -558,7 +541,7 @@ class TrainingModule(pl.LightningModule):
         x_pred = pred["mini_rollout"]["sample_coords"]  # [B, L, 14, 3]
         x_gt = label["coordinates"]  # [B, L, 14, 3]
         resolved_mask = label["resolved_mask"]  # [B, L, 14]
-        pad_mask = batch["atom14_mask"]  # [B, L, 14]
+        seq_mask = batch["seq_mask"]  # [B, L, 14]
 
         L_plddt = self.plddt_loss.forward(
             logits=pred["plddt"]["logits"],
@@ -574,7 +557,7 @@ class TrainingModule(pl.LightningModule):
             logits=pred["experimentally_resolved"]["logits"],
             aatype=batch["aatype_int"],
             resolved_mask=resolved_mask,
-            pad_mask=pad_mask,
+            pad_mask=seq_mask,
         )
         L_resolved = (L_resolved * w).sum() / n_valid_samples
         metrics["resolved_loss"] = L_resolved.detach()

@@ -3,6 +3,7 @@ import gc
 import logging
 
 import lightning.pytorch as pl
+from omegaconf import OmegaConf
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
@@ -15,10 +16,11 @@ from .dataset import (
 from .utils.dl_sampler import DistributedWeightedSampler
 
 
+@dataclasses.dataclass(kw_only=True)
 class DataModuleConfig:
     # === Common config for data modules === #
-    train_batch_size: int = 1
-    val_batch_size: int = 1
+    batch_size: int = 1
+    global_batch_size: int = 128
     num_workers: int = 0
     persistent_workers: bool = True
     pin_memory: bool = True
@@ -28,8 +30,9 @@ class DataModuleConfig:
     max_seq_length: int = 384
 
     # === Dataset configs === #
+    data_root: str
     train_datasets: list[TrainingDatasetConfig] = dataclasses.field(default_factory=list)
-    val_datasets: list[ValidationDatasetConfig] = dataclasses.field(default_factory=list)
+    val_dataset: ValidationDatasetConfig
 
 
 class TrainingDataModule(pl.LightningDataModule):
@@ -38,8 +41,19 @@ class TrainingDataModule(pl.LightningDataModule):
 
     def __init__(self, config: DataModuleConfig) -> None:
         super().__init__()
+        config = OmegaConf.to_object(OmegaConf.merge(DataModuleConfig, config))
+
         self.config = config
         self.logger = logging.getLogger("[DataModule]")
+
+        # Set up the data directory based on root dir
+        data_root = self.config.data_root
+        for ds_cfg in self.config.train_datasets:
+            if ds_cfg.data_dir is None:
+                ds_cfg.data_dir = f"{data_root}/{ds_cfg.name}"
+        val_ds_cfg = self.config.val_dataset
+        if val_ds_cfg.data_dir is None:
+            val_ds_cfg.data_dir = f"{data_root}/{val_ds_cfg.name}"
 
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
@@ -76,13 +90,7 @@ class TrainingDataModule(pl.LightningDataModule):
         if hasattr(self, "_val_ds"):
             return self._val_ds
 
-        if len(self.config.val_datasets) != 1:
-            raise NotImplementedError(
-                "Currently only single validation dataset is supported."
-            )
-        ds = ValidationDataset(
-            config=self.config.val_datasets[0],
-        )
+        ds = ValidationDataset(config=self.config.val_dataset)
         self.print_rank_zero(
             f"Constructed validation dataset '{ds.name}':\n"
             f"  Num complexes: {len(ds.metadatas)}\n"
@@ -104,7 +112,7 @@ class TrainingDataModule(pl.LightningDataModule):
         )
         return DataLoader(
             dataset,
-            batch_size=self.config.train_batch_size,
+            batch_size=self.config.batch_size,
             shuffle=False,
             sampler=sampler,
             drop_last=True,

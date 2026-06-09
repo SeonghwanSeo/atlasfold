@@ -7,7 +7,7 @@ import torch
 from atlasfold.model import AtlasFold
 from atlasfold.model.network.diffusion_head import DiffusionHead, SamplingConfig
 from atlasfold.utils.geometry.random_augment import center_random_augmentation
-from atlasfold.utils.torch_utils import expand_dim
+from atlasfold.utils.torch_utils import expand_dim, get_context_dtype
 
 
 class AtlasFoldForTrain(AtlasFold):
@@ -63,9 +63,10 @@ class AtlasFoldForTrain(AtlasFold):
         mask = batch["seq_mask"]
         B, L = mask.shape
         device = mask.device
+        dtype = get_context_dtype()
 
         # Recycling iterations with stochastic masking during training.
-        z_prev = torch.zeros(B, L, L, self.channel_z, device=device)
+        z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
         mlm_prob = torch.rand(1).item() * 0.2
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
@@ -105,7 +106,6 @@ class AtlasFoldForTrain(AtlasFold):
         if train_confidence_head:
             # Sample the structure for confidence head training.
             sample_coords = self.__forward_mini_rollout(batch, s, z, sampling_config)
-            out["mini_rollout"] = {"sample_coords": sample_coords}
 
             # Select the confidence head conditioning.
             # trunk : init : zero = 6 : 2 : 2
@@ -118,6 +118,18 @@ class AtlasFoldForTrain(AtlasFold):
             confidence_out = self.__forward_confidence(
                 batch, _s, _z, sample_coords, compute_pae=train_pae_head
             )
+            confidence_out["mini_rollout"] = {"sample_coords": sample_coords}
+
+            # Remove the sample dimension
+            # [B, 1, ...] -> [B, ...]
+            for k, v in confidence_out.items():
+                for kk, vv in v.items():
+                    assert vv.shape[1] == 1, (
+                        f"Expected sample dimension to be 1, but got {vv.shape}"
+                        f"for key {k}/{kk}"
+                    )
+                    confidence_out[k][kk] = vv.squeeze(1)
+
             out["confidence"] = confidence_out
 
         return out
@@ -166,7 +178,7 @@ class AtlasFoldForTrain(AtlasFold):
 
         # Repeat label coords with random augmentation for each diffusion training input.
         with torch.autocast(s.device.type, enabled=False):
-            label_coords = label["coords"]  # [B, L, 14, 3]
+            label_coords = label["coordinates"]  # [B, L, 14, 3]
             resolved_mask = label["resolved_mask"]  # [B, L, 14]
             x_gt = expand_dim(label_coords, N, dim=1)  # [B, N, L, 14, 3]
             mask = expand_dim(resolved_mask, N, dim=1)  # [B, N, L, 14]
@@ -232,7 +244,7 @@ class AtlasFoldForTrain(AtlasFold):
         z: torch.Tensor,
         sample_coords: torch.Tensor,
         compute_pae: bool,
-    ) -> dict[str, torch.Tensor]:
+    ) -> dict[str, dict[str, torch.Tensor]]:
         return self.confidence_head(
             batch, s, z, sample_coords, compute_pae, self.use_kernel
         )
