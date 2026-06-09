@@ -33,7 +33,7 @@ class PairwiseProdDiff(torch.nn.Module):
         assert channel_z % 2 == 0, "channel_out must be even."
         self.layernorm = LayerNorm(channel_s)
         self.linear_in = Linear(channel_s, channel_z * 2, init="default")
-        self.linear_out = LinearNoBias(channel_z, channel_z, init="final")
+        self.linear_out = LinearNoBias(channel_z * 2, channel_z, init="final")
 
     def forward(self, s: torch.Tensor) -> torch.Tensor:
         """Compute pairwise embeddings from single embeddings.

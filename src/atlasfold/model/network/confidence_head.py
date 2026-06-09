@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from atlasfold.model.network.block import PairStack
 from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
-from atlasfold.utils.torch_utils import gather_dim, get_context_dtype
+from atlasfold.utils.torch_utils import gather_dim, index_select_dim, get_context_dtype
 
 
 def get_bin_centers(
@@ -23,7 +23,7 @@ def get_distogram(
     x: torch.Tensor, cbeta_idx: torch.Tensor, boundaries: torch.Tensor
 ) -> torch.Tensor:
     """Compute the distogram from the predicted coordinates."""
-    x_repr = gather_dim(x, dim=-2, index=cbeta_idx[..., None, None])  # [*, L, 14, 3]
+    x_repr = index_select_dim(x, dim=-2, index=cbeta_idx[..., None, None])  # [*, L, 3]
     d = (x_repr[..., :, None, :] - x_repr[..., None, :, :]).norm(dim=-1)  # [*, L, L]
     num_bins = boundaries.shape[0] + 1
     return F.one_hot(

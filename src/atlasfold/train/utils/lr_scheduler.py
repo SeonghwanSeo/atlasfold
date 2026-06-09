@@ -25,12 +25,12 @@ class AF2LRScheduler(torch.optim.lr_scheduler._LRScheduler):
         decay_factor : float
             The decay factor, by default 0.95
         """
-        super().__init__(optimizer)
         self.base_lr: float = base_lr
         self.max_lr: float = base_lr
         self.num_warmup_steps: int = num_warmup_steps
         self.decay_start_step: int = decay_start_step
         self.decay_factor: float = decay_factor
+        super().__init__(optimizer)
 
     def state_dict(self) -> dict:
         state_dict = {k: v for k, v in self.__dict__.items() if k not in ["optimizer"]}

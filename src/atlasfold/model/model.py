@@ -94,7 +94,7 @@ class AtlasFold(torch.nn.Module):
         self.channel_atom: int = cfg.diffusion_head.channel_atom
 
         # === Language model === #
-        self.lm: AtlasLM = load_model(cfg.lm_name, dtype=torch.bfloat16)
+        self.lm: AtlasLM = load_model(cfg.lm_name, path=cfg.lm_path, dtype=torch.bfloat16)
         # Freeze LM parameters
         self.lm.requires_grad_(False)
         self.alphabet = self.lm.alphabet

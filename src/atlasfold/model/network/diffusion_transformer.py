@@ -401,18 +401,18 @@ class AtomTransformerStack(nn.Module):
         # Create attention mask for local attention
         attn_mask = local_attn_index.attn_mask  # [*, W, Lq, Lk]
         # Expand attention mask to atom level
-        attn_mask = einops.repeat(attn_mask, "... Q K -> ... (Q 14) (K 14)")
+        attn_mask = einops.repeat(attn_mask, "... q k -> ... (q 14) (k 14)")
 
         # Apply input mask to attention mask
         mask_k = local_attn_index.to_k(mask, dim=-2)  # [*, W, Lk, 14]
-        attn_mask &= einops.rearrange(mask_k, "... W K 14 -> ... W 1 (K 14)")
+        attn_mask &= einops.rearrange(mask_k, "... w k a -> ... w 1 (k a)", a=14)
 
         # Create windowed q/k for local attention
         # [*, L, 14, c_cond] -> [*, W, Lq/Lk, 14, c_cond]
         single_cond_q, single_cond_k = local_attn_index(single_cond, dim=-3)
         # [*, W, Lq/Lk, 14, c_cond] -> [*, W, Nq/Nk, c_cond]
         single_cond_q, single_cond_k = map(
-            lambda x: einops.rearrange(x, "... W L 14 c -> ... W (L 14) c"),
+            lambda x: einops.rearrange(x, "... w l a c -> ... w (l a) c", a=14),
             (single_cond_q, single_cond_k),
         )
 
@@ -422,14 +422,14 @@ class AtomTransformerStack(nn.Module):
             a_q, a_k = local_attn_index(a, dim=-3)
             # [*, W, Lq/Lk, 14, c_a] -> [*, W, Nq/Nk, c_a]
             a_q, a_k = map(
-                lambda x: einops.rearrange(x, "... W L 14 c -> ... W (L 14) c"),
+                lambda x: einops.rearrange(x, "... w l a c -> ... w (l a) c", a=14),
                 (a_q, a_k),
             )
             # Apply attention block
             pair_bias_i = pair_bias[i] if pair_bias is not None else None
             a_q = block(a_q, a_k, attn_mask, single_cond_q, single_cond_k, pair_bias_i)
             # [*, W, Nq, c_a] -> [*, L, 14, c_a]
-            a = einops.rearrange(a_q, "... W (Q 14) c -> ... (W Q) 14 c", Q=Lq, W=W)
+            a = einops.rearrange(a_q, "... w (q a) c -> ... (w q) a c", q=Lq, w=W, a=14)
         return a
 
 

@@ -367,7 +367,7 @@ class TrainingModule(pl.LightningModule):
             distogram_loss_aug, distogram_aug_metrics = self.compute_distogram_loss(
                 model_out["distogram_aug"], batch, label
             )
-            loss += loss_weights["distogram_aug"] * distogram_loss_aug
+            loss += loss_weights["distogram"] * distogram_loss_aug
             metrics |= {f"distogram_aug/{k}": v for k, v in distogram_aug_metrics.items()}
 
         if self.train_diffusion_head:
@@ -382,12 +382,19 @@ class TrainingModule(pl.LightningModule):
             x_pred = confidence_out["mini_rollout"]["sample_coords"]  # [B, L, 14, 3]
 
             # Get aligned GT structure (rigid alignment + atom swapping)
-            x_gt, mask = structure_metrics.get_aligned_gt_structure(
-                x_gt=label["coordinates"],
-                x_pred=x_pred,
-                aatype=batch["aatype_int"],
-                mask=label["resolved_mask"],
-            )  # [B, L, 14, 3], [B, L, 14]
+            aligned_coords_list = []
+            aligned_mask_list = []
+            for b_i in range(x_pred.shape[0]):
+                x_gt, mask = structure_metrics.get_aligned_gt_structure(
+                    x_gt=label["coordinates"][b_i],
+                    x_pred=x_pred[b_i],
+                    aatype=batch["aatype_int"][b_i],
+                    mask=label["resolved_mask"][b_i],
+                )  # [L, 14, 3], [L, 14]
+                aligned_coords_list.append(x_gt)
+                aligned_mask_list.append(mask)
+            x_gt = torch.stack(aligned_coords_list, dim=0)
+            mask = torch.stack(aligned_mask_list, dim=0)
             aligned_label = {"coordinates": x_gt, "resolved_mask": mask}
 
             confidence_loss, confidence_metrics = self.compute_confidence_loss(
@@ -398,7 +405,7 @@ class TrainingModule(pl.LightningModule):
 
             # Log the rmsd between mini-rollout sample and GT.
             with torch.no_grad():
-                rmsd = structure_metrics.compute_rmsd(x_pred, x_gt, mask)
+                rmsd = structure_metrics.compute_rmsd_atom14(x_pred, x_gt, mask)
                 lddt_ca = structure_metrics.compute_lddt_ca(x_pred, x_gt, mask)
                 metrics |= {"mini_rollout/rmsd": rmsd.mean()}
                 metrics |= {"mini_rollout/lddt-ca": lddt_ca.mean()}
@@ -434,18 +441,19 @@ class TrainingModule(pl.LightningModule):
             else:
                 raise e
 
-        x_pred = sample_out["sample_coords"]  # [B, N, L, 14, 3]
+        x_pred = sample_out["sample_coords"]  # [N, L, 14, 3]
 
         # Compute diffusion sample rank based on pLDDT.
-        plddt = sample_out["plddt"]  # [B, N, L]
-        mask = feat["seq_mask"]  # [B, L]
-        w = mask.float()
-        w_sum = w.sum(-1).clamp(min=1)  # [B,]
-        avg_plddt = (plddt * w[:, None, :]).sum(-1) / w_sum[:, None]  # [B, N]
-        rank_idx = torch.argmax(avg_plddt, dim=-1)  # [B,]
+        plddt = sample_out["plddt"]  # [N, L]
+        mask = feat["seq_mask"]  # [L]
+
+        w = mask.float()  # [L,]
+        w_sum = w.sum(-1).clamp(min=1)
+        avg_plddt = (plddt * w).sum(-1) / w_sum  # [N]
+        rank_idx = int(torch.argmax(avg_plddt))
 
         with torch.autocast("cuda", torch.float32):
-            metrics = validation_metrics.compute_validation_metric(
+            metrics: dict[str, float] = validation_metrics.compute_validation_metric(
                 x_pred, feat, label, rank_idx
             )
 
@@ -484,8 +492,8 @@ class TrainingModule(pl.LightningModule):
             logits=pred["logits"],
             boundaries=pred["boundaries"],
             x_gt=label["coordinates"],
-            mask=label["resolved_mask"],
-            cbeta_idx=batch["cbeta_idx"],
+            mask_gt=label["resolved_mask"],
+            cbeta_idx=batch["pseudo_beta"],
         )  # [B,]
         loss = loss.mean()
         metrics = {"loss": loss.detach()}

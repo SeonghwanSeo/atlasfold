@@ -77,8 +77,9 @@ class Attention(nn.Module):
         # Compute bias
         bias_dtype = torch.float32 if self.use_high_precision else q.dtype
         attn_bias = (~mask.bool()).to(bias_dtype) * self.inf
+        attn_bias = attn_bias.unsqueeze(-3)  # [*, 1, Lq, Lk]
         if pair_bias is not None:
-            attn_bias += pair_bias
+            attn_bias = attn_bias + pair_bias  # [*, H, Lq, Lk]
 
         # Compute attention weights and output
         if self.use_high_precision:

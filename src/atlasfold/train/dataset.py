@@ -317,6 +317,7 @@ class TrainingDataset(LMDBDataset):
         # Extract the coordinates and the mask for resolved residues.
         coords = prot.coordinates  # [L, 14, 3]
         resolved_mask = np.isfinite(coords).all(axis=-1)  # [L, 14]
+        coords = np.nan_to_num(coords, nan=0.0)
         return {"coordinates": coords, "resolved_mask": resolved_mask}
 
     def prepare_loss_masks(self, m: metadata.Metadata) -> dict[str, bool]:
@@ -411,4 +412,5 @@ class ValidationDataset(LMDBDataset):
         # Extract the coordinates and the mask for resolved residues.
         coords = prot.coordinates  # [L, 14, 3]
         resolved_mask = np.isfinite(coords).all(axis=-1)  # [L, 14]
+        coords = np.nan_to_num(coords, nan=0.0)
         return {"coordinates": coords, "resolved_mask": resolved_mask}

@@ -222,7 +222,7 @@ class DiffusionHead(nn.Module):
             channel_s, channel_cond, dim_fourier=256
         )
         self.pair_conditioning = PairConditioning(
-            channel_z, (num_heads, num_blocks), multimer=multimer
+            channel_z, (num_blocks, num_heads), multimer=multimer
         )
 
         # Diffusion module
@@ -312,7 +312,7 @@ class DiffusionHead(nn.Module):
         del z
 
         def run_step(x_noisy: torch.Tensor, t_hat: float) -> torch.Tensor:
-            c_noise = torch.tensor(self.c_noise(t_hat), device=device)
+            c_noise = torch.tensor(self.c_noise(t_hat), device=device).view(1, 1)
             single_cond = self.single_conditioning(batch, s, c_noise)
             return self.inference_step(
                 batch,
@@ -348,22 +348,22 @@ class DiffusionHead(nn.Module):
 
     @staticmethod
     def _sync_center_random_augmentation(
-        x: torch.Tensor, mask: torch.Tensor
+        coords: torch.Tensor, mask: torch.Tensor
     ) -> torch.Tensor:
         # Centering
-        x = do_centering(x, mask, mask_to_zero=False)
+        coords = do_centering(coords, mask, mask_to_zero=False)
 
         # Random rotation
-        B, N, L, _, _ = x.shape  # [B, N, L, 14, 3]
-        R = random_rotations_torch((N,), torch.float32, device=x.device)  # [N, 3, 3]
-        coords = x @ R.view(N, 1, 3, 3)
+        B, N, L, _, _ = coords.shape  # [B, N, L, 14, 3]
+        R = random_rotations_torch((N,), torch.float32, device=coords.device)  # [N, 3, 3]
+        coords = coords @ R.view(N, 1, 3, 3)
 
         # Random translation
-        noise = torch.randn(1, N, 1, 1, 3, device=x.device)
+        noise = torch.randn(1, N, 1, 1, 3, device=coords.device)
         coords.add_(noise)
 
         # Mask out
-        coords[~mask] = 0.0
+        coords = coords * mask.unsqueeze(-1)  # [B, N, L, 14, 3]
         return coords
 
     def inference_step(

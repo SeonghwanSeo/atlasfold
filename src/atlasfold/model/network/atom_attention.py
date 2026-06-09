@@ -70,7 +70,7 @@ class AtomAttentionStack(nn.Module):
         self.channel_atom: int = channel_atom
         self.num_heads: int = num_heads
         self.num_blocks: int = num_blocks
-        self.local_stack = AtomTransformerStack(
+        self.stack = AtomTransformerStack(
             channel_atom, channel_atom, num_heads, num_blocks
         )
         self.max_r: int = max_r
@@ -99,9 +99,9 @@ class AtomAttentionStack(nn.Module):
         q : torch.Tensor
             The updated atom representations of shape (B, N, L, 14, C_a)
         """
-        res_idx = batch["res_idx"]  # (B, L)
-        asym_id = batch["asym_id"]  # (B, L)
-        seq_mask = batch["seq_mask"]  # (B, L)
+        res_idx = batch["res_idx"].unsqueeze(1)  # (B, 1, L)
+        asym_id = batch["asym_id"].unsqueeze(1)  # (B, 1, L)
+        seq_mask = batch["seq_mask"].unsqueeze(1)  # (B, 1, L)
         local_attn_index = LocalAttentionIndex(
             res_idx, asym_id, seq_mask, window_size=4, max_r=self.max_r
         )
@@ -116,21 +116,21 @@ class AtomAttentionStack(nn.Module):
         is_same_chain = asym_id_q[..., :, None] == asym_id_k[..., None, :]
         a_rel_pos = torch.clamp(rel_pos + self.max_r, 0, pad_r)
         a_rel_pos = torch.where(is_same_chain, a_rel_pos, pad_r)
-        a_rel_pos = torch.nn.functional.one_hot(a_rel_pos, pad_r)
+        a_rel_pos = torch.nn.functional.one_hot(a_rel_pos, pad_r + 1)
 
-        p = self.linear_rel_pos(a_rel_pos.float())  # (B, W, Lq, Lk, n_blocks, n_heads)
-        # Rearrange to (n_blocks, B, W, n_heads,Lq, Lk)
-        p = einops.rearrange(p, "b w q k (n h) -> n b w h q k", n=self.num_blocks)
+        p = self.linear_rel_pos(a_rel_pos.float())  # (B, N, W, Lq, Lk, Nblocks, Nheads)
+        # Rearrange to (Nblocks, B, N, W, Nheads, Lq, Lk)
+        p = einops.rearrange(p, "... q k (nb nh) -> nb ... nh q k", nb=self.num_blocks)
         # Expand to atom level
-        p = einops.repeat(p, "... q k -> ... (q a) (k a)", a=14)
+        p = einops.repeat(p, "... q k -> ... (q 14) (k 14)")
 
-        atom_mask = batch["atom14_mask"]  # (B, L, 14)
-        q = self.local_stack(
-            q,
-            mask=atom_mask,
+        atom_mask = batch["atom14_mask"].unsqueeze(1)  # (B, 1, L, 14)
+        q = self.stack(
+            q,  # [B, N, L, 14, C_a]
+            mask=atom_mask,  # [B, 1, L, 14]
             local_attn_index=local_attn_index,
-            single_cond=c,
-            pair_bias=p,
+            single_cond=c,  # [B, N, L, 14, C_a]
+            pair_bias=p,  # [Nblocks, B, 1, W, Nheads, Lq, Lk]
         )
         return q
 

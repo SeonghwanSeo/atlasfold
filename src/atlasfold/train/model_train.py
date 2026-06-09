@@ -77,7 +77,8 @@ class AtlasFoldForTrain(AtlasFold):
                     batch, z_prev, mask, mlm_prob, train=enable_grad
                 )
                 z_prev = z
-        s, z = s_lm, z
+        s_lm, z, z_lm = s_lm.float(), z.float(), z_lm.float()
+        s = s_lm
 
         # Return distogram logits
         if train_trunk:
@@ -124,11 +125,12 @@ class AtlasFoldForTrain(AtlasFold):
             # [B, 1, ...] -> [B, ...]
             for k, v in confidence_out.items():
                 for kk, vv in v.items():
-                    assert vv.shape[1] == 1, (
-                        f"Expected sample dimension to be 1, but got {vv.shape}"
-                        f"for key {k}/{kk}"
-                    )
-                    confidence_out[k][kk] = vv.squeeze(1)
+                    if kk in ("logits", "sample_coords"):
+                        assert vv.shape[1] == 1, (
+                            f"Expected sample dimension to be 1, but got {vv.shape}"
+                            f"for key {k}/{kk}"
+                        )
+                        confidence_out[k][kk] = vv.squeeze(1)
 
             out["confidence"] = confidence_out
 
@@ -184,7 +186,10 @@ class AtlasFoldForTrain(AtlasFold):
             mask = expand_dim(resolved_mask, N, dim=1)  # [B, N, L, 14]
 
             # Random augmentation
-            x_gt = center_random_augmentation(x_gt, mask)  # [B, N, L, 14, 3]
+            x_gt = center_random_augmentation(
+                x_gt.flatten(-3, -2),  # [B, N, L*14, 3]
+                mask.flatten(-2, -1),  # [B, N, L*14]
+            ).unflatten(-2, (-1, 14))  # [B, N, L, 14, 3]
 
             # Add noise
             noise = torch.randn_like(x_gt)  # [B, N, L, 14, 3]

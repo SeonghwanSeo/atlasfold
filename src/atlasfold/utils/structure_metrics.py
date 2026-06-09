@@ -1,5 +1,4 @@
 import functools
-import math
 
 import numpy as np
 import torch
@@ -44,6 +43,36 @@ def compute_rmsd(
     sq_diff = ((x_pred - x_gt) ** 2).sum(-1)  # (*, N)
     w = mask.float()
     return torch.sqrt((sq_diff * w).sum(-1) / w.sum(-1).clamp(min=1))
+
+
+@torch.no_grad()
+def compute_rmsd_atom14(
+    x_pred: torch.Tensor,
+    x_gt: torch.Tensor,
+    mask: torch.Tensor,
+    align: bool = False,
+):
+    """Compute RMSD between predicted and ground truth coordinates.
+
+    Parameters
+    ----------
+    x_pred : torch.Tensor
+        Predicted coordinates, shape (*, L, 14, 3)
+    x_gt : torch.Tensor
+        Ground truth coordinates, shape (*, L, 14, 3)
+    mask : torch.Tensor
+        Mask for valid atoms, shape (*, L, 14)
+    align : bool, optional
+        Whether to perform rigid alignment before computing RMSD
+
+    Returns
+    -------
+    rmsd : torch.Tensor
+        RMSD between predicted and ground truth coordinates, shape (*,)
+    """
+    return compute_rmsd(
+        x_pred.flatten(-3, -2), x_gt.flatten(-3, -2), mask.flatten(-2), align
+    )
 
 
 @torch.no_grad()
@@ -193,59 +222,53 @@ def get_aligned_gt_structure(
     Parameters
     ----------
     x_gt : torch.Tensor
-        Tensor of shape (*, L, 14, 3) containing ground truth coordinates.
+        Tensor of shape (L, 14, 3) containing ground truth coordinates.
     x_pred : torch.Tensor
-        Tensor of shape (*, L, 14, 3) containing predicted coordinates.
+        Tensor of shape (L, 14, 3) containing predicted coordinates.
     aatype : torch.Tensor
-        Tensor of shape (*, L) containing the amino acid type indices.
+        Tensor of shape (L) containing the amino acid type indices.
     mask : torch.Tensor
-        Tensor of shape (*, L, 14) containing boolean masks for resolved atoms.
+        Tensor of shape (L, 14) containing boolean masks for resolved atoms.
 
     Returns
     -------
     x_gt_aligned : torch.Tensor
-        Tensor of shape (*, L, 14, 3) containing the aligned ground truth coordinates.
+        Tensor of shape (L, 14, 3) containing the aligned ground truth coordinates.
     mask_aligned : torch.Tensor
-        Tensor of shape (*, L, 14) containing boolean masks for resolved atoms
+        Tensor of shape (L, 14) containing boolean masks for resolved atoms
         in the aligned ground truth structure.
     """
-    *batch_dims, L, _, _ = x_pred.shape
-    B = math.prod(batch_dims)
-
-    x_gt_b = x_gt.view(B, L, 14, 3)
-    x_pred_b = x_pred.view(B, L, 14, 3)
-    aatype_b = aatype.view(B, L)
-    mask_b = mask.view(B, L, 14)
+    L = x_gt.shape[0]
 
     # Rigid alignment of GT to predicted structure using backbone atoms
     # Align predicted coordinates to ground truth coordinates using Kabsch algorithm.
     # Get anchor (N CA C) indices for alignment
-    atom_index = torch.arange(L * 14)  # [L*14]
+    atom_index = torch.arange(L * 14, device=x_gt.device)  # [L*14]
     anchor_index = atom_index.view(L, 14)[:, [0, 1, 2]].reshape(-1)  # [L*3]
     x_gt_aligned_b = rigid_align(
-        coords=x_gt_b.view(B, L * 14, 3),
-        target=x_pred_b.view(B, L * 14, 3),
-        mask=mask_b.view(B, L * 14),
+        coords=x_gt.view(L * 14, 3),
+        target=x_pred.view(L * 14, 3),
+        mask=mask.view(L * 14),
         anchor_index=anchor_index,
-    ).view(B, L, 14, 3)
+    ).view(L, 14, 3)
 
     # Get the atom swap indices for each residue type
     restype_has_ambiguous_atoms = get_restype_has_ambiguous_atoms(x_gt.device.type)
     restype_atom_swap = get_restype_atom_swap(x_gt.device.type)
 
-    swap_indices = restype_atom_swap[aatype_b]  # [B, L, 14]
-    check_ambiguous = restype_has_ambiguous_atoms[aatype_b]  # [B, L]
-    num_resolved_atoms = mask_b.sum(-1)  # [B, L]
+    swap_indices = restype_atom_swap[aatype]  # [L, 14]
+    check_ambiguous = restype_has_ambiguous_atoms[aatype]  # [L]
+    num_resolved_atoms = mask.sum(-1)  # [L]
     check_ambiguous = check_ambiguous & (num_resolved_atoms >= 3)
 
     swap_indices = swap_indices[check_ambiguous]  # [N, 14]
     query = x_gt_aligned_b[check_ambiguous]  # [N, 14, 3]
     query_swapped = gather_dim(query, dim=-2, index=swap_indices[..., None])  # [N, 14, 3]
-    target = x_pred_b[check_ambiguous]  # [N, 14, 3]
+    target = x_pred[check_ambiguous]  # [N, 14, 3]
 
     # Use local_mask to avoid overwriting the global mask_b reference
-    local_mask = mask_b[check_ambiguous]  # [N, 14]
-    mask_swapped = gather_dim(local_mask, dim=-2, index=swap_indices)  # [N, 14]
+    local_mask = mask[check_ambiguous]  # [N, 14]
+    mask_swapped = gather_dim(local_mask, dim=-1, index=swap_indices)  # [N, 14]
 
     # Compute per-residue RMSD with local-alignment
     err_orig = compute_rmsd(query, target, local_mask, align=True)
@@ -258,9 +281,9 @@ def get_aligned_gt_structure(
 
     # Clone from the batched tensors that were NOT overwritten
     final_x_gt = x_gt_aligned_b.clone()
-    final_mask = mask_b.clone()
+    final_mask = mask.clone()
     final_x_gt[check_ambiguous] = x_to_insert
     final_mask[check_ambiguous] = mask_to_insert
 
     # Restore the original batch dimensions
-    return final_x_gt.view(*batch_dims, L, 14, 3), final_mask.view(*batch_dims, L, 14)
+    return final_x_gt, final_mask

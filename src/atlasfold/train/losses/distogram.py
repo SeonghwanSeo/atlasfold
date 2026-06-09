@@ -40,8 +40,8 @@ class DistogramLoss(torch.nn.Module):
         mask_beta = index_select_dim(mask_gt, dim=-1, index=cbeta_idx)  # [B, L]
 
         # NOTE: This doesn't require backprop, so use norm().
-        d_beta = (x_gt_beta[..., None, :, :] - x_gt_beta[..., :, None, :]).norm(-1)
-        target_distogram = (d_beta[..., None] > boundaries).sum(-1).long()
+        d = (x_gt_beta[..., None, :, :] - x_gt_beta[..., :, None, :]).norm(dim=-1)
+        target_distogram = (d[..., None] > boundaries).sum(-1).long()
 
         # Compute the distogram loss
         B, L, _, _ = x_gt.shape
