@@ -44,7 +44,7 @@ class AF2LRScheduler(torch.optim.lr_scheduler._LRScheduler):
         if step <= self.num_warmup_steps:
             lr_ratio = step / self.num_warmup_steps
         elif step > self.decay_start_step:
-            lr_ratio = step / self.decay_start_step
+            lr_ratio = self.decay_factor
         else:
             lr_ratio = 1.0
         lr = lr_ratio * self.base_lr

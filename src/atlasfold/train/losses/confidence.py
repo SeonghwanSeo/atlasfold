@@ -312,5 +312,5 @@ class PAELoss(torch.nn.Module):
         d_ca = x_ca.unsqueeze(-3) - x_ca.unsqueeze(-2)
 
         basis = torch.stack([e1, e2, e3], dim=-2)  # [B, L, 3, 3]
-        local_coords = basis.unsqueeze(-3) @ d_ca.unsqueeze(-1)
+        local_coords = basis.unsqueeze(2) @ d_ca.unsqueeze(-1)
         return local_coords.squeeze(-1)

@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from atlasfold.model.network.block import PairStack
 from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
-from atlasfold.utils.torch_utils import gather_dim, index_select_dim, get_context_dtype
+from atlasfold.utils.torch_utils import get_context_dtype, index_select_dim
 
 
 def get_bin_centers(

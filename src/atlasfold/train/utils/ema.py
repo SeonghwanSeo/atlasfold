@@ -37,6 +37,10 @@ class ExponentialMovingAverage:
                 for name, p in model.named_parameters()
                 if not name.startswith(self.prefixes_to_ignore)
             }
+        else:
+            self.params = {
+                name: p.clone().detach() for name, p in model.named_parameters()
+            }
         self.device: torch.device = next(iter(self.params.values())).device
 
     def to(self, device: torch.device):

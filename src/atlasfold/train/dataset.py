@@ -151,6 +151,7 @@ class TrainingDataset(LMDBDataset):
         for filter_info in config.filters:
             if filter_info["type"] not in ("resolution", "plddt"):
                 raise ValueError(f"Invalid filter type: {filter_info['type']}")
+        self.filter_entries()
 
     def filter_entries(self):
         """Filter the dataset entries based on the specified criteria in the config."""

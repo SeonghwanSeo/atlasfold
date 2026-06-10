@@ -67,7 +67,7 @@ class AtlasFoldForTrain(AtlasFold):
 
         # Recycling iterations with stochastic masking during training.
         z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
-        mlm_prob = torch.rand(1).item() * 0.2
+        mlm_prob = torch.rand(1, device=device) * 0.2
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
             with torch.set_grad_enabled(enable_grad):
@@ -155,6 +155,22 @@ class AtlasFoldForTrain(AtlasFold):
         # Run main trunk
         z = self.main_stack(z, mask, self.use_kernel)
         return s_lm, z_lm, z
+
+    def sample_mlm_mask(
+        self,
+        batch: dict[str, torch.Tensor],
+        prob: float | torch.Tensor,
+        synchronized: bool = True,
+    ) -> torch.Tensor:
+        """Sample a random MLM mask for the input batch.
+        NOTE: synchronized masking is used for inference to ensure that
+        the prediction is not changed by the batch size or the order of
+        the sequences in the batch.
+        """
+        input_ids = batch["lm.input_ids"]  # [B, S]
+        B, S = input_ids.shape
+        shape = (1, S) if synchronized else (B, S)
+        return torch.rand(shape, device=input_ids.device) < prob
 
     def __forward_distogram(self, z: torch.Tensor) -> dict[str, torch.Tensor]:
         return self.distogram_head(z)

@@ -154,7 +154,7 @@ class TrainingModule(pl.LightningModule):
 
         # EMA state
         self.ema: ExponentialMovingAverage = ExponentialMovingAverage(
-            self,
+            self.model,
             decay=self.optimizer_config.ema_decay,
             submodules_to_ignore=self.optimizer_config.ema_ignore_params,
             submodules_to_update=self.optimizer_config.ema_update_params,
@@ -315,8 +315,6 @@ class TrainingModule(pl.LightningModule):
         batch: dict[str, dict[str, torch.Tensor]],
         batch_idx: int,
     ) -> torch.Tensor:
-        training_config = self.training_config
-
         # Sample recycling steps
         # Use shared recycling schedule across all the gpus
         idx = self.global_step % len(self.recycles_per_step)
@@ -439,15 +437,13 @@ class TrainingModule(pl.LightningModule):
         x_pred = sample_out["sample_coords"]  # [N, L, 14, 3]
 
         # Compute diffusion sample rank based on pLDDT.
-        if self.train_confidence_head:
-            plddt = sample_out["plddt"]  # [N, L]
-            mask = feat["seq_mask"]  # [L]
-            w = mask.float()  # [L,]
-            w_sum = w.sum(-1).clamp(min=1)
-            avg_plddt = (plddt * w).sum(-1) / w_sum  # [N]
-            rank_idx = int(torch.argmax(avg_plddt))
-        else:
-            rank_idx = None
+        # NOTE: If the confidence head is not trained, randomly select a sample.
+        plddt = sample_out["plddt"]  # [N, L]
+        mask = feat["seq_mask"]  # [L]
+        w = mask.float()  # [L,]
+        w_sum = w.sum(-1).clamp(min=1)
+        avg_plddt = (plddt * w).sum(-1) / w_sum  # [N]
+        rank_idx = int(torch.argmax(avg_plddt))
 
         with torch.autocast("cuda", torch.float32):
             metrics: dict[str, float] = validation_metrics.compute_validation_metric(
@@ -467,13 +463,16 @@ class TrainingModule(pl.LightningModule):
         if not self.trainer.sanity_checking:
             avg_values = self.val_metrics.compute()
             # NOTE: do not filter out NaN values to avoid deadlock in DDP
-            self.log_dict(
-                avg_values,
-                on_step=False,
-                on_epoch=True,
-                # Already synced in compute(), but keep to avoid warning...
-                sync_dist=True,
-            )
+            for k, v in avg_values.items():
+                self.log(
+                    k,
+                    v,
+                    prog_bar=(k == "val/rank/lddt"),
+                    on_step=False,
+                    on_epoch=True,
+                    # Already synced in compute(), but keep to avoid warning...
+                    sync_dist=True,
+                )
         self.val_metrics.reset()
         gc.collect()
         torch.cuda.empty_cache()
@@ -621,7 +620,7 @@ class TrainingModule(pl.LightningModule):
         super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
         if self.ema.device != self.device:
             self.ema.to(self.device)
-        self.ema.update(self)
+        self.ema.update(self.model)
 
     def on_validation_start(self):
         # Cache current model parameters before validation
@@ -661,7 +660,7 @@ class TrainingModule(pl.LightningModule):
             state["state"] = init_state["state"]
             state["param_groups"][0]["params"] = init_state["param_groups"][0]["params"]
             # checkpoint.pop("lr_schedulers", None)
-        self.load_ema_state_dict(checkpoint["ema"]["params"])
+        self.load_ema_state_dict(checkpoint["ema"])
 
     def load_state_dict(
         self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
@@ -669,7 +668,30 @@ class TrainingModule(pl.LightningModule):
         """Override load_state_dict to handle EMA state dict."""
         # Remove 'model.' prefix from state dict keys if present
         state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
-        return self.model.load_state_dict(state_dict, strict=strict)
+        if strict:
+            # Exclude missing LM keys from causing strict loading failure
+            model_keys = set(self.model.state_dict().keys())
+            provided_keys = set(state_dict.keys())
+            missing_keys = model_keys - provided_keys
+            unexpected_keys = provided_keys - model_keys
+
+            actual_missing_keys = [k for k in missing_keys if not k.startswith("lm.")]
+            if actual_missing_keys or unexpected_keys:
+                error_msg = []
+                if actual_missing_keys:
+                    error_msg.append(
+                        f"Missing key(s) in state_dict: {actual_missing_keys}"
+                    )
+                if unexpected_keys:
+                    error_msg.append(
+                        f"Unexpected key(s) in state_dict: {unexpected_keys}"
+                    )
+                raise RuntimeError(
+                    "Error(s) in loading state_dict:\n\t" + "\n\t".join(error_msg)
+                )
+            return self.model.load_state_dict(state_dict, strict=False)
+        else:
+            return self.model.load_state_dict(state_dict, strict=False)
 
     def load_ema_state_dict(self, state_dict: Mapping[str, Any]):
         """Load EMA state dict."""
