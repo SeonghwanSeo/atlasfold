@@ -13,7 +13,7 @@ from atlasfold.model.network.diffusion_transformer import (
     SingleConditioning,
 )
 from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
-from atlasfold.utils.geometry.random_augment import do_centering, random_rotations_torch
+from atlasfold.utils.geometry.random_augment import center_random_augmentation_atom14
 
 SIGMA_DATA = 16.0
 
@@ -326,7 +326,7 @@ class DiffusionHead(nn.Module):
         # Gradually denoise
         for step in range(1, config.num_steps + 1):
             # Apply centering and random augmentation.
-            x = self._sync_center_random_augmentation(x, mask)  # (B, N, L, 14, 3)
+            x = center_random_augmentation_atom14(x, mask, s_trans=1.0, synchronized=True)
 
             sigma_tm, sigma_t = sigmas[step - 1], sigmas[step]
             gamma = config.gamma_0 * (sigma_t > config.gamma_min)
@@ -345,26 +345,6 @@ class DiffusionHead(nn.Module):
             x = x_noisy + config.step_scale * dt * delta
 
         return x
-
-    @staticmethod
-    def _sync_center_random_augmentation(
-        coords: torch.Tensor, mask: torch.Tensor
-    ) -> torch.Tensor:
-        # Centering
-        coords = do_centering(coords, mask, mask_to_zero=False)
-
-        # Random rotation
-        B, N, L, _, _ = coords.shape  # [B, N, L, 14, 3]
-        R = random_rotations_torch((N,), torch.float32, device=coords.device)  # [N, 3, 3]
-        coords = coords @ R.view(N, 1, 3, 3)
-
-        # Random translation
-        noise = torch.randn(1, N, 1, 1, 3, device=coords.device)
-        coords.add_(noise)
-
-        # Mask out
-        coords = coords * mask.unsqueeze(-1)  # [B, N, L, 14, 3]
-        return coords
 
     def inference_step(
         self,

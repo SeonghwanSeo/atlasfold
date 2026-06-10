@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from atlasfold.common import residue_utils
-from atlasfold.utils.structure_metrics import cdist
+from atlasfold.train.utils.structure_metrics import cdist
 from atlasfold.utils.torch_utils import get_one_hot_from_bins
 
 

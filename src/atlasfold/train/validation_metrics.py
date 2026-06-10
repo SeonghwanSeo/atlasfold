@@ -3,7 +3,7 @@
 import numpy as np
 import torch
 
-from atlasfold.utils.structure_metrics import (
+from atlasfold.train.utils.structure_metrics import (
     compute_lddt_ca,
     compute_lddt_fullatom,
     compute_rmsd_atom14,

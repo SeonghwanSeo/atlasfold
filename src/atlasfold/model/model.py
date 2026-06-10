@@ -101,7 +101,7 @@ class AtlasFold(torch.nn.Module):
 
         # === Representation initialization === #
         self.w_lm_emb = torch.nn.Parameter(torch.zeros(self.lm.n_layers + 1))
-        self.layernorm_lm_emb = LayerNorm(self.lm.d_model)
+        self.layernorm_lm_emb = LayerNorm(self.lm.d_model, precision=torch.float32)
         self.s_init = torch.nn.Sequential(
             LinearNoBias(self.lm.d_model, self.channel_s, init="relu"),
             torch.nn.ReLU(),
@@ -467,7 +467,7 @@ class AtlasFold(torch.nn.Module):
         device = input_ids.device
         s = torch.zeros((B, S, self.lm.d_model), device=device, dtype=torch.float32)
         z = torch.zeros((B, S, S, self.channel_z), device=device, dtype=torch.float32)
-        w = self.w_lm_emb.softmax(dim=0)  # [n_layers,]
+        w = self.w_lm_emb.softmax(dim=0)  # [n_layers+1,]
 
         with torch.no_grad():
             x = self.lm.embed(input_ids)
@@ -476,7 +476,10 @@ class AtlasFold(torch.nn.Module):
         for i, block in enumerate(self.lm.transformer.blocks):
             with torch.no_grad():
                 x, attn = block(x, seq_id, pos_id, return_attn_logits=True)
-            attn = attn.moveaxis(1, -1)  # [B, S, S, n_heads]
+                # neginf will be set to 0 at the end of this function.
+                attn = attn.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+                attn = attn.clamp_(-100.0, 100.0)
+                attn = attn.moveaxis(1, -1)  # [B, S, S, n_heads]
             s = _add(s, w[i + 1] * self.layernorm_lm_emb(x))
             z = _add(z, self.proj_lm_attn[i](attn))
 

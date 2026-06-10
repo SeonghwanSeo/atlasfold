@@ -11,7 +11,7 @@ from torchmetrics import MeanMetric, MetricCollection
 
 from atlasfold.model import AtlasFoldConfig
 from atlasfold.model.network.diffusion_head import SamplingConfig
-from atlasfold.utils import structure_metrics
+from atlasfold.train.utils import structure_metrics
 
 from . import losses, validation_metrics
 from .model_train import AtlasFoldForTrain
@@ -444,13 +444,15 @@ class TrainingModule(pl.LightningModule):
         x_pred = sample_out["sample_coords"]  # [N, L, 14, 3]
 
         # Compute diffusion sample rank based on pLDDT.
-        plddt = sample_out["plddt"]  # [N, L]
-        mask = feat["seq_mask"]  # [L]
-
-        w = mask.float()  # [L,]
-        w_sum = w.sum(-1).clamp(min=1)
-        avg_plddt = (plddt * w).sum(-1) / w_sum  # [N]
-        rank_idx = int(torch.argmax(avg_plddt))
+        if self.train_confidence_head:
+            plddt = sample_out["plddt"]  # [N, L]
+            mask = feat["seq_mask"]  # [L]
+            w = mask.float()  # [L,]
+            w_sum = w.sum(-1).clamp(min=1)
+            avg_plddt = (plddt * w).sum(-1) / w_sum  # [N]
+            rank_idx = int(torch.argmax(avg_plddt))
+        else:
+            rank_idx = None
 
         with torch.autocast("cuda", torch.float32):
             metrics: dict[str, float] = validation_metrics.compute_validation_metric(

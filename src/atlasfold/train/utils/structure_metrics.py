@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from atlasfold.common import residue_utils
-from atlasfold.utils.geometry.rigid_align import rigid_align
+from atlasfold.utils.geometry.rigid_align import rigid_align, rigid_align_atom14
 from atlasfold.utils.torch_utils import gather_dim
 
 
@@ -42,7 +42,7 @@ def compute_rmsd(
         x_pred = rigid_align(x_pred, x_gt, mask)
     sq_diff = ((x_pred - x_gt) ** 2).sum(-1)  # (*, N)
     w = mask.float()
-    return torch.sqrt((sq_diff * w).sum(-1) / w.sum(-1).clamp(min=1))
+    return torch.sqrt((sq_diff * w).sum(-1) / w.sum(-1).clamp_min(1))
 
 
 @torch.no_grad()
@@ -70,9 +70,12 @@ def compute_rmsd_atom14(
     rmsd : torch.Tensor
         RMSD between predicted and ground truth coordinates, shape (*,)
     """
-    return compute_rmsd(
-        x_pred.flatten(-3, -2), x_gt.flatten(-3, -2), mask.flatten(-2), align
-    )
+    if align:
+        x_pred = rigid_align_atom14(x_pred, x_gt, mask)
+    sq_diff = ((x_pred - x_gt) ** 2).sum(-1)  # (*, L, 14)
+    w = mask.float()  # (*, L, 14)
+    w_sum = w.sum((-1, -2)).clamp_min(1.0)  # (*,)
+    return torch.sqrt((sq_diff * w).sum((-1, -2)) / w_sum)
 
 
 @torch.no_grad()
@@ -120,7 +123,7 @@ def compute_lddt(
     pair_mask &= pdist_gt < cutoff
 
     w = pair_mask.float()
-    lddt = (score * w).sum((-1, -2)) / w.sum((-1, -2)).clamp(min=1)
+    lddt = (score * w).sum((-1, -2)) / w.sum((-1, -2)).clamp_min(1)
     return lddt
 
 
@@ -188,7 +191,7 @@ def compute_lddt_fullatom(
 
 # Compute restype_atom_swap based on restype_ambiguous_atoms
 @functools.lru_cache(maxsize=1)
-def get_restype_atom_swap(device_type: str) -> torch.Tensor:
+def get_restype_atom_swap() -> torch.Tensor:
     restype_atom_swap = np.tile(np.arange(14), (21, 1))
     for res_name, (group1, group2) in residue_utils.restype_ambiguous_atoms.items():
         restype = residue_utils.restype_orders[residue_utils.restype_3to1[res_name]]
@@ -198,16 +201,16 @@ def get_restype_atom_swap(device_type: str) -> torch.Tensor:
             atom_idx2 = atom14_order[atom_name2]
             restype_atom_swap[restype, atom_idx1] = atom_idx2
             restype_atom_swap[restype, atom_idx2] = atom_idx1
-    return torch.from_numpy(restype_atom_swap).to(device_type)
+    return torch.from_numpy(restype_atom_swap)
 
 
 @functools.lru_cache(maxsize=1)
-def get_restype_has_ambiguous_atoms(device_type: str) -> torch.Tensor:
+def get_restype_has_ambiguous_atoms() -> torch.Tensor:
     has_ambiguous_atoms = np.zeros(21, dtype=bool)
     for res_name in residue_utils.restype_ambiguous_atoms.keys():
         restype = residue_utils.restype_orders[residue_utils.restype_3to1[res_name]]
         has_ambiguous_atoms[restype] = True
-    return torch.from_numpy(has_ambiguous_atoms).to(device_type)
+    return torch.from_numpy(has_ambiguous_atoms)
 
 
 @torch.no_grad()
@@ -238,46 +241,36 @@ def get_aligned_gt_structure(
         Tensor of shape (L, 14) containing boolean masks for resolved atoms
         in the aligned ground truth structure.
     """
-    L = x_gt.shape[0]
-
     # Rigid alignment of GT to predicted structure using backbone atoms
-    # Align predicted coordinates to ground truth coordinates using Kabsch algorithm.
-    # Get anchor (N CA C) indices for alignment
-    atom_index = torch.arange(L * 14, device=x_gt.device)  # [L*14]
-    anchor_index = atom_index.view(L, 14)[:, [0, 1, 2]].reshape(-1)  # [L*3]
-    x_gt_aligned_b = rigid_align(
-        coords=x_gt.view(L * 14, 3),
-        target=x_pred.view(L * 14, 3),
-        mask=mask.view(L * 14),
-        anchor_index=anchor_index,
-    ).view(L, 14, 3)
+    x_gt_aligned_b = rigid_align_atom14(x_gt, x_pred, mask, align_mode="backbone")
 
     # Get the atom swap indices for each residue type
-    restype_has_ambiguous_atoms = get_restype_has_ambiguous_atoms(x_gt.device.type)
-    restype_atom_swap = get_restype_atom_swap(x_gt.device.type)
+    restype_has_ambiguous_atoms = get_restype_has_ambiguous_atoms().to(x_gt.device)
+    restype_atom_swap = get_restype_atom_swap().to(x_gt.device)
 
     swap_indices = restype_atom_swap[aatype]  # [L, 14]
     check_ambiguous = restype_has_ambiguous_atoms[aatype]  # [L]
     num_resolved_atoms = mask.sum(-1)  # [L]
     check_ambiguous = check_ambiguous & (num_resolved_atoms >= 3)
 
-    swap_indices = swap_indices[check_ambiguous]  # [N, 14]
-    query = x_gt_aligned_b[check_ambiguous]  # [N, 14, 3]
-    query_swapped = gather_dim(query, dim=-2, index=swap_indices[..., None])  # [N, 14, 3]
-    target = x_pred[check_ambiguous]  # [N, 14, 3]
+    swap_indices = swap_indices[check_ambiguous]  # [Lswap, 14]
+    query = x_gt_aligned_b[check_ambiguous]  # [Lswap, 14, 3]
+    query_swapped = gather_dim(query, -2, index=swap_indices[..., None])  # [Lswap, 14, 3]
+    target = x_pred[check_ambiguous]  # [Lswap, 14, 3]
 
-    # Use local_mask to avoid overwriting the global mask_b reference
-    local_mask = mask[check_ambiguous]  # [N, 14]
-    mask_swapped = gather_dim(local_mask, dim=-1, index=swap_indices)  # [N, 14]
+    m = mask[check_ambiguous]  # [Lswap, 14]
+    m_swapped = gather_dim(m, -1, index=swap_indices)  # [Lswap, 14]
 
     # Compute per-residue RMSD with local-alignment
-    err_orig = compute_rmsd(query, target, local_mask, align=True)
-    err_swap = compute_rmsd(query_swapped, target, mask_swapped, align=True)
+    err_orig = compute_rmsd(query, target, m, align=True)
+    err_swap = compute_rmsd(query_swapped, target, m_swapped, align=True)
 
     # Choose the original or swapped GT structure based on which has lower local error
     swap_res = err_swap < err_orig  # [N]
-    x_to_insert = torch.where(swap_res[:, None, None], query_swapped, query)  # [N, 14, 3]
-    mask_to_insert = torch.where(swap_res[:, None], mask_swapped, local_mask)  # [N, 14]
+    x_to_insert = torch.where(
+        swap_res[:, None, None], query_swapped, query
+    )  # [Lswap, 14, 3]
+    mask_to_insert = torch.where(swap_res[:, None], m_swapped, m)  # [Lswap, 14]
 
     # Clone from the batched tensors that were NOT overwritten
     final_x_gt = x_gt_aligned_b.clone()

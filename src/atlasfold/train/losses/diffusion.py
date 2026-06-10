@@ -2,9 +2,9 @@ from functools import partial
 
 import torch
 
-from atlasfold.train.kernels.cdist import cdist as kernel_cdist
+from atlasfold.train.utils.kernels.cdist import cdist as kernel_cdist
 from atlasfold.utils.checkpointing import checkpoint_fn
-from atlasfold.utils.geometry.rigid_align import rigid_align
+from atlasfold.utils.geometry.rigid_align import rigid_align_atom14_torch
 
 
 def safe_cdist(x: torch.Tensor, y: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
@@ -36,31 +36,17 @@ class MSELoss(torch.nn.Module):
         mse_loss: torch.Tensor
             Computed MSE loss. Shape (B, N).
         """
-        B, N, L, _, _ = x_pred.shape
-
         x_gt = x_gt.unsqueeze(1)  # [B, 1, L, 14, 3]
         mask = mask.unsqueeze(1)  # [B, 1, L, 14]
 
         # Align predicted coordinates to ground truth coordinates using Kabsch algorithm.
-        # Get anchor (N CA C) indices for alignment
-        atom_index = torch.arange(L * 14).view(L, 14)  # [L, 14]
-        anchor_index = atom_index[:, [0, 1, 2]].reshape(-1)  # [L*3]
-        with torch.no_grad():
-            x_gt = rigid_align(
-                coords=x_gt.view(B, 1, L * 14, 3),
-                target=x_pred.view(B, N, L * 14, 3),
-                mask=mask.view(B, 1, L * 14),
-                anchor_index=anchor_index,
-            ).view(B, N, L, 14, 3)
+        x_gt = rigid_align_atom14_torch(x_gt, x_pred, mask, align_mode="backbone")
 
         # Compute mse loss
-        x_pred_flat = x_pred.view(B, N, L * 14, 3)  # [B, N, L*14, 3]
-        x_gt_flat = x_gt.view(B, N, L * 14, 3)  # [B, 1, L*14, 3]
-        mask_flat = mask.view(B, 1, L * 14)  # [B, 1, L*14]
-        mask_sum = mask_flat.sum(-1).clamp(min=1)  # [B, 1]
-        d_sq = ((x_pred_flat - x_gt_flat) ** 2).sum(-1)  # [B, N, L*14]
-        d_sq = d_sq * mask_flat  # Mask out unresolved atoms
-        mse_loss = (1 / 3) * d_sq.sum(-1) / mask_sum  # [B, N]
+        w = mask.float()
+        w_sum = w.sum((-1, -2)).clamp_min(1)  # [B, 1]
+        d_sq = ((x_pred - x_gt) ** 2).sum(-1)  # [B, N, L, 14]
+        mse_loss = (1 / 3) * (d_sq * w).sum((-1, -2)) / w_sum  # [B, N]
         return mse_loss
 
 

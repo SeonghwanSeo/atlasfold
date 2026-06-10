@@ -6,7 +6,7 @@ import torch
 
 from atlasfold.model import AtlasFold
 from atlasfold.model.network.diffusion_head import DiffusionHead, SamplingConfig
-from atlasfold.utils.geometry.random_augment import center_random_augmentation
+from atlasfold.utils.geometry.random_augment import center_random_augmentation_atom14
 from atlasfold.utils.torch_utils import expand_dim, get_context_dtype
 
 
@@ -186,10 +186,7 @@ class AtlasFoldForTrain(AtlasFold):
             mask = expand_dim(resolved_mask, N, dim=1)  # [B, N, L, 14]
 
             # Random augmentation
-            x_gt = center_random_augmentation(
-                x_gt.flatten(-3, -2),  # [B, N, L*14, 3]
-                mask.flatten(-2, -1),  # [B, N, L*14]
-            ).unflatten(-2, (-1, 14))  # [B, N, L, 14, 3]
+            x_gt = center_random_augmentation_atom14(x_gt, mask)
 
             # Add noise
             noise = torch.randn_like(x_gt)  # [B, N, L, 14, 3]

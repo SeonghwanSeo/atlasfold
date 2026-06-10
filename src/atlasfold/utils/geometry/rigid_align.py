@@ -4,210 +4,149 @@ from typing import overload
 import numpy as np
 import torch
 
-__all__ = ["compute_rmsd", "rigid_align"]
-
 
 @overload
-def compute_rmsd(
+def rigid_align_atom14(
     coords: np.ndarray,
     target: np.ndarray,
-    mask: np.ndarray | None,
-    align: bool = False,
-    no_svd: bool = False,
+    mask: np.ndarray | None = ...,
+    align_mode: str = ...,
 ) -> np.ndarray: ...
 
 
 @overload
-def compute_rmsd(
+def rigid_align_atom14(
     coords: torch.Tensor,
     target: torch.Tensor,
-    mask: torch.Tensor | None,
-    align: bool = False,
-    no_svd: bool = False,
+    mask: torch.Tensor | None = ...,
+    align_mode: str = ...,
 ) -> torch.Tensor: ...
 
 
-def compute_rmsd(
+def rigid_align_atom14(
     coords: np.ndarray | torch.Tensor,
     target: np.ndarray | torch.Tensor,
-    mask: np.ndarray | torch.Tensor | None,
-    align: bool = False,
-    no_svd: bool = False,
+    mask: np.ndarray | torch.Tensor | None = None,
+    align_mode: str = "full",
 ) -> np.ndarray | torch.Tensor:
     """
-    computes the root mean square deviation (rmsd) between two sets of coordinates.
-
-    Parameters
-    ----------
-    coords : np.ndarray | torch.Tensor
-        Array of shape (*, N, 3) representing the coordinates to be aligned.
-    target : np.ndarray | torch.Tensor
-        Array of shape (*, N, 3) representing the target coordinates.
-    mask : np.ndarray | torch.Tensor (optional)
-        Array of shape (*, N) indicating valid points (1 for valid, 0 for invalid).
-    align : bool, optional
-        If True, perform rigid alignment before computing RMSD (default: False).
-    no_svd : bool, optional
-        If True, use non-SVD method for RMSD computation (default: False).
-
-    Returns
-    -------
-    rmsd : np.ndarray | torch.Tensor
-        RMSD values.
+    Performs rigid alignment of atom14 coordinates to a target set.
+    Dispatches to NumPy or PyTorch implementations based on input type.
     """
-    if no_svd:
-        # Non-SVD based RMSD computation (float64 for numerical stability)
-        if isinstance(coords, np.ndarray):
-            assert isinstance(target, np.ndarray) and isinstance(mask, np.ndarray | None)
-            return compute_rmsd_numpy(coords, target, mask, align)
-        elif isinstance(coords, torch.Tensor):
-            assert isinstance(target, torch.Tensor) and isinstance(
-                mask, torch.Tensor | None
-            )
-            return compute_rmsd_torch(coords, target, mask, align)
-        else:
-            raise TypeError(
-                f"Unsupported array type: {type(coords)}. "
-                "Expected np.ndarray or torch.Tensor."
-            )
+    if isinstance(coords, np.ndarray):
+        assert isinstance(target, np.ndarray)
+        return rigid_align_atom14_numpy(coords, target, mask, align_mode)  # type: ignore
+    elif isinstance(coords, torch.Tensor):
+        assert isinstance(target, torch.Tensor)
+        return rigid_align_atom14_torch(coords, target, mask, align_mode)  # type: ignore
     else:
-        # Use SVD-based method via rigid alignment
-        if align:
-            coords = rigid_align(coords, target, mask)
-        diff = coords - target
-        if mask is None:
-            n_points = coords.shape[-2]
-        else:
-            mask_expanded = mask[..., None]
-            n_points = mask.sum(-1, dtype=target.dtype).clip(1)
-            diff = (
-                torch.where(mask_expanded, diff, 0.0)
-                if isinstance(diff, torch.Tensor)
-                else np.where(mask_expanded, diff, 0.0)
-            )
-
-        rmsd_sq = (diff**2).sum((-2, -1)) / n_points
-        rmsd = (rmsd_sq.clip(0.0)) ** 0.5
-        return rmsd
-
-
-def compute_rmsd_numpy(
-    coords: np.ndarray,
-    target: np.ndarray,
-    mask: np.ndarray | None,
-    align: bool = False,
-) -> np.ndarray:
-    """Compute minimal RMSD between two sets of coordinates without SVD.
-    NOTE(SeonghwanSeo): This function replaces the SVD-based RMSD computation
-    """
-    original_dtype = coords.dtype
-    # 1. Masking & Centering
-    if mask is None:
-        mask = np.ones(coords.shape[:-1], dtype=bool)
-
-    mask = mask.astype(bool, copy=False)  # [*, N]
-    mask_expanded = mask[..., np.newaxis]  # [*, N, 1]
-    mask_weights = mask_expanded.astype(np.float64)  # [*, N, 1]
-    n_points = mask.sum(axis=-1).clip(1)  # [*,]
-    # Sanitize inputs: If there are NaNs in masked regions, they will propagate
-    p = np.where(mask_expanded, coords, 0.0).astype(np.float64)  # [*, N, 3]
-    q = np.where(mask_expanded, target, 0.0).astype(np.float64)  # [*, N, 3]
-    del coords, target
-
-    if not align:
-        # Direct RMSD computation without alignment
-        return np.sqrt(
-            (((q - p) ** 2).sum(axis=(-2, -1)) / n_points).clip(0.0), dtype=original_dtype
+        raise TypeError(
+            f"Unsupported array type: {type(coords)}. "
+            "Expected np.ndarray or torch.Tensor."
         )
 
-    # Center coordinates
-    p_center = p.sum(-2, keepdims=True) / n_points[..., None, None]
-    q_center = q.sum(-2, keepdims=True) / n_points[..., None, None]
-    p_centered = (p - p_center) * mask_weights
-    q_centered = (q - q_center) * mask_weights
 
-    # 2. Compute E0 (Sum of squared norms)
-    e0 = (p_centered**2).sum(axis=(-1, -2)) + (q_centered**2).sum(axis=(-1, -2))  # [*,]
+def rigid_align_atom14_numpy(
+    coords: np.ndarray,
+    target: np.ndarray,
+    mask: np.ndarray | None = None,
+    align_mode: str = "full",
+) -> np.ndarray:
+    """
+    NumPy implementation of rigid alignment for atom14 coordinates.
+    """
+    shape = coords.shape
+    if len(shape) < 3 or shape[-2:] != (14, 3):
+        raise ValueError(f"Expected coords shape (*, L, 14, 3), got {shape}")
 
-    # 3. Compute Covariance Matrix H (P^T @ Q)
-    h = np.matmul(p_centered.swapaxes(-1, -2), q_centered)
+    if mask is None:
+        mask = np.ones(shape[:-1], dtype=bool)
 
-    # 4. Compute eigenvalues of H^T @ H
-    s_sq_matrix = np.matmul(h.swapaxes(-1, -2), h)
-    eigenvalues = np.linalg.eigvalsh(s_sq_matrix)
-    singular_values = np.sqrt(eigenvalues.clip(0.0))  # [*, 3]
+    # Create sub-mask based on align_mode
+    align_mask = np.zeros_like(mask)
+    mode = align_mode.lower()
+    if mode == "full":
+        align_mask = mask.copy()
+    elif mode == "ca":
+        align_mask[..., 1] = mask[..., 1]
+    elif mode == "backbone":
+        align_mask[..., 0:3] = mask[..., 0:3]
+    else:
+        raise ValueError(f"Unknown align_mode: {align_mode}")
 
-    # 5. Handle Reflection (Chirality check)
-    det_h = np.linalg.det(h)
-    sign = np.where(det_h < 0, -1.0, 1.0)
-    singular_values[..., 0] *= sign
+    # Flatten dimensions L and 14 for transform calculation
+    RT, t = get_rigid_transform_numpy(
+        coords.reshape(*shape[:-3], -1, 3),
+        target.reshape(*shape[:-3], -1, 3),
+        align_mask.reshape(*shape[:-3], -1),
+    )
 
-    # 6. Compute RMSD
-    # Trace of Sigma (sum of singular values)
-    trace_max = np.sum(singular_values, axis=-1)
-    rmsd_sq = (e0 - 2 * trace_max) / n_points
-    rmsd = np.sqrt(rmsd_sq.clip(0.0), dtype=original_dtype)
-    return rmsd
+    # Sanitize original coords before transformation
+    mask_expanded = mask[..., np.newaxis].astype(bool)
+    safe_coords = np.where(mask_expanded, coords, 0.0)
+
+    # Flatten for safe matrix multiplication, then reshape back
+    flat_safe_coords = safe_coords.reshape(*shape[:-3], -1, 3)
+    flat_aligned = np.matmul(flat_safe_coords, RT) + t[..., np.newaxis, :]
+
+    aligned = flat_aligned.reshape(shape)
+
+    # Re-mask invalid atoms to exactly 0.0
+    aligned = np.where(mask_expanded, aligned, 0.0)
+
+    return aligned
 
 
-def compute_rmsd_torch(
+@torch.no_grad()
+def rigid_align_atom14_torch(
     coords: torch.Tensor,
     target: torch.Tensor,
     mask: torch.Tensor | None = None,
-    align: bool = False,
+    align_mode: str = "full",
 ) -> torch.Tensor:
-    """Compute minimal RMSD between two sets of coordinates using PyTorch."""
-    original_dtype = coords.dtype
+    """
+    PyTorch implementation of rigid alignment for atom14 coordinates.
+    """
+    shape = coords.shape
+    if len(shape) < 3 or shape[-2:] != (14, 3):
+        raise ValueError(f"Expected coords shape (*, L, 14, 3), got {shape}")
 
-    # 1. Masking & Centering
     if mask is None:
-        mask = torch.ones(coords.shape[:-1], dtype=torch.bool, device=coords.device)
+        mask = torch.ones(shape[:-1], dtype=torch.bool, device=coords.device)
 
-    mask = mask.bool()
-    mask_expanded = mask.unsqueeze(-1)
-    mask_weights = mask_expanded.float()
+    # Create sub-mask based on align_mode
+    align_mask = torch.zeros_like(mask)
+    mode = align_mode.lower()
+    if mode == "full":
+        align_mask = mask.clone()
+    elif mode == "ca":
+        align_mask[..., 1] = mask[..., 1]
+    elif mode == "backbone":
+        align_mask[..., 0:3] = mask[..., 0:3]
+    else:
+        raise ValueError(f"Unknown align_mode: {align_mode}")
 
-    # Sanitize inputs: If there are NaNs in masked regions, they will propagate
-    p = torch.where(mask_expanded, coords, 0.0).float()
-    q = torch.where(mask_expanded, target, 0.0).float()
-    del coords, target
+    # Autocast handling for numerical stability
+    with torch.autocast(device_type=coords.device.type, enabled=False):
+        RT, t = get_rigid_transform_torch(
+            coords.reshape(*shape[:-3], -1, 3).float(),
+            target.reshape(*shape[:-3], -1, 3).float(),
+            align_mask.reshape(*shape[:-3], -1),
+        )
 
-    # mask_weights: [*, N, 1]
-    n_points = mask_weights.sum(dim=-1).clamp(min=1)
+        mask_expanded = mask.bool().unsqueeze(-1)
+        safe_coords = coords.masked_fill(~mask_expanded, 0.0).float()
 
-    if not align:
-        # Direct RMSD
-        rmsd = ((q - p).pow(2).sum((-2, -1)) / n_points).clamp(0.0).sqrt()
-        return rmsd.to(original_dtype)
+        # Flatten for safe matrix multiplication, then reshape back
+        flat_safe_coords = safe_coords.reshape(*shape[:-3], -1, 3)
+        flat_aligned = flat_safe_coords @ RT + t[..., None, :]
 
-    # Center coordinates
-    p_center = p.sum(-2, keepdim=True) / n_points[..., None, None]
-    q_center = q.sum(-2, keepdim=True) / n_points[..., None, None]
-    p_centered = (p - p_center) * mask_weights
-    q_centered = (q - q_center) * mask_weights
+        aligned = flat_aligned.reshape(shape)
 
-    # 2. Compute E0 (Sum of squared norms)
-    e0 = q_centered.pow(2).sum(dim=(-1, -2)) + p_centered.pow(2).sum(dim=(-1, -2))
+        # Re-mask invalid atoms to exactly 0.0
+        aligned = aligned.masked_fill(~mask_expanded, 0.0)
 
-    # 3. Compute Covariance Matrix H (P^T @ Q)
-    h = torch.matmul(p_centered.mT, q_centered)
-
-    # 4. Compute eigenvalues of H^T @ H
-    h_th = torch.matmul(h.mT, h)
-    eigenvalues = torch.linalg.eigvalsh(h_th)
-    singular_values = torch.sqrt(eigenvalues.clamp(min=0.0))
-
-    # 5. Handle Reflection (Chirality check)
-    det_h = torch.linalg.det(h)
-    sign = torch.where(det_h < 0, -1.0, 1.0)
-    s_others = singular_values[..., 1:].sum(dim=-1)
-    s_min = singular_values[..., 0] * sign
-
-    # 6. Compute RMSD
-    trace_max = s_others + s_min
-    rmsd_sq = (e0 - 2.0 * trace_max) / n_points
-    rmsd = rmsd_sq.clamp(min=0.0).sqrt()
-    return rmsd.to(original_dtype)
+    return aligned.to(coords.dtype)
 
 
 @overload
@@ -215,7 +154,6 @@ def rigid_align(
     coords: np.ndarray,
     target: np.ndarray,
     mask: np.ndarray | None,
-    anchor_index: np.ndarray | None = None,
 ) -> np.ndarray: ...
 
 
@@ -224,7 +162,6 @@ def rigid_align(
     coords: torch.Tensor,
     target: torch.Tensor,
     mask: torch.Tensor | None,
-    anchor_index: torch.Tensor | None = None,
 ) -> torch.Tensor: ...
 
 
@@ -232,7 +169,6 @@ def rigid_align(
     coords: np.ndarray | torch.Tensor,
     target: np.ndarray | torch.Tensor,
     mask: np.ndarray | torch.Tensor | None,
-    anchor_index: int | np.ndarray | torch.Tensor | None = None,
 ) -> np.ndarray | torch.Tensor:
     """
     Performs rigid alignment of a set of coordinates to a target set using SVD.
@@ -249,10 +185,6 @@ def rigid_align(
         Array of shape (*, N, 3) representing the target coordinates.
     mask : np.ndarray | torch.Tensor (optional)
         Array of shape (*, N) indicating valid points (1 for valid, 0 for invalid).
-    anchor_index : int | np.ndarray | torch.Tensor (optional)
-        Index or mask of points to be used as anchors for computing the alignment.
-        If provided, only these points contribute to the calculation of the
-        optimal transformation, which is then applied to all points in `coords`.
 
 
     Returns
@@ -267,9 +199,9 @@ def rigid_align(
     - If SVD fails, the identity rotation is used and a warning is issued.
     """
     if isinstance(coords, np.ndarray):
-        return rigid_align_numpy(coords, target, mask, anchor_index)  # type: ignore
+        return rigid_align_numpy(coords, target, mask)  # type: ignore
     elif isinstance(coords, torch.Tensor):
-        return rigid_align_torch(coords, target, mask, anchor_index)  # type: ignore
+        return rigid_align_torch(coords, target, mask)  # type: ignore
     else:
         raise TypeError(
             f"Unsupported array type: {type(coords)}. "
@@ -281,7 +213,6 @@ def rigid_align_numpy(
     coords: np.ndarray,
     target: np.ndarray,
     mask: np.ndarray | None,
-    anchor_index: int | np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Performs rigid alignment of a set of coordinates to a target set using SVD.
@@ -298,10 +229,6 @@ def rigid_align_numpy(
         Array of shape (*, N, 3) representing the target coordinates.
     mask : np.ndarray | None (optional)
         Array of shape (*, N) indicating valid points (1 for valid, 0 for invalid).
-    anchor_index : int | np.ndarray | None, optional
-        Index or mask of points to be used as anchors for computing the alignment.
-        If provided, only these points contribute to the calculation of the
-        optimal transformation, which is then applied to all points in `coords`.
 
     Returns
     -------
@@ -329,14 +256,7 @@ def rigid_align_numpy(
     coords = np.where(mask_expanded, coords, 0.0)
     target = np.where(mask_expanded, target, 0.0)
 
-    if anchor_index is not None:
-        # Select anchor points if provided
-        _coords = coords[..., anchor_index, :]
-        _target = target[..., anchor_index, :]
-        _mask = mask[..., anchor_index]
-        RT, T = get_rigid_transform_numpy(_coords, _target, _mask)
-    else:
-        RT, T = get_rigid_transform_numpy(coords, target, mask)
+    RT, T = get_rigid_transform_numpy(coords, target, mask)
 
     # Apply transformation: coords @ RT + T
     aligned_coords = np.matmul(coords, RT) + T[..., np.newaxis, :]
@@ -453,7 +373,6 @@ def rigid_align_torch(
     coords: torch.Tensor,
     target: torch.Tensor,
     mask: torch.Tensor | None,
-    anchor_index: int | torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Performs rigid alignment of a set of coordinates to a target set using SVD in PyTorch.
@@ -466,10 +385,6 @@ def rigid_align_torch(
         Array of shape (*, N, 3) representing the target coordinates.
     mask : torch.Tensor | None (optional)
         Array of shape (*, N) indicating valid points (1 for valid, 0 for invalid).
-    anchor_index : int | torch.Tensor | None, optional
-        Index or mask of points to be used as anchors for computing the alignment.
-        If provided, only these points contribute to the calculation of the
-        optimal transformation, which is then applied to all points in `coords`.
 
     Returns
     -------
@@ -493,14 +408,7 @@ def rigid_align_torch(
 
     # Compute rigid transformation under autocast for numerical stability
     with torch.autocast(device_type=coords.device.type, enabled=False):
-        if anchor_index is not None:
-            # Select anchor points if provided
-            _coords = coords[..., anchor_index, :]
-            _target = target[..., anchor_index, :]
-            _mask = mask[..., anchor_index]
-            RT, T = get_rigid_transform_torch(_coords, _target, _mask)
-        else:
-            RT, T = get_rigid_transform_torch(coords, target, mask)
+        RT, T = get_rigid_transform_torch(coords, target, mask)
 
         aligned_coords = coords @ RT + T[..., None, :]
 
