@@ -59,6 +59,7 @@ def get_center(coords: ArrayT, mask: ArrayT) -> ArrayT:
         return center
     else:
         assert isinstance(mask, torch.Tensor)
+        assert coords.dtype == torch.float32
         # Sanitize coords
         safe_coords = coords.masked_fill(~mask[..., None], 0.0)
 
@@ -123,8 +124,8 @@ def do_centering_atom14(
     shape = coords.shape
     assert shape[-2:] == (14, 3)
     return do_centering(
-        coords.reshape(*shape[:-3], -1, 3),
-        mask.reshape(*shape[:-3], -1),
+        coords.reshape(*coords.shape[:-3], -1, 3),
+        mask.reshape(*mask.shape[:-2], -1),
         mask_to_zero,
     ).reshape(shape)
 
@@ -134,7 +135,6 @@ def center_random_augmentation(
     mask: ArrayT,
     s_trans: float = 1.0,
     rng: np.random.Generator | torch.Generator | None = None,
-    synchronized: bool = False,
 ) -> ArrayT:
     """Centering and Random Augmentation (NumPy/Torch version)
     See Section 3.7 Algorithm 19 of the AlphaFold3 paper.
@@ -142,14 +142,11 @@ def center_random_augmentation(
     if isinstance(coords, np.ndarray):
         assert isinstance(mask, np.ndarray)
         assert isinstance(rng, np.random.Generator | None)
-        return _center_random_augmentation_npy(coords, mask, s_trans, rng, synchronized)
+        return _center_random_augmentation_npy(coords, mask, s_trans, rng)
     else:
         assert isinstance(mask, torch.Tensor)
         assert isinstance(rng, torch.Generator | None)
-        with torch.no_grad(), torch.autocast(coords.device.type, enabled=False):
-            return _center_random_augmentation_torch(
-                coords, mask, s_trans, rng, synchronized
-            )
+        return _center_random_augmentation_torch(coords, mask, s_trans, rng)
 
 
 def center_random_augmentation_atom14(
@@ -157,20 +154,17 @@ def center_random_augmentation_atom14(
     mask: ArrayT,
     s_trans: float = 1.0,
     rng: np.random.Generator | torch.Generator | None = None,
-    synchronized: bool = False,
 ) -> ArrayT:
     """Centering and Random Augmentation for atom14 coordinates.
     See Section 3.7 Algorithm 19 of the AlphaFold3 paper.
     """
-    shape = coords.shape
-    assert shape[-2:] == (14, 3)
+    assert coords.shape[-2:] == (14, 3)
     return center_random_augmentation(
-        coords.reshape(*shape[:-3], -1, 3),
-        mask.reshape(*shape[:-3], -1),
+        coords.reshape(*coords.shape[:-3], -1, 3),
+        mask.reshape(*mask.shape[:-2], -1),
         s_trans,
         rng,
-        synchronized,
-    ).reshape(shape)
+    ).reshape(coords.shape)
 
 
 def _center_random_augmentation_npy(
@@ -178,7 +172,6 @@ def _center_random_augmentation_npy(
     mask: np.ndarray,
     s_trans: float = 1.0,
     rng: np.random.Generator | None = None,
-    synchronized: bool = False,
 ) -> np.ndarray:
     """Centering and Random Augmentation (NumPy version)
     See Section 3.7 Algorithm 19 of the AlphaFold3 paper.
@@ -187,12 +180,7 @@ def _center_random_augmentation_npy(
 
     rng = rng or np.random.default_rng()
 
-    if synchronized:
-        R = random_rotations_npy((1,), dtype=np.float32, rng=rng)  # [1, 3, 3]
-    else:
-        R = random_rotations_npy(
-            coords.shape[:-2], dtype=np.float32, rng=rng
-        )  # [..., 3, 3]
+    R = random_rotations_npy(coords.shape[:-2], dtype=np.float32, rng=rng)  # [..., 3, 3]
 
     # Matrix multiplication is safe (NaNs stay local to invalid atoms)
     coords = coords @ R
@@ -216,27 +204,23 @@ def _center_random_augmentation_torch(
     mask: torch.Tensor,
     s_trans: float = 1.0,
     rng: torch.Generator | None = None,
-    synchronized: bool = False,
 ) -> torch.Tensor:
     """Centering and Random Augmentation
     See Section 3.7 Algorithm 19 CentreRandomAugmentation
     """
-    coords = do_centering(coords, mask, mask_to_zero=False)
+    assert coords.dtype == torch.float32
+    with torch.autocast(coords.device.type, enabled=False):
+        coords = do_centering(coords, mask, mask_to_zero=False)
 
-    if synchronized:
-        R = random_rotations_torch((1,), coords.dtype, coords.device, rng)  # [1, 3, 3]
-    else:
-        R = random_rotations_torch(
-            coords.shape[:-2], coords.dtype, coords.device, rng
-        )  # [..., 3, 3]
-    coords = coords @ R
+        R = random_rotations_torch(coords.shape[:-2], coords.device, rng)  # [..., 3, 3]
+        coords = coords @ R
 
-    if s_trans > 0.0:
-        noise = torch.randn_like(coords[..., 0:1, :], generator=rng)
-        coords.add_(noise, alpha=s_trans)
+        if s_trans > 0.0:
+            noise = torch.randn_like(coords[..., 0:1, :], generator=rng)
+            coords.add_(noise, alpha=s_trans)
 
-    # Mask out
-    coords[~mask] = 0.0
+        # Mask out
+        coords.masked_fill_(~mask[..., None], 0.0)
 
     return coords
 
@@ -255,13 +239,12 @@ def random_rotations_npy(
 
 def random_rotations_torch(
     shape: tuple[int, ...],
-    dtype: torch.dtype,
     device: torch.device,
     rng: torch.Generator | None = None,
 ) -> torch.Tensor:
     """Generate random rotations as 3x3 rotation matrices."""
     n = math.prod(shape)
-    o = torch.randn((n, 4), dtype=dtype, device=device, generator=rng)
+    o = torch.randn((n, 4), dtype=torch.float32, device=device, generator=rng)
     s = o.pow(2).sum(1)
     quaternions = o / copysign(torch.sqrt(s), o[:, 0])[:, None]
     return quaternion_to_matrix(quaternions).reshape(*shape, 3, 3)

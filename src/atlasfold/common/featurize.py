@@ -26,6 +26,7 @@ DEFAULT_BUCKETS = [
 def featurize(
     sequence: str,
     residue_index: Sequence[int] | None = None,
+    pad_to_multiple_of: int | None = None,
 ) -> dict[str, np.ndarray]:
     """Featurize the input sequence for the model."""
     # Sanitize the input sequence
@@ -96,8 +97,15 @@ def featurize(
         "atom37_mask": atom37_mask,  # [L, 37]
         "pseudo_beta": cbeta_idx,  # [L]
     }
+    feat = {**lm_input, **folding_input}
 
-    return {**lm_input, **folding_input}
+    if pad_to_multiple_of is not None:
+        for k, v in feat.items():
+            pad_len = (-len(v)) % pad_to_multiple_of
+            pad_width = ((0, pad_len),) + ((0, 0),) * (v.ndim - 1)
+            feat[k] = np.pad(v, pad_width, constant_values=0)
+
+    return feat
 
 
 def featurize_batch(

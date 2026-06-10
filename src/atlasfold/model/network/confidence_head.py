@@ -282,10 +282,10 @@ class ConfidenceHead(nn.Module):
                 s = s.float()
                 logits["plddt"] = self.plddt_head(s)
                 logits["experimentally_resolved"] = self.experimentally_resolved_head(s)
-                if compute_pae:
-                    logits["pae"] = self.pae_head(
-                        z, mask, use_cuequiv_kernels=use_cuequiv_kernels
-                    )
+            if compute_pae:
+                logits["pae"] = self.pae_head(
+                    z, mask, use_cuequiv_kernels=use_cuequiv_kernels
+                )
             return logits
 
         B, N, L, _, _ = x_pred.shape

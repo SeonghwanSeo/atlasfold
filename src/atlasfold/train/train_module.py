@@ -276,16 +276,19 @@ class TrainingModule(pl.LightningModule):
         batch: dict[str, torch.Tensor],
         label: dict[str, torch.Tensor] | None,
         num_recycles: int,
-        sampling_config: SamplingConfig,
         mode: str,
     ):
         if mode == "train":
             assert label is not None, "Label cannot be None in training mode"
+            training_config = self.training_config
+            sampling_config = SamplingConfig(
+                num_steps=training_config.num_mini_rollout_steps
+            )
             return self.model.forward_train(
                 batch=batch,
                 label=label,
                 num_recycles=num_recycles,
-                diffusion_batch_size=self.training_config.diffusion_batch_size,
+                diffusion_batch_size=training_config.diffusion_batch_size,
                 train_trunk=self.train_trunk,
                 train_diffusion_head=self.train_diffusion_head,
                 train_confidence_head=self.train_confidence_head,
@@ -294,10 +297,13 @@ class TrainingModule(pl.LightningModule):
             )
 
         else:
+            val_config = self.validation_config
+            sampling_config = SamplingConfig(num_steps=val_config.num_steps)
             return self.model.inference(
                 batch,
-                num_recycles=num_recycles,
                 mode="base",
+                num_recycles=num_recycles,
+                num_samples=val_config.num_diffusion_samples,
                 sampling_config=sampling_config,
                 compute_pae=False,
                 return_representations=False,
@@ -316,17 +322,11 @@ class TrainingModule(pl.LightningModule):
         idx = self.global_step % len(self.recycles_per_step)
         num_recycles = int(self.recycles_per_step[idx])
 
-        sampling_config = SamplingConfig(
-            num_samples=1,
-            num_steps=training_config.num_mini_rollout_steps,
-        )
-
         # Compute the forward pass
         model_out: dict[str, torch.Tensor] = self(
             batch=batch["feat"],
             label=batch["label"],
             num_recycles=num_recycles,
-            sampling_config=sampling_config,
             mode="train",
         )
 
@@ -420,16 +420,11 @@ class TrainingModule(pl.LightningModule):
     ):
         feat, label = batch["feat"], batch["label"]
         val_config = self.validation_config
-        sampling_config = SamplingConfig(
-            num_samples=val_config.num_diffusion_samples,
-            num_steps=val_config.num_steps,
-        )
         try:
             sample_out: dict[str, torch.Tensor] = self(
                 batch=feat,
                 label=None,
                 num_recycles=val_config.num_recycles,
-                sampling_config=sampling_config,
                 mode="validation",
             )
         except RuntimeError as e:  # catch out of memory exceptions

@@ -6,7 +6,9 @@ from functools import partial
 
 import torch
 
+from atlasfold.common.featurize import featurize
 from atlasfold.model.network import confidence_head, diffusion_head, distogram_head, trunk
+from atlasfold.model.network.diffusion_head import SamplingConfig
 from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
 from atlasfold.model.network.rel_pos_encoding import RelativePositionEncoding
 from atlasfold.model.utils import confidence_metrics
@@ -186,13 +188,32 @@ class AtlasFold(torch.nn.Module):
     # ==================================================
     # Inference
     # ==================================================
+    def fold(
+        self,
+        sequence: str,
+        mode: str = "base",
+        num_recycles: int = 3,
+        num_samples: int = 3,
+        sampling_config: SamplingConfig | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Fold a single sequence."""
+        batch = featurize(sequence, pad_to_multiple_of=32)
+        batch = {k: torch.as_tensor(v, device=self.device) for k, v in batch.items()}
+        out = self.inference(batch, mode, num_recycles, num_samples, sampling_config)
+        # Remove padding
+        length = len(sequence)
+        out["sample_coords"] = out["sample_coords"][:length]
+        out["distogram.logits"] = out["distogram.logits"][:length, :length]
+        return out
+
     @torch.inference_mode()
     def inference(
         self,
         batch: dict[str, torch.Tensor],
-        num_recycles: int,
-        mode: str,
-        sampling_config: diffusion_head.SamplingConfig,
+        mode: str = "full",
+        num_recycles: int = 3,
+        num_samples: int = 3,
+        sampling_config: SamplingConfig | None = None,
         compute_pae: bool = True,
         return_representations: bool = False,
         # Advanced options
@@ -265,6 +286,7 @@ class AtlasFold(torch.nn.Module):
 
         # Run trunk
         s, z = self.run_trunk(batch, num_recycles, mode, mlm_prob)
+        s, z = s.float(), z.float()
         if return_representations:
             out["trunk.s"] = s
             out["trunk.z"] = z
@@ -275,7 +297,9 @@ class AtlasFold(torch.nn.Module):
         out["distogram.boundaries"] = distogram_out["boundaries"]
 
         # Run diffusion heads
-        sample_coords = self.diffusion_head.sample(batch, s, z, sampling_config)
+        sample_coords = self.diffusion_head.sample(
+            batch, s, z, num_samples, sampling_config
+        )
         out["sample_coords"] = sample_coords
 
         # Run confidence head

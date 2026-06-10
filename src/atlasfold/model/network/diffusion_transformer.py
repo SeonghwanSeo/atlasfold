@@ -1,6 +1,7 @@
 import math
 
 import einops
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -25,12 +26,11 @@ class FourierEmbedding(nn.Module):
 
     def __init__(self, channel: int):
         super().__init__()
-        generator = torch.Generator()
-        generator.manual_seed(42)
-        w = torch.randn(size=(1, channel), generator=generator)
-        b = torch.randn(size=(1, channel), generator=generator)
-        self.register_buffer("w", w)
-        self.register_buffer("b", b)
+        rng = np.random.default_rng(seed=42)
+        w = rng.normal(size=(1, channel)).astype(np.float32)
+        b = rng.normal(size=(1, channel)).astype(np.float32)
+        self.register_buffer("w", torch.as_tensor(w))
+        self.register_buffer("b", torch.as_tensor(b))
 
     def forward(self, t_hat: torch.Tensor) -> torch.Tensor:
         """See Section 3.7 Algorithm 22 of AlphaFold3 paper."""

@@ -13,7 +13,7 @@ from atlasfold.model.network.diffusion_transformer import (
     SingleConditioning,
 )
 from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
-from atlasfold.utils.geometry.random_augment import center_random_augmentation_atom14
+from atlasfold.utils.geometry.random_augment import do_centering, random_rotations_torch
 
 SIGMA_DATA = 16.0
 
@@ -22,7 +22,6 @@ _ScalarOrTensor = TypeVar("_ScalarOrTensor", float, torch.Tensor)
 
 @dataclasses.dataclass(kw_only=True)
 class SamplingConfig:
-    num_samples: int = 1
     num_steps: int = 200
     sigma_min: float = 0.0004
     sigma_max: float = 160.0
@@ -264,7 +263,8 @@ class DiffusionHead(nn.Module):
         batch: dict[str, torch.Tensor],
         s: torch.Tensor,
         z: torch.Tensor,
-        config: SamplingConfig,
+        num_samples: int = 1,
+        config: SamplingConfig | None = None,
     ) -> torch.Tensor:
         """Sample structures via diffusion sampling.
         See Section 3.7: Algorithm 18 of AlphaFold3 paper.
@@ -277,6 +277,8 @@ class DiffusionHead(nn.Module):
             The single representation, shape [B, L, c_s].
         z : torch.Tensor
             The pair representation, shape [B, L, L, c_z].
+        num_samples : int
+            The number of samples to generate for each input in the batch.
         config : SamplingConfig
             The sampling configuration.
 
@@ -285,12 +287,12 @@ class DiffusionHead(nn.Module):
         coords : torch.Tensor
             The sampled atom coordinates, shape [B, N, L, 14, 3].
         """
+        config = SamplingConfig() if config is None else config
         device = s.device
 
-        # Sample prior
+        B, L = batch["aatype_int"].shape
+        N = num_samples
         mask = batch["atom14_mask"].unsqueeze(1)  # (B, 1, L, 14)
-        B, _, L, _ = mask.shape
-        N = config.num_samples
 
         def sample_noise() -> torch.Tensor:
             """Sample noise with synchronized randomness across different inputs.
@@ -299,7 +301,7 @@ class DiffusionHead(nn.Module):
             """
             return torch.randn(
                 size=(1, N, L, 14, 3), device=device, dtype=torch.float32
-            ).repeat(B, 1, 1, 1, 1)  # (B, N, L, 14, 3)
+            ).expand(B, -1, -1, -1, -1)  # (B, N, L, 14, 3)
 
         # Get noise schedule
         sigmas: list[float] = config.get_sigmas()
@@ -326,7 +328,7 @@ class DiffusionHead(nn.Module):
         # Gradually denoise
         for step in range(1, config.num_steps + 1):
             # Apply centering and random augmentation.
-            x = center_random_augmentation_atom14(x, mask, s_trans=1.0, synchronized=True)
+            x = self.random_augmentation(x, mask)
 
             sigma_tm, sigma_t = sigmas[step - 1], sigmas[step]
             gamma = config.gamma_0 * (sigma_t > config.gamma_min)
@@ -345,6 +347,25 @@ class DiffusionHead(nn.Module):
             x = x_noisy + config.step_scale * dt * delta
 
         return x
+
+    @staticmethod
+    def random_augmentation(coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        B, N, L, _, _ = coords.shape
+        coords = coords.view(B, N, L * 14, 3)
+        mask = mask.view(B, -1, L * 14)
+
+        with torch.autocast(coords.device.type, enabled=False):
+            coords = do_centering(coords, mask, mask_to_zero=False)
+
+            R = random_rotations_torch((N,), coords.device)  # [N, 3, 3]
+            coords = coords @ R.unsqueeze(0)  # [B, N, L*14, 3]
+
+            noise = torch.randn((1, N, 1, 3), device=coords.device)  # [1, N, 1, 3]
+            coords.add_(noise)
+
+            # Mask out
+            coords.masked_fill_(~mask[..., None], 0.0)
+        return coords.view(B, N, L, 14, 3)
 
     def inference_step(
         self,

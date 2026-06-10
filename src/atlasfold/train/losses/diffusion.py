@@ -25,18 +25,18 @@ class MSELoss(torch.nn.Module):
         Parameters
         ----------
         x_pred : torch.Tensor
-            Predicted coordinates from the model. Shape (B, N, L, 14, 3).
+            Predicted coordinates from the model. Shape [B, N, L, 14, 3].
         x_gt : torch.Tensor
-            Ground truth coordinates. Shape (B, L, 14, 3).
+            Ground truth coordinates. Shape [B, L, 14, 3].
         mask : torch.Tensor
             Resolved mask per atom of shape [B, L, 14].
 
         Returns
         -------
         mse_loss: torch.Tensor
-            Computed MSE loss. Shape (B, N).
+            Computed MSE loss. Shape [B, N].
         """
-        x_gt = x_gt.unsqueeze(1)  # [B, 1, L, 14, 3]
+        x_gt = x_gt.unsqueeze(1).expand(x_pred.shape)  # [B, N, L, 14, 3]
         mask = mask.unsqueeze(1)  # [B, 1, L, 14]
 
         # Align predicted coordinates to ground truth coordinates using Kabsch algorithm.
@@ -45,7 +45,7 @@ class MSELoss(torch.nn.Module):
         # Compute mse loss
         w = mask.float()
         w_sum = w.sum((-1, -2)).clamp_min(1)  # [B, 1]
-        d_sq = ((x_pred - x_gt) ** 2).sum(-1)  # [B, N, L, 14]
+        d_sq = (x_pred - x_gt).pow(2).sum(-1)  # [B, N, L, 14]
         mse_loss = (1 / 3) * (d_sq * w).sum((-1, -2)) / w_sum  # [B, N]
         return mse_loss
 
@@ -92,9 +92,9 @@ class SmoothLDDTLoss(torch.nn.Module):
         Parameters
         ----------
         x_pred : torch.Tensor
-            Predicted coordinates from the model. Shape (B, N, L, 14, 3).
+            Predicted coordinates from the model. Shape [B, N, L, 14, 3].
         x_gt : torch.Tensor
-            Ground truth coordinates. Shape (B, L, 14, 3).
+            Ground truth coordinates. Shape [B, L, 14, 3].
         mask : torch.Tensor
             Resolved mask per atom of shape [B, L, 14].
 
@@ -103,13 +103,9 @@ class SmoothLDDTLoss(torch.nn.Module):
         lddt_loss: torch.Tensor
             Computed LDDT loss. Shape (B, N).
         """
-        # NOTE: Due to the memory constraint, we change the order of operations
-        # from the original paper implementation.
-
-        B, N, L, _, _ = x_pred.shape
-
+        batch_size = x_pred.shape[0]
         losses = []
-        for b_i in range(B):
+        for b_i in range(batch_size):
             losses.extend(
                 self._forward_single(
                     x_pred[b_i],  # [N, L, 14, 3]
@@ -117,8 +113,7 @@ class SmoothLDDTLoss(torch.nn.Module):
                     mask[b_i],  # [L, 14]
                 )
             )
-        lddt_loss = torch.cat(losses, dim=0)  # [B*N]
-        lddt_loss = lddt_loss.view(B, N)  # [B, N]
+        lddt_loss = torch.stack(losses, dim=0)  # [B, N]
         return lddt_loss
 
     def _forward_single(

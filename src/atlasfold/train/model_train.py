@@ -227,15 +227,13 @@ class AtlasFoldForTrain(AtlasFold):
         sampling_config: SamplingConfig,
     ) -> torch.Tensor:
         """Perform a mini rollout for the confidence head training."""
-        assert sampling_config.num_samples == 1, (
-            "Only single sample is supported for mini rollout."
-        )
         with torch.no_grad():
             sample_coords = self.diffusion_head.sample(
                 batch,
                 s,
                 z,
-                sampling_config,
+                num_samples=1,
+                config=sampling_config,
             )
         return sample_coords  # [B, 1, L, 14, 3]
 
