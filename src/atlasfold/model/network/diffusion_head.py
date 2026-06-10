@@ -127,7 +127,7 @@ class DiffusionModule(nn.Module):
         single_cond: torch.Tensor
             The single conditioning, shape [B, N, L, c_s].
         pair_bias: torch.Tensor
-            The pair bias for the diffusion transformer, shape [B, L, L, Nblock, Nhead].
+            The pair bias for the diffusion transformer, shape [Nblock, B, L, L, Nhead].
 
         Returns
         -------
@@ -144,13 +144,12 @@ class DiffusionModule(nn.Module):
             q_skip, c_skip = q, c  # For skip connection to the atom decoder
 
         # Global transformer stack (bfloat16 context)
-        # [B, N, L, c_a] -> [B, N, L, c_a]
-        mask = batch["seq_mask"].unsqueeze(-2)  # [B, 1, L]
+        mask = batch["seq_mask"]
         a = self.diffusion_transformer(
-            a,
-            mask=mask,
-            single_cond=single_cond,
-            pair_bias=pair_bias,
+            a,  # [B, N, L, c_a]
+            mask=mask.unsqueeze(1),  # [B, 1, L]
+            single_cond=single_cond,  # [B, N, L, c_s]
+            pair_bias=pair_bias.unsqueeze(2),  # [Nblock, B, 1, L, L, Nhead]
         )  # [B, N, L, c_a]
 
         # Atom decoder
