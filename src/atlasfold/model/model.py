@@ -191,15 +191,21 @@ class AtlasFold(torch.nn.Module):
     def fold(
         self,
         sequence: str,
-        mode: str = "base",
+        mode: str = "full",
         num_recycles: int = 3,
-        num_samples: int = 3,
+        num_samples: int = 1,
         sampling_config: SamplingConfig | None = None,
     ) -> dict[str, torch.Tensor]:
         """Fold a single sequence."""
         batch = featurize(sequence, pad_to_multiple_of=32)
         batch = {k: torch.as_tensor(v, device=self.device) for k, v in batch.items()}
-        out = self.inference(batch, mode, num_recycles, num_samples, sampling_config)
+        out = self.inference(
+            batch,
+            mode,
+            num_samples,
+            num_recycles=num_recycles,
+            sampling_config=sampling_config,
+        )
         # Remove padding
         length = len(sequence)
         out["sample_coords"] = out["sample_coords"][:length]
@@ -211,13 +217,13 @@ class AtlasFold(torch.nn.Module):
         self,
         batch: dict[str, torch.Tensor],
         mode: str = "full",
-        num_recycles: int = 3,
         num_samples: int = 3,
-        sampling_config: SamplingConfig | None = None,
         compute_pae: bool = True,
         return_representations: bool = False,
         # Advanced options
         mlm_prob: float | None = None,
+        num_recycles: int = 3,
+        sampling_config: SamplingConfig | None = None,
     ) -> dict[str, torch.Tensor]:
         """Perform the forward pass.
 

@@ -5,7 +5,7 @@ import pathlib
 import gemmi
 import numpy as np
 
-from atlasfold.common import residue_utils
+from atlasfold.common import file_io, residue_utils
 
 
 @dataclasses.dataclass
@@ -50,10 +50,12 @@ class Protein:
         return np.isfinite(self.coordinates).all(axis=-1)
 
     def to_pdb(self) -> str:
-        raise NotImplementedError("PDB output is not implemented yet.")
+        return file_io.to_pdb(self.name, self.sequence, self.coordinates, self.b_factors)
 
     def to_mmcif(self) -> str:
-        raise NotImplementedError("mmCIF output is not implemented yet.")
+        return file_io.to_mmcif(
+            self.name, self.sequence, self.coordinates, self.b_factors
+        )
 
     # === Serialization === #
     def save_npz(self, path: str | pathlib.Path):
@@ -152,49 +154,3 @@ class Protein:
         b_factors = np.stack(biso_list, axis=0)  # [L, 14]
         residue_index = np.array(res_idx_list, dtype=np.int32)  # [L,]
         return cls(name, sequence, coordinates, b_factors, residue_index)
-
-
-@dataclasses.dataclass
-class ProteinOutput:
-    """A data structure representing a predicted 3D protein structure"""
-
-    name: str
-    sequence: str
-    coordinates: np.ndarray  # [L, 14, 3]
-    plddt: np.ndarray | None  # [L]
-    pae: np.ndarray | None  # [L, L]
-    ptm: float | None = None
-
-    def __post_init__(self):
-        """Validate the input data."""
-        L = len(self.sequence)
-        if self.coordinates.shape not in [(L, 14, 3)]:
-            raise ValueError(
-                f"Invalid coordinates shape: {self.coordinates.shape}. "
-                f"Expected (L, 14, 3) where L is the sequence length."
-            )
-        if self.plddt is not None and self.plddt.shape != (L,):
-            raise ValueError(
-                f"Invalid pLDDT shape: {self.plddt.shape}. "
-                f"Expected (L,) where L is the sequence length."
-            )
-        if self.pae is not None and self.pae.shape != (L, L):
-            raise ValueError(
-                f"Invalid PAE shape: {self.pae.shape}. "
-                f"Expected (L, L) where L is the sequence length."
-            )
-
-    def __len__(self):
-        """Return the number of residues in the structure."""
-        return len(self.sequence)
-
-    @property
-    def num_residues(self) -> int:
-        """Return the number of residues in the structure."""
-        return len(self.sequence)
-
-    def to_pdb(self) -> str:
-        raise NotImplementedError("PDB output is not implemented yet.")
-
-    def to_mmcif(self) -> str:
-        raise NotImplementedError("mmCIF output is not implemented yet.")
