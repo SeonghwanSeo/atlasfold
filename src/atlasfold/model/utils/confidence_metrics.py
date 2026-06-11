@@ -29,21 +29,23 @@ def compute_pae(
 
 
 def compute_ptm(
-    logits: torch.Tensor,
-    bin_centers: torch.Tensor,
-    mask: torch.Tensor,
+    logits: torch.Tensor,  # [*, L, L, num_bins]
+    bin_centers: torch.Tensor,  # [num_bins]
+    mask: torch.Tensor,  # [*, L]
     eps: float = 1e-8,
 ) -> torch.Tensor:
     """Compute the predicted TM-score from the PAE logits."""
     # Compute d_0(num_res) as defined by TM-score, eqn. (5) in Yang & Skolnick
     # "Scoring function for automated assessment of protein structure template
     # quality", 2004: http://zhanglab.ccmb.med.umich.edu/papers/2004_3.pdf
-    n = mask.sum(dim=-1, dtype=torch.float32)
+    n = mask.sum(dim=-1, dtype=torch.float32)  # [*]
     clipped_n = torch.clamp(n, min=19)
-    d0 = 1.24 * (clipped_n - 15) ** (1.0 / 3.0) - 1.8
+    d0 = 1.24 * (clipped_n - 15) ** (1.0 / 3.0) - 1.8  # [*]
     probs = torch.softmax(logits, dim=-1)  # [*, L, L, num_bins]
 
-    tm_per_bin = 1.0 / (1 + (bin_centers**2) / (d0**2))
+    d0 = d0[..., None, None, None]  # [*, 1, 1, 1]
+    tm_per_bin = 1.0 / (1 + (bin_centers**2) / (d0**2))  # [*, 1, 1, num_bins]
+
     ptm_term = torch.sum(probs * tm_per_bin, dim=-1)  # [*, L, L]
     pair_mask = mask[..., :, None] & mask[..., None, :]
     w = pair_mask.float()

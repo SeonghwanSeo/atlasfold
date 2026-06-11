@@ -34,11 +34,11 @@ class AtomMLP(nn.Module):
         x = x * mask[..., None]  # Mask out dummy atoms
         x = self.linear_in(x)  # (*, 14, C_h)
         # Flatten the 14 atoms and the hidden dimension together
-        x_flat = einops.rearrange(x, "... a c -> ... (a c)", a=14)  # (*, 14*C_h)
+        x_flat = x.flatten(start_dim=-2)  # (*, 14*C_h)
         # MLP core applied to the flattened intra-residue geometry
         x_flat = self.mlp(x_flat)
         # Unflatten back to distinct atoms and hidden dimension
-        x = einops.rearrange(x_flat, "... (a c) -> ... a c", a=14)  # (*, 14, C_h)
+        x = x_flat.unflatten(-1, (14, self.hidden_dim))  # (*, 14, C_h)
         # Final unactivated projection back to atom channels
         x = self.linear_out(x)  # (*, 14, C_a)
         x = x * mask[..., None]  # Mask out dummy atoms
@@ -183,9 +183,6 @@ class AtomEncoder(nn.Module):
         c : torch.Tensor
             The atom conditioning of shape (B, N, L, 14, C_a)
         """
-        mask = batch["atom14_mask"].unsqueeze(-3)  # (B, 1, L, 14)
-        mask = mask.float()
-
         # Get the atom representations
         aatype = batch["aatype"]  # (B, L, 21)
         a = self.embedding_aa_atoms(aatype).unflatten(-1, (14, -1))  # (B, L, 14, C_a)
@@ -193,6 +190,8 @@ class AtomEncoder(nn.Module):
 
         # Initialize the atom representations and conditioning
         q, c = a, a
+
+        mask = batch["atom14_mask"].unsqueeze(-3).to(q.dtype)  # (B, 1, L, 14)
 
         # Prepare the input representations
         # Embed the current state: noisy atom coordinates
@@ -223,6 +222,7 @@ class AtomDecoder(nn.Module):
         super().__init__()
         self.stack = AtomAttentionStack(channel_atom, num_heads, num_blocks, max_r=4)
         self.mlp = AtomMLP(channel_atom, hidden_dim=channel_atom // 2)
+        # TODO: change name to `lienar_out`.
         self.linear_q_to_r = LinearNoBias(channel_atom, 3, init="final", precision=32)
 
     def forward(
@@ -232,12 +232,11 @@ class AtomDecoder(nn.Module):
         c: torch.Tensor,
     ) -> torch.Tensor:
         """Maps updated representations back to raw 3D coordinate updates."""
-        mask = batch["atom14_mask"].unsqueeze(-3).float()  # (B, 1, L, 14)
-
         # Another stack of local attention blocks
         q = self.stack(batch, q, c)  # (B, N, L, 14, C_a)
 
         # Final post-processing block of intra-residue updates
+        mask = batch["atom14_mask"].unsqueeze(-3).to(q.dtype)  # (B, 1, L, 14)
         q = q + self.mlp(q, mask)
         q = q * mask[..., None]
 

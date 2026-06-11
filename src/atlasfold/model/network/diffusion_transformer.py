@@ -26,6 +26,7 @@ class FourierEmbedding(nn.Module):
 
     def __init__(self, channel: int):
         super().__init__()
+        self.channel: int = channel
         rng = np.random.default_rng(seed=42)
         w = rng.normal(size=(1, channel)).astype(np.float32)
         b = rng.normal(size=(1, channel)).astype(np.float32)
@@ -71,8 +72,8 @@ class SingleConditioning(nn.Module):
     ):
         super().__init__()
         self.proj_single_cond = nn.Sequential(
-            LayerNorm(channel_s, create_offset=False),
-            LinearNoBias(channel_s, channel_cond, init="default"),
+            LayerNorm(channel_s, create_offset=False, precision=32),
+            LinearNoBias(channel_s, channel_cond, init="default", precision=32),
         )
         self.embedding_aa = LinearNoBias(21, channel_cond)
 
@@ -139,8 +140,8 @@ class PairConditioning(nn.Module):
         )
 
         in_channel = channel_z + self.rel_pos_encoding.dim
-        self.layernorm = LayerNorm(in_channel, create_offset=False)
-        self.linear = LinearNoBias(in_channel, channel_z, init="default")
+        self.layernorm = LayerNorm(in_channel, create_offset=False, precision=32)
+        self.linear = LinearNoBias(in_channel, channel_z, init="default", precision=32)
         self.transitions = nn.ModuleList(
             [Transition(channel_z, expansion_factor=2) for _ in range(2)]
         )

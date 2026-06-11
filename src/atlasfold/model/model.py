@@ -51,7 +51,7 @@ class ConfidenceHeadConfig:
     num_heads: int = 12
     dropout_s: float = 0.15
     dropout_z: float = 0.25
-    num_blocks: int = 2
+    num_blocks: int = 4
     num_pae_blocks: int = 2
     num_bins: int = 39
     min_dist: float = 3.25
@@ -297,9 +297,10 @@ class AtlasFold(torch.nn.Module):
         out["distogram.boundaries"] = distogram_out["boundaries"]
 
         # Run diffusion heads
-        sample_coords = self.diffusion_head.sample(
-            batch, s, z, num_samples, sampling_config
-        )
+        with torch.autocast(self.device.type, enabled=False):
+            sample_coords = self.diffusion_head.sample(
+                batch, s, z, num_samples, sampling_config
+            )
         out["sample_coords"] = sample_coords
 
         # Run confidence head
@@ -309,17 +310,19 @@ class AtlasFold(torch.nn.Module):
         del s, z
 
         # Compute confidence metrics
-        mask = batch["seq_mask"]
-        out["plddt"] = confidence_metrics.compute_plddt(
-            **confidence_out["plddt"], mask=mask
-        )
-        if compute_pae:
-            out["pae"] = confidence_metrics.compute_pae(
-                **confidence_out["pae"], mask=mask
+        with torch.autocast(self.device.type, enabled=False):
+            mask = batch["seq_mask"].unsqueeze(1)  # [B, 1, L]
+            out["plddt"] = confidence_metrics.compute_plddt(
+                **confidence_out["plddt"], mask=mask
             )
-            out["ptm"] = confidence_metrics.compute_ptm(
-                **confidence_out["pae"], mask=mask
-            )
+            if compute_pae:
+                out["pae"] = confidence_metrics.compute_pae(
+                    **confidence_out["pae"], mask=mask
+                )
+                out["ptm"] = confidence_metrics.compute_ptm(
+                    **confidence_out["pae"], mask=mask
+                )
+        del mask
 
         # Remove batch dimension if the input was not originally batched
         if not is_batched:
@@ -532,3 +535,44 @@ class AtlasFold(torch.nn.Module):
         s = s * mask[:, :, None]
         z = z * pair_mask[:, :, :, None]
         return s, z
+
+    # TODO: current implementation is for development.
+    # I may want to remove this method in the future.
+    @classmethod
+    def from_pretrained(
+        cls,
+        state_dict: dict,
+        config: AtlasFoldConfig | None = None,
+        dtype: torch.dtype = torch.bfloat16,
+        device: str | torch.device = "cuda",
+    ) -> "AtlasFold":
+        """Create an AtlasFold model from a pretrained state dict."""
+        config = config if config is not None else AtlasFoldConfig()
+
+        # Create the model on meta device
+        with torch.device("meta"):
+            model = cls(config)
+            # Remove the LM, which will be loaded separately
+            del model.lm
+
+            if dtype is torch.bfloat16:
+                model.recycle_z = model.recycle_z.to(dtype)
+                model.lm_stack = model.lm_stack.to(dtype)
+                model.main_stack = model.main_stack.to(dtype)
+                model.confidence_head = model.confidence_head.to(dtype)
+
+        # Load the state dict onto the target device
+        model = model.to_empty(device=device)
+
+        # Load the state dict with the specified strictness
+        model.load_state_dict(state_dict, strict=True, assign=True)
+
+        # Finally, load the LM
+        model.lm = load_model(
+            config.lm_name, path=config.lm_path, device=device, dtype=dtype
+        )
+
+        # Freeze the model parameters and set to eval mode
+        model.requires_grad_(False)
+        model.eval()
+        return model

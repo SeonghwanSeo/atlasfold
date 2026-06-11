@@ -20,15 +20,20 @@ def get_bin_centers(
 
 @torch.no_grad()
 def get_distogram(
-    x: torch.Tensor, cbeta_idx: torch.Tensor, boundaries: torch.Tensor
+    x: torch.Tensor,
+    cbeta_idx: torch.Tensor,
+    boundaries: torch.Tensor,
 ) -> torch.Tensor:
     """Compute the distogram from the predicted coordinates."""
-    x_repr = index_select_dim(x, dim=-2, index=cbeta_idx[..., None, None])  # [*, L, 3]
-    d = (x_repr[..., :, None, :] - x_repr[..., None, :, :]).norm(dim=-1)  # [*, L, L]
-    num_bins = boundaries.shape[0] + 1
-    return F.one_hot(
-        (d[..., None] > boundaries).sum(dim=-1), num_bins
-    )  # [*, L, L, num_bins]
+    with torch.autocast(x.device.type, enabled=False):
+        x_repr = index_select_dim(
+            x, dim=-2, index=cbeta_idx[..., None, None]
+        )  # [*, L, 3]
+        d = (x_repr[..., :, None, :] - x_repr[..., None, :, :]).norm(dim=-1)  # [*, L, L]
+        num_bins = boundaries.shape[0] + 1
+        return F.one_hot(
+            (d[..., None] > boundaries).sum(dim=-1), num_bins
+        )  # [*, L, L, num_bins]
 
 
 class ExperimentallyResolvedHead(nn.Module):
@@ -175,8 +180,9 @@ class ConfidenceHead(nn.Module):
         self.embed_aa = LinearNoBias(21, channel_z)
 
         # Prepare pair representation with distogram features
-        boundaries = torch.linspace(min_dist, max_dist, num_bins - 1)
-        self.register_buffer("distogram_boundaries", boundaries, persistent=False)
+        self.num_bins: int = num_bins
+        self.min_dist: float = min_dist
+        self.max_dist: float = max_dist
         self.linear_distogram = LinearNoBias(num_bins, channel_z, init="default")
 
         # Attention stack for confidence prediction
@@ -261,6 +267,13 @@ class ConfidenceHead(nn.Module):
         # Prepare the mask
         mask = batch["seq_mask"]  # [B, L]
 
+        distogram_boundaries = torch.linspace(
+            self.min_dist,
+            self.max_dist,
+            self.num_bins - 1,
+            device=device,
+        )
+
         def compute_confidences_single(
             s: torch.Tensor,
             z: torch.Tensor,
@@ -270,7 +283,7 @@ class ConfidenceHead(nn.Module):
         ) -> dict[str, torch.Tensor]:
             # Prepare pair representation with distogram features
             cbeta_idx = batch["pseudo_beta"]  # [B, L]
-            distogram = get_distogram(coords, cbeta_idx, self.distogram_boundaries)
+            distogram = get_distogram(coords, cbeta_idx, distogram_boundaries)
             z = z + self.linear_distogram(distogram.to(z.dtype))  # [B, L, L, c_z]
 
             # Run the stack

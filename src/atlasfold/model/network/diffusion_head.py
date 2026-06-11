@@ -136,15 +136,16 @@ class DiffusionModule(nn.Module):
         """
         # Atom encoder
         # [B, N, L, 14, 3] -> [B, N, L, 14, c_atom] -> [B, N, L, c_a]
+        # Encode atom positions with single conditioning
         with torch.autocast(r_noisy.device.type, enabled=False):
-            # Encode atom positions with single conditioning
-            q, c = self.atom_encoder(batch, r_noisy, single_cond.float())
-            # Pool atom representations to residue level
-            a = self.proj_q_to_a(q.flatten(-2))
-            q_skip, c_skip = q, c  # For skip connection to the atom decoder
+            q, c = self.atom_encoder(batch, r_noisy, single_cond)
+        # Pool atom representations to residue level
+        a = self.proj_q_to_a(q.flatten(-2))
+        q_skip, c_skip = q, c  # For skip connection to the atom decoder
 
         # Global transformer stack (bfloat16 context)
         mask = batch["seq_mask"]
+        a = a.float()
         a = self.diffusion_transformer(
             a,  # [B, N, L, c_a]
             mask=mask.unsqueeze(1),  # [B, 1, L]
@@ -154,10 +155,10 @@ class DiffusionModule(nn.Module):
 
         # Atom decoder
         # [B, N, L, c_a] -> [B, N, L, 14, c_atom] -> [B, N, L, 14, 3]
+        # Skip connection from the atom encoder
+        q = q_skip + self.proj_a_to_q(a).unflatten(-1, (14, -1))
+        # Decode to coordinates
         with torch.autocast(r_noisy.device.type, enabled=False):
-            # Skip connection from the atom encoder
-            q = q_skip + self.proj_a_to_q(a).unflatten(-1, (14, -1))
-            # Decode to coordinates
             r_update = self.atom_decoder(batch, q, c_skip)
 
         return r_update
