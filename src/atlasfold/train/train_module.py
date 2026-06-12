@@ -365,7 +365,7 @@ class TrainingModule(pl.LightningModule):
             distogram_loss_aug, distogram_aug_metrics = self.compute_distogram_loss(
                 model_out["distogram_aug"], batch, label
             )
-            loss += loss_weights["distogram"] * distogram_loss_aug
+            loss += loss_weights["distogram_aug"] * distogram_loss_aug
             metrics |= {f"distogram_aug/{k}": v for k, v in distogram_aug_metrics.items()}
 
         if self.train_diffusion_head:

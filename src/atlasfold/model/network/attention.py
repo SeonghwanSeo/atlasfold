@@ -74,30 +74,29 @@ class Attention(nn.Module):
             (q, k, v),
         )  # [*, H, Lq/k, c_h]
 
-        # Compute bias
-        bias_dtype = torch.float32 if self.use_high_precision else q.dtype
-        attn_bias = (~mask.bool()).to(bias_dtype) * (-self.inf)
-        attn_bias = attn_bias.unsqueeze(-3)  # [*, 1, Lq, Lk]
-        if pair_bias is not None:
-            attn_bias = attn_bias + pair_bias  # [*, H, Lq, Lk]
-
         # Compute attention weights and output
-        if self.use_high_precision:
+        if self.use_high_precision or self.training:
             # Compute attention weights and output in high precision (float32)
             with torch.autocast(device_type=q.device.type, enabled=False):
                 q, k = q.float(), k.float()
-                scale = self.head_dim**-0.5
+                q *= self.head_dim**-0.5
                 # Compute attention weights
-                attn = (q * scale) @ k.mT
-                attn += attn_bias  # [*, H, Lq, Lk]
+                attn = q @ k.mT  # [*, H, Lq, Lk]
+                attn += ((~mask).float() * -self.inf).unsqueeze(-3)
+                if pair_bias is not None:
+                    attn += pair_bias
                 # Compute attention output
                 attn = attn.softmax(dim=-1).to(v.dtype)
             out = attn @ v  # [*, H, Lq, c_h]
-            out = einops.rearrange(out, "... h lq d -> ... lq (h d)")  # [*, Lq, c]
         else:
             # Use Scaled Dot-Product Attention (SDPA)
+            # Compute bias
+            attn_bias = (~mask.bool()).to(q.dtype) * (-self.inf)
+            attn_bias = attn_bias.unsqueeze(-3)  # [*, 1, Lq, Lk]
+            if pair_bias is not None:
+                attn_bias = attn_bias + pair_bias.to(q.dtype)  # [*, H, Lq, Lk]
             out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias)
-            out = einops.rearrange(out, "... h lq d -> ... lq (h d)")  # [*, Lq, c]
+        out = einops.rearrange(out, "... h lq d -> ... lq (h d)")  # [*, Lq, c]
         return out
 
 

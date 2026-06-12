@@ -97,7 +97,7 @@ class AtlasFoldForTrain(AtlasFold):
             use_cond = use_trunk | use_init
             _s = use_cond.view(bs, 1, 1) * s_lm  # s = s_lm
             _z = use_trunk.view(bs, 1, 1, 1) * z + use_init.view(bs, 1, 1, 1) * z_lm
-            with torch.autocast(s.device.type, enabled=False):
+            with torch.autocast(s.device.type, dtype=torch.float32, enabled=True):
                 diffusion_out = self.__forward_diffusion(
                     batch, label, _s, _z, diffusion_batch_size
                 )
@@ -195,18 +195,17 @@ class AtlasFoldForTrain(AtlasFold):
         t_hat = model.sigma_data * torch.exp(-1.2 + 1.5 * nt)
 
         # Repeat label coords with random augmentation for each diffusion training input.
-        with torch.autocast(s.device.type, enabled=False):
-            label_coords = label["coordinates"]  # [B, L, 14, 3]
-            resolved_mask = label["resolved_mask"]  # [B, L, 14]
-            x_gt = expand_dim(label_coords, N, dim=1)  # [B, N, L, 14, 3]
-            mask = expand_dim(resolved_mask, N, dim=1)  # [B, N, L, 14]
+        label_coords = label["coordinates"]  # [B, L, 14, 3]
+        resolved_mask = label["resolved_mask"]  # [B, L, 14]
+        x_gt = expand_dim(label_coords, N, dim=1)  # [B, N, L, 14, 3]
+        mask = expand_dim(resolved_mask, N, dim=1)  # [B, N, L, 14]
 
-            # Random augmentation
-            x_gt = center_random_augmentation_atom14(x_gt, mask)
+        # Random augmentation
+        x_gt = center_random_augmentation_atom14(x_gt, mask)
 
-            # Add noise
-            noise = torch.randn_like(x_gt)  # [B, N, L, 14, 3]
-            x_noisy = x_gt + t_hat.view(B, N, 1, 1, 1) * noise
+        # Add noise
+        noise = torch.randn_like(x_gt)  # [B, N, L, 14, 3]
+        x_noisy = x_gt + t_hat.view(B, N, 1, 1, 1) * noise
 
         # Forward pass through the score model
         _t_hat = t_hat.view(B, N, 1, 1, 1)  # [B, N, 1, 1, 1]
