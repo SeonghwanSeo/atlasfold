@@ -5,7 +5,7 @@ from collections.abc import Iterable, Sequence
 import numpy as np
 import torch
 
-from atlasfold.common import residue_utils
+from atlasfold.common import residue_constants
 from atlaslm.alphabet import VOCAB
 
 VOCAB_TO_IDX: dict[str, int] = {tok: i for i, tok in enumerate(VOCAB)}
@@ -32,7 +32,7 @@ def featurize(
     # Sanitize the input sequence
     sequence = sequence.upper()
     sequence = "".join(
-        [aa if aa in residue_utils.restype_orders else "X" for aa in sequence]
+        [aa if aa in residue_constants.restype_orders else "X" for aa in sequence]
     )
     length = len(sequence)
 
@@ -69,17 +69,17 @@ def featurize(
     # === Prepare the input for the folding trunk === #
     # Convert amino acid sequence to integer indices
     length = len(sequence)
-    aatype = np.array([residue_utils.restype_orders[aa] for aa in sequence])
+    aatype = np.array([residue_constants.restype_orders[aa] for aa in sequence])
     aatype_onehot = np.eye(21, dtype=np.float32)[aatype]
 
     # Create masks
     seq_mask = np.ones(length, dtype=bool)
-    atom14_mask = residue_utils.restype_atom14_mask[aatype]
-    atom37_mask = residue_utils.restype_atom37_mask[aatype]
+    atom14_mask = residue_constants.restype_atom14_mask[aatype]
+    atom37_mask = residue_constants.restype_atom37_mask[aatype]
 
     # Get the pseudo-beta index (CB for most residues, CA for glycine)
     cbeta_idx = np.full((length,), 4, dtype=np.int64)  # CB: index=4
-    cbeta_idx[aatype == residue_utils.restype_orders["G"]] = 1
+    cbeta_idx[aatype == residue_constants.restype_orders["G"]] = 1
 
     # Add lm input to folding input mapping
     seq_tok_idx = np.arange(1, length + 1, dtype=np.int64)

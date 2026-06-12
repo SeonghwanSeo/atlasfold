@@ -4,7 +4,7 @@ import functools
 import gemmi
 import numpy as np
 
-from atlasfold.common import residue_utils
+from atlasfold.common import residue_constants
 
 
 @functools.lru_cache(21)
@@ -12,7 +12,7 @@ def get_residue_template(restype: str) -> gemmi.Residue:
     residue = gemmi.Residue()
     residue.name = restype
     residue.entity_type = gemmi.EntityType.Polymer
-    atom_names: tuple[str, ...] = residue_utils.residue_atoms[restype]
+    atom_names: tuple[str, ...] = residue_constants.residue_atoms[restype]
     for an in atom_names:
         atom = gemmi.Atom()
         atom.name = an
@@ -43,7 +43,7 @@ def to_gemmi_structure(
         # Broadcast the per-residue B-factors to all atoms in the residue
         b_factors = np.broadcast_to(b_factors[:, np.newaxis], (length, 14))
 
-    full_sequence = [residue_utils.restype_1to3[aa] for aa in sequence]
+    full_sequence = [residue_constants.restype_1to3[aa] for aa in sequence]
 
     # Create a new structure
     struct = gemmi.Structure()

@@ -5,7 +5,7 @@ import pathlib
 import gemmi
 import numpy as np
 
-from atlasfold.common import file_io, residue_utils
+from atlasfold.common import file_io, residue_constants
 
 
 @dataclasses.dataclass
@@ -75,7 +75,7 @@ class Protein:
             b_factors_arr = self.b_factors  # [L, 14]
         else:
             # Only save the valid atom coordinates (include unresolved atoms as NaN)
-            pad_mask = residue_utils.get_atom14_mask_from_sequence(self.sequence)
+            pad_mask = residue_constants.get_atom14_mask_from_sequence(self.sequence)
             coords_arr = self.coordinates[pad_mask]  # [Natom, 3]
             b_factors_arr = self.b_factors[pad_mask]
 
@@ -101,7 +101,7 @@ class Protein:
             b_factors_arr = data["b_factors"]  # [Natom]
             L = len(sequence)
             full_coords = np.full((L, 14, 3), np.nan, dtype=np.float32)
-            pad_mask = residue_utils.get_atom14_mask_from_sequence(sequence)
+            pad_mask = residue_constants.get_atom14_mask_from_sequence(sequence)
             full_coords[pad_mask] = coords_arr
             full_b_factors = np.full((L, 14), np.nan, dtype=np.float32)
             full_b_factors[pad_mask] = b_factors_arr
@@ -133,9 +133,9 @@ class Protein:
         # Read chain
         aa_list, coords_list, biso_list, res_idx_list = [], [], [], []
         for res in raw_chain:
-            aa1 = residue_utils.restype_3to1.get(res.name, "X")
-            aa3 = residue_utils.restype_1to3[aa1]
-            res_atom14_order = residue_utils.restype_atom14_order[aa3]
+            aa1 = residue_constants.restype_3to1.get(res.name, "X")
+            aa3 = residue_constants.restype_1to3[aa1]
+            res_atom14_order = residue_constants.restype_atom14_order[aa3]
             res_coords = np.full((14, 3), np.nan, dtype=np.float32)
             res_b_factors = np.full((14,), np.nan, dtype=np.float32)
             for atom in res:

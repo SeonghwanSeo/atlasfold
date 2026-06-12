@@ -3,7 +3,7 @@ import functools
 import numpy as np
 import torch
 
-from atlasfold.common import residue_utils
+from atlasfold.common import residue_constants
 from atlasfold.utils.geometry.rigid_align import rigid_align, rigid_align_atom14
 from atlasfold.utils.torch_utils import gather_dim
 
@@ -193,9 +193,11 @@ def compute_lddt_fullatom(
 @functools.lru_cache(maxsize=1)
 def get_restype_atom_swap() -> torch.Tensor:
     restype_atom_swap = np.tile(np.arange(14), (21, 1))
-    for res_name, (group1, group2) in residue_utils.restype_ambiguous_atoms.items():
-        restype = residue_utils.restype_orders[residue_utils.restype_3to1[res_name]]
-        atom14_order = residue_utils.restype_atom14_order[res_name]
+    for res_name, (group1, group2) in residue_constants.restype_ambiguous_atoms.items():
+        restype = residue_constants.restype_orders[
+            residue_constants.restype_3to1[res_name]
+        ]
+        atom14_order = residue_constants.restype_atom14_order[res_name]
         for atom_name1, atom_name2 in zip(group1, group2, strict=True):
             atom_idx1 = atom14_order[atom_name1]
             atom_idx2 = atom14_order[atom_name2]
@@ -207,8 +209,10 @@ def get_restype_atom_swap() -> torch.Tensor:
 @functools.lru_cache(maxsize=1)
 def get_restype_has_ambiguous_atoms() -> torch.Tensor:
     has_ambiguous_atoms = np.zeros(21, dtype=bool)
-    for res_name in residue_utils.restype_ambiguous_atoms.keys():
-        restype = residue_utils.restype_orders[residue_utils.restype_3to1[res_name]]
+    for res_name in residue_constants.restype_ambiguous_atoms.keys():
+        restype = residue_constants.restype_orders[
+            residue_constants.restype_3to1[res_name]
+        ]
         has_ambiguous_atoms[restype] = True
     return torch.from_numpy(has_ambiguous_atoms)
 

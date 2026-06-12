@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from atlasfold.common import residue_utils
+from atlasfold.common import residue_constants
 from atlasfold.train.utils.structure_metrics import cdist
 from atlasfold.utils.torch_utils import get_one_hot_from_bins
 
@@ -17,9 +17,11 @@ from atlasfold.utils.torch_utils import get_one_hot_from_bins
 @functools.lru_cache(maxsize=1)
 def get_restype_atom_swap(device_type: str) -> torch.Tensor:
     restype_atom_swap: np.ndarray = np.zeros((21, 14), dtype=np.int64)
-    for res_name, (group1, group2) in residue_utils.restype_ambiguous_atoms.items():
-        restype = residue_utils.restype_orders[residue_utils.restype_3to1[res_name]]
-        atom14_order = residue_utils.restype_atom14_order[res_name]
+    for res_name, (group1, group2) in residue_constants.restype_ambiguous_atoms.items():
+        restype = residue_constants.restype_orders[
+            residue_constants.restype_3to1[res_name]
+        ]
+        atom14_order = residue_constants.restype_atom14_order[res_name]
         for atom_name1, atom_name2 in zip(group1, group2, strict=True):
             atom_idx1 = atom14_order[atom_name1]
             atom_idx2 = atom14_order[atom_name2]
@@ -30,14 +32,14 @@ def get_restype_atom_swap(device_type: str) -> torch.Tensor:
 
 @functools.lru_cache(maxsize=1)
 def get_restype_atom14_to_atom37(device_type: str) -> tuple[torch.Tensor, torch.Tensor]:
-    gather_indices = torch.from_numpy(residue_utils._gather_indices).to(device_type)
-    gather_mask = torch.from_numpy(residue_utils._gather_mask).to(device_type)
+    gather_indices = torch.from_numpy(residue_constants._gather_indices).to(device_type)
+    gather_mask = torch.from_numpy(residue_constants._gather_mask).to(device_type)
     return gather_indices, gather_mask  # [21, 37] each
 
 
 @functools.lru_cache(maxsize=1)
 def get_restype_atom37_mask(device_type: str) -> torch.Tensor:
-    mask = torch.from_numpy(residue_utils.restype_atom37_mask).to(device_type)
+    mask = torch.from_numpy(residue_constants.restype_atom37_mask).to(device_type)
     return mask  # [21, 37]
 
 

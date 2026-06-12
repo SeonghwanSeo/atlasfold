@@ -3,7 +3,7 @@ import pathlib
 import gemmi
 import numpy as np
 
-from atlasfold.common import protein, residue_utils
+from atlasfold.common import protein, residue_constants
 
 
 def read_pdb(
@@ -47,9 +47,9 @@ def read_pdb(
     # Get sequence
     aa_list, coords_list, biso_list, res_idx_list = [], [], [], []
     for res in raw_chain:
-        aa1 = residue_utils.restype_3to1.get(res.name, "X")
-        aa3 = residue_utils.restype_1to3[aa1]
-        res_atom14_order = residue_utils.restype_atom14_order[aa3]
+        aa1 = residue_constants.restype_3to1.get(res.name, "X")
+        aa3 = residue_constants.restype_1to3[aa1]
+        res_atom14_order = residue_constants.restype_atom14_order[aa3]
         res_coords = np.full((14, 3), np.nan, dtype=np.float32)
         res_b_factors = np.full((14,), np.nan, dtype=np.float32)
         for atom in res:

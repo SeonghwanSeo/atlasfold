@@ -7,7 +7,7 @@ from typing import Any
 
 import gemmi
 
-from atlasfold.common import ccd, metadata, protein, residue_utils
+from atlasfold.common import ccd, metadata, protein, residue_constants
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +163,7 @@ def get_protein_chains(
         # Get 1-letter sequence
         ccd_sequences: list[str] = entity.full_sequence
         aas = [ccd.CCD_NAME_TO_ONE_LETTER.get(restype, "X") for restype in ccd_sequences]
-        aas = [aa if aa in residue_utils.restype_1to3 else "X" for aa in aas]
+        aas = [aa if aa in residue_constants.restype_1to3 else "X" for aa in aas]
         sequence = "".join(aas)
 
         # Mark all label_ids as valid initially
@@ -221,8 +221,8 @@ def insert_chain_coordinates(
             continue
 
         aa = sequence[res_idx - 1]
-        restype = residue_utils.restype_1to3.get(aa, "UNK")
-        res_atom14_order = residue_utils.restype_atom14_order[restype]
+        restype = residue_constants.restype_1to3.get(aa, "UNK")
+        res_atom14_order = residue_constants.restype_atom14_order[restype]
 
         # Get atoms.
         for a in res:

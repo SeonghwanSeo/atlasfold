@@ -3,7 +3,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from atlasfold.common import residue_utils
+from atlasfold.common import residue_constants
 
 
 def atom14_to_atom37(atom14: torch.Tensor, restype: torch.Tensor) -> torch.Tensor:
@@ -21,8 +21,10 @@ def atom14_to_atom37(atom14: torch.Tensor, restype: torch.Tensor) -> torch.Tenso
     torch.Tensor
         The atom37 representation of shape (*, 37, dim)
     """
-    gather_indices = torch.as_tensor(residue_utils._gather_indices, device=atom14.device)
-    gather_mask = torch.as_tensor(residue_utils._gather_mask, device=atom14.device)
+    gather_indices = torch.as_tensor(
+        residue_constants._gather_indices, device=atom14.device
+    )
+    gather_mask = torch.as_tensor(residue_constants._gather_mask, device=atom14.device)
     atom_map = gather_indices[restype]  # shape: (*, 37)
     atom_mask = gather_mask[restype]  # shape: (*, 37)
     expand_shape = atom_map.shape + (atom14.shape[-1],)

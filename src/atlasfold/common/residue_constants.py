@@ -127,3 +127,5 @@ restype_ambiguous_atoms: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "LEU": (("CD1",), ("CD2",)),
     "VAL": (("CG1",), ("CG2",)),
 }
+
+# Reference conformers for each residue
