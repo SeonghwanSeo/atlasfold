@@ -4,7 +4,7 @@ import torch.nn as nn
 
 from atlasfold.model.network.diffusion_transformer import AtomTransformerStack
 from atlasfold.model.network.misc import LocalAttentionIndex
-from atlasfold.model.network.primitives import LinearNoBias
+from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
 
 
 class AtomMLP(nn.Module):
@@ -49,9 +49,9 @@ class AtomAttentionStack(nn.Module):
     def __init__(
         self,
         channel_atom: int = 96,
+        channel_atompair: int = 14,
         num_heads: int = 2,
         num_blocks: int = 2,
-        max_r: int = 4,
     ) -> None:
         """Initialize the Atom Attention Encoder layer.
 
@@ -59,6 +59,8 @@ class AtomAttentionStack(nn.Module):
         ----------
         channel_atom : int
             The atom/token dimension.
+        channel_atompair : int
+            The atom pair dimension (relative positional encoding dimension).
         num_heads : int
             The number of attention heads.
         num_blocks : int
@@ -70,12 +72,10 @@ class AtomAttentionStack(nn.Module):
         self.channel_atom: int = channel_atom
         self.num_heads: int = num_heads
         self.num_blocks: int = num_blocks
+        self.linear_pair_bais = LinearNoBias(channel_atompair, (num_blocks * num_heads))
         self.stack = AtomTransformerStack(
             channel_atom, channel_atom, num_heads, num_blocks
         )
-        self.max_r: int = max_r
-        self.rel_pos_dim = 2 * max_r + 2
-        self.linear_rel_pos = LinearNoBias(self.rel_pos_dim, (num_blocks * num_heads))
 
     def forward(
         self,
@@ -102,35 +102,36 @@ class AtomAttentionStack(nn.Module):
         res_idx = batch["res_idx"].unsqueeze(1)  # (B, 1, L)
         asym_id = batch["asym_id"].unsqueeze(1)  # (B, 1, L)
         seq_mask = batch["seq_mask"].unsqueeze(1)  # (B, 1, L)
-        local_attn_index = LocalAttentionIndex(
-            res_idx, asym_id, seq_mask, window_size=4, max_r=self.max_r
+        rel_pos = batch["atom_rel_pos"].unsqueeze(1)  # (B, 1, W, Lq, 14, Lk, 14, bins)
+        atom_mask = batch["atom14_mask"].unsqueeze(1)  # (B, 1, L, 14)
+
+        # HACK: Our code is hard-coded to window_size=4 and max_r=4.
+        local_attn_idx = LocalAttentionIndex(
+            res_idx, asym_id, seq_mask, window_size=4, max_r=4
+        )
+        W, Lq, Lk = local_attn_idx.W, local_attn_idx.Lq, local_attn_idx.Lk
+        assert rel_pos.shape[2:7] == (W, Lq, 14, Lk, 14), (
+            f"Expected rel_pos shape (B, 1, {W}, {Lq}, 14, {Lk}, 14), "
+            f"but got {rel_pos.shape}."
         )
 
-        # Compute the relative positional encodings for the local attention
-        # NOTE: >max_r, different chain pairs would be masked out in local-attention.
-        res_idx_q, res_idx_k = local_attn_index(res_idx, -1, v_pad=int(1e6))
-        asym_id_q, asym_id_k = local_attn_index(asym_id, -1, v_pad=-1)
+        # Convert the atom positional encodings to attention pair bias.
+        p = self.linear_pair_bais(rel_pos)
+        p = einops.rearrange(
+            p,
+            "... q a1 k a2 (n h) -> n ... h q a1 k a2",
+            a1=14,
+            a2=14,
+            n=self.num_blocks,
+            h=self.num_heads,
+        ).contiguous()  # (Nblocks, B, 1, W, Nheads, Lq, 14, Lk, 14)
 
-        pad_r = 2 * self.max_r + 1  # NOTE: pad_r position would be masked out
-        rel_pos = res_idx_q[..., :, None] - res_idx_k[..., None, :]  # (B, W, Lq, Lk)
-        is_same_chain = asym_id_q[..., :, None] == asym_id_k[..., None, :]
-        a_rel_pos = torch.clamp(rel_pos + self.max_r, 0, pad_r)
-        a_rel_pos = torch.where(is_same_chain, a_rel_pos, pad_r)
-        a_rel_pos = torch.nn.functional.one_hot(a_rel_pos, pad_r + 1)
-
-        p = self.linear_rel_pos(a_rel_pos.float())  # (B, N, W, Lq, Lk, Nblocks, Nheads)
-        # Rearrange to (Nblocks, B, N, W, Nheads, Lq, Lk)
-        p = einops.rearrange(p, "... q k (nb nh) -> nb ... nh q k", nb=self.num_blocks)
-        # Expand to atom level
-        p = einops.repeat(p, "... q k -> ... (q 14) (k 14)")
-
-        atom_mask = batch["atom14_mask"].unsqueeze(1)  # (B, 1, L, 14)
         q = self.stack(
             q,  # [B, N, L, 14, C_a]
             mask=atom_mask,  # [B, 1, L, 14]
-            local_attn_index=local_attn_index,
+            local_attn_index=local_attn_idx,
             single_cond=c,  # [B, N, L, 14, C_a]
-            pair_bias=p,  # [Nblocks, B, 1, W, Nheads, Lq, Lk]
+            pair_bias=p,  # [Nblocks, B, 1, W, Nheads, Lq, 14, Lk, 14]
         )
         return q
 
@@ -139,6 +140,7 @@ class AtomEncoder(nn.Module):
     def __init__(
         self,
         channel_atom: int = 96,
+        channel_atompair: int = 14,
         channel_cond: int = 768,
         num_heads: int = 2,
         num_blocks: int = 2,
@@ -149,15 +151,22 @@ class AtomEncoder(nn.Module):
         ----------
         channel_atom : int
             The atom/token dimension.
+        channel_atompair : int
+            The atom pair dimension (relative positional encoding dimension).
         channel_cond : int
             The conditioning dimension.
         """
         super().__init__()
+        self.num_heads: int = num_heads
+        self.num_blocks: int = num_blocks
+
         self.embedding_aa_atoms = LinearNoBias(21, 14 * channel_atom)
         self.linear_in = LinearNoBias(3, channel_atom, init="default", precision=32)
         self.linear_cond = LinearNoBias(channel_cond, channel_atom, init="final")
         self.mlp = AtomMLP(channel_atom, hidden_dim=channel_atom // 2)
-        self.stack = AtomAttentionStack(channel_atom, num_heads, num_blocks, max_r=4)
+        self.stack = AtomAttentionStack(
+            channel_atom, channel_atompair, num_heads, num_blocks
+        )
 
     def forward(
         self,
@@ -191,7 +200,7 @@ class AtomEncoder(nn.Module):
         # Initialize the atom representations and conditioning
         q, c = a, a
 
-        mask = batch["atom14_mask"].unsqueeze(-3).to(q.dtype)  # (B, 1, L, 14)
+        mask = batch["atom14_mask"].unsqueeze(1).to(q.dtype)  # (B, 1, L, 14)
 
         # Prepare the input representations
         # Embed the current state: noisy atom coordinates
@@ -215,15 +224,20 @@ class AtomDecoder(nn.Module):
     def __init__(
         self,
         channel_atom: int = 96,
+        channel_atompair: int = 14,
         num_heads: int = 2,
         num_blocks: int = 2,
     ) -> None:
         """Initialize the Atom decoding layer."""
         super().__init__()
-        self.stack = AtomAttentionStack(channel_atom, num_heads, num_blocks, max_r=4)
+        self.stack = AtomAttentionStack(
+            channel_atom, channel_atompair, num_heads, num_blocks
+        )
         self.mlp = AtomMLP(channel_atom, hidden_dim=channel_atom // 2)
-        # TODO: change name to `lienar_out`.
-        self.linear_q_to_r = LinearNoBias(channel_atom, 3, init="final", precision=32)
+        self.linear_out = nn.Sequential(
+            LayerNorm(channel_atom, precision=32),
+            LinearNoBias(channel_atom, 3, init="final", precision=32),
+        )
 
     def forward(
         self,
@@ -241,7 +255,7 @@ class AtomDecoder(nn.Module):
         q = q * mask[..., None]
 
         # Project representations directly to raw 3D coordinate trajectories
-        r_update = self.linear_q_to_r(q)  # (B, N, L, 14, 3)
+        r_update = self.linear_out(q)  # (B, N, L, 14, 3)
         r_update = r_update * mask[..., None]
 
         return r_update

@@ -65,6 +65,9 @@ class AtlasFoldForTrain(AtlasFold):
         device = mask.device
         dtype = get_context_dtype()
 
+        # Compute positional encodings
+        self.compute_rel_pos_encoding(batch)
+
         # Recycling iterations with stochastic masking during training.
         z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
         mlm_prob = torch.rand(1, device=device) * 0.2
@@ -206,13 +209,14 @@ class AtlasFoldForTrain(AtlasFold):
         # Add noise
         noise = torch.randn_like(x_gt)  # [B, N, L, 14, 3]
         x_noisy = x_gt + t_hat.view(B, N, 1, 1, 1) * noise
+        x_noisy = x_noisy * mask[..., None]
 
         # Forward pass through the score model
         _t_hat = t_hat.view(B, N, 1, 1, 1)  # [B, N, 1, 1, 1]
         c_in = model.c_in(_t_hat)
         c_skip = model.c_skip(_t_hat)
         c_out = model.c_out(_t_hat)
-        loss_weights = 1 / model.c_out(t_hat) ** 2  # [B, N]
+        loss_weights = 1 / (model.c_out(t_hat) ** 2 + 1e-10)  # [B, N]
 
         # DiT Conditioning
         c_noise = model.c_noise(t_hat)

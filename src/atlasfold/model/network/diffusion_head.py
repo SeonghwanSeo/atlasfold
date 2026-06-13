@@ -50,6 +50,7 @@ class DiffusionModule(nn.Module):
         self,
         channel_a: int = 768,
         channel_atom: int = 96,
+        channel_atompair: int = 14,
         channel_cond: int = 384,
         num_heads: int = 16,
         num_blocks: int = 12,
@@ -63,10 +64,12 @@ class DiffusionModule(nn.Module):
         ----------
         channel_a : int
             The single representation dimension.
-        channel_s : int
-            The single conditioning dimension.
         channel_atom : int
             The atom representation dimension.
+        channel_atompair : int
+            The atom relative position encoding dimension.
+        channel_s : int
+            The single conditioning dimension.
         num_heads : int
             The number of attention heads.
         num_blocks : int
@@ -83,14 +86,12 @@ class DiffusionModule(nn.Module):
 
         # Atom attention encoder
         self.atom_encoder = AtomEncoder(
-            channel_atom, channel_cond, num_atom_heads, num_atom_blocks
+            channel_atom, channel_atompair, channel_cond, num_atom_heads, num_atom_blocks
         )
 
         # Global transformer stack
-        self.proj_q_to_a = nn.Sequential(
-            LinearNoBias(channel_atom * 14, channel_a, init="default"),
-            nn.ReLU(),
-        )
+        self.proj_q_to_a = LinearNoBias(channel_atom * 14, channel_a, init="default")
+
         self.diffusion_transformer = DiffusionTransformerStack(
             channel_a=channel_a,
             channel_cond=channel_cond,
@@ -105,7 +106,9 @@ class DiffusionModule(nn.Module):
             LinearNoBias(channel_a, 14 * channel_atom, init="default"),
         )
 
-        self.atom_decoder = AtomDecoder(channel_atom, num_atom_heads, num_atom_blocks)
+        self.atom_decoder = AtomDecoder(
+            channel_atom, channel_atompair, num_atom_heads, num_atom_blocks
+        )
 
     # === Main forward function for training === #
     def forward(
@@ -176,7 +179,8 @@ class DiffusionHead(nn.Module):
         num_blocks: int = 12,
         num_atom_heads: int = 2,
         num_atom_blocks: int = 2,
-        multimer: bool = False,
+        seq_rel_pos_bins: int = 73,
+        atom_rel_pos_bins: int = 14,
         # For training
         blocks_per_ckpt: int | None = None,
     ) -> None:
@@ -206,6 +210,10 @@ class DiffusionHead(nn.Module):
             The number of attention heads in the atom decoder.
         num_atom_dec_blocks : int
             The number of blocks in the atom decoder.
+        seq_rel_pos_bins : int
+            The number of bins for the sequence relative positional encoding.
+        atom_rel_pos_bins : int
+            The number of bins for the atom relative positional encoding.
 
         # For training
         blocks_per_ckpt : int | None, optional
@@ -221,13 +229,13 @@ class DiffusionHead(nn.Module):
             channel_s, channel_cond, dim_fourier=256
         )
         self.pair_conditioning = PairConditioning(
-            channel_z, (num_blocks, num_heads), multimer=multimer
+            channel_z, (num_blocks, num_heads), channel_rel_pos=seq_rel_pos_bins
         )
-
         # Diffusion module
         self.score_model = DiffusionModule(
             channel_a=channel_a,
             channel_atom=channel_atom,
+            channel_atompair=atom_rel_pos_bins,
             channel_cond=channel_cond,
             num_heads=num_heads,
             num_blocks=num_blocks,

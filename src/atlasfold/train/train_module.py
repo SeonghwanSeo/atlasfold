@@ -502,22 +502,20 @@ class TrainingModule(pl.LightningModule):
         label: dict[str, torch.Tensor],
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         metrics: dict[str, torch.Tensor] = {}
-        L_mse = self.mse_loss.forward(
+        L_mse = self.mse_loss(
             x_pred=pred["x_out"],
             x_gt=label["coordinates"],
             mask=label["resolved_mask"],
         )  # [B, N]
-        L_mse = (L_mse * pred["loss_weights"]).mean(-1)
-        L_mse = L_mse.mean()
+        L_mse = (L_mse * pred["loss_weights"]).mean()
         metrics["mse_loss"] = L_mse.detach()
 
         if self.loss_weights["smooth_lddt"] > 0:
-            L_smooth_lddt = self.smooth_lddt_loss.forward(
+            L_smooth_lddt = self.smooth_lddt_loss(
                 x_pred=pred["x_out"],
                 x_gt=label["coordinates"],
                 mask=label["resolved_mask"],
             )  # [B, N]
-            L_smooth_lddt = L_smooth_lddt.mean(-1)
             L_smooth_lddt = L_smooth_lddt.mean()
             metrics["smooth_lddt_loss"] = L_smooth_lddt.detach()
         else:
@@ -547,7 +545,7 @@ class TrainingModule(pl.LightningModule):
         resolved_mask = label["resolved_mask"]  # [B, L, 14]
         seq_mask = batch["seq_mask"]  # [B, L, 14]
 
-        L_plddt = self.plddt_loss.forward(
+        L_plddt = self.plddt_loss(
             logits=pred["plddt"]["logits"],
             bin_centers=pred["plddt"]["bin_centers"],
             x_pred=x_pred,
@@ -568,7 +566,7 @@ class TrainingModule(pl.LightningModule):
 
         # NOTE: PAE loss return 0.0 when alpha_pae is 0.
         if alpha_pae > 0:
-            L_pae = self.pae_loss.forward(
+            L_pae = self.pae_loss(
                 logits=pred["pae"]["logits"],
                 bin_centers=pred["pae"]["bin_centers"],
                 x_pred=x_pred,
@@ -586,7 +584,7 @@ class TrainingModule(pl.LightningModule):
 
     # === Training logs === #
     def on_before_optimizer_step(self, optimizer) -> None:
-        if self.trainer.global_step % 50 == 0:
+        if self.trainer.global_step % 10 == 0:
             self.log_model_state()
 
     def log_model_state(self):
@@ -611,8 +609,6 @@ class TrainingModule(pl.LightningModule):
             log("param_norm/confidence_head", parameter_norm(model.confidence_head))
 
     # === EMA === #
-    # TODO: this may not be robust for compiled models, where the state dict keys
-    # are different. Consider implementing kep mapping logic in the EMA class.
     def on_train_start(self) -> None:
         self.ema.to(self.device)
 

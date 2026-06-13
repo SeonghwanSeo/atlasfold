@@ -15,7 +15,6 @@ from atlasfold.model.network.primitives import (
     SwiGLU,
     Transition,
 )
-from atlasfold.model.network.rel_pos_encoding import RelativePositionEncoding
 from atlasfold.utils.checkpointing import checkpoint_blocks
 
 
@@ -129,17 +128,13 @@ class PairConditioning(nn.Module):
         self,
         channel_z: int = 128,
         channel_bias: tuple[int, int] = (12, 16),
-        multimer: bool = False,
+        channel_rel_pos: int = 73,
     ):
         super().__init__()
         self.channel_z: int = channel_z
         self.channel_bias: tuple[int, int] = channel_bias
 
-        self.rel_pos_encoding = RelativePositionEncoding(
-            r_max=32, s_max=2 if multimer else None
-        )
-
-        in_channel = channel_z + self.rel_pos_encoding.dim
+        in_channel = channel_z + channel_rel_pos
         self.layernorm = LayerNorm(in_channel, create_offset=False, precision=32)
         self.linear = LinearNoBias(in_channel, channel_z, init="default", precision=32)
         self.transitions = nn.ModuleList(
@@ -150,7 +145,6 @@ class PairConditioning(nn.Module):
         nblock, nhead = channel_bias
         self.layernorm_bias = LayerNorm(channel_z, create_offset=False)
         self.linear_bias = LinearNoBias(channel_z, nblock * nhead)
-        self.multimer = multimer
 
     def forward(self, batch: dict[str, torch.Tensor], z: torch.Tensor) -> torch.Tensor:
         """See Section 3.7 Algorithm 21 Diffusion Conditioning in the AF3 paper.
@@ -168,8 +162,8 @@ class PairConditioning(nn.Module):
             Tensor of shape (n_block, B, n_head, L, L) containing attention bias.
         """
         # Concatenate relative positional encoding
-        rel_pos = self.rel_pos_encoding(batch)
-        z = torch.cat((z, rel_pos.to(z.device)), dim=-1)
+        rel_pos = batch["seq_rel_pos"]  # [B, L, L, c_rel_pos]
+        z = torch.cat((z, rel_pos), dim=-1)
         z = self.linear(self.layernorm(z))  # [B, L, L, c_z]
 
         # Apply transitions
@@ -416,6 +410,11 @@ class AtomTransformerStack(nn.Module):
             lambda x: einops.rearrange(x, "... w l a c -> ... w (l a) c", a=14),
             (single_cond_q, single_cond_k),
         )
+        if pair_bias is not None:
+            pair_bias = einops.rearrange(
+                pair_bias,
+                "n ... h q a1 k a2 -> n ... h (q a1) (k a2)",
+            )
 
         W, Lq = local_attn_index.W, local_attn_index.Lq
         for i, block in enumerate(self.blocks):

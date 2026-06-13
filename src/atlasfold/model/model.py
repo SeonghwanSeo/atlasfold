@@ -10,7 +10,10 @@ from atlasfold.common.featurize import featurize
 from atlasfold.model.network import confidence_head, diffusion_head, distogram_head, trunk
 from atlasfold.model.network.diffusion_head import SamplingConfig
 from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
-from atlasfold.model.network.rel_pos_encoding import RelativePositionEncoding
+from atlasfold.model.network.rel_pos_encoding import (
+    AtomRelativePositionEncoding,
+    RelativePositionEncoding,
+)
 from atlasfold.model.utils import confidence_metrics
 from atlasfold.utils import torch_utils
 from atlaslm.model import AtlasLM
@@ -95,6 +98,10 @@ class AtlasFold(torch.nn.Module):
         self.channel_a: int = cfg.diffusion_head.channel_a
         self.channel_atom: int = cfg.diffusion_head.channel_atom
 
+        # Relative positional encoding
+        self.seq_rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
+        self.atom_rel_pos_encoding = AtomRelativePositionEncoding(max_r=4)
+
         # === Language model === #
         self.lm: AtlasLM = load_model(cfg.lm_name, path=cfg.lm_path, dtype=torch.bfloat16)
         # Freeze LM parameters
@@ -124,9 +131,8 @@ class AtlasFold(torch.nn.Module):
             torch.nn.ReLU(),
             LinearNoBias(self.channel_z, self.channel_z, init="default"),
         )
-        self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=None)
         self.linear_rel_pos = LinearNoBias(
-            self.rel_pos_encoding.dim, self.channel_z, init="default"
+            self.seq_rel_pos_encoding.dim, self.channel_z, init="default"
         )
 
         # === Trunk body === #
@@ -159,7 +165,8 @@ class AtlasFold(torch.nn.Module):
         self.diffusion_head = diffusion_head.DiffusionHead(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
-            multimer=False,
+            seq_rel_pos_bins=self.seq_rel_pos_encoding.dim,
+            atom_rel_pos_bins=self.atom_rel_pos_encoding.dim,
             **dataclasses.asdict(cfg.diffusion_head),
         )
 
@@ -290,6 +297,9 @@ class AtlasFold(torch.nn.Module):
                 f"Invalid mode: {mode}. Must be one of 'flash', 'base', or 'full'."
             )
 
+        # Compute positional encodings
+        self.compute_rel_pos_encoding(batch)
+
         # Run trunk
         s, z = self.run_trunk(batch, num_recycles, mode, mlm_prob)
         s, z = s.float(), z.float()
@@ -340,6 +350,13 @@ class AtlasFold(torch.nn.Module):
     # ==================================================
     # Forward pass components
     # ==================================================
+    def compute_rel_pos_encoding(self, batch: dict[str, torch.Tensor]) -> None:
+        """Compute the relative positional encodings"""
+        seq_rel_pos = self.seq_rel_pos_encoding(batch)  # [B, L, L, bins]
+        atom_rel_pos = self.atom_rel_pos_encoding(batch)  # [B, W, Lq, 14, Lk, 14, bins]
+        batch["seq_rel_pos"] = seq_rel_pos
+        batch["atom_rel_pos"] = atom_rel_pos
+
     def run_trunk(
         self,
         batch: dict[str, torch.Tensor],
@@ -532,8 +549,7 @@ class AtlasFold(torch.nn.Module):
 
         # Initialize pair representation with relative positional encoding
         z = self.z_init(z / math.sqrt(self.lm.n_layers))
-        rel_pos = self.rel_pos_encoding(batch)  # [B, L, L, bins]
-        z = _add(z, self.linear_rel_pos(rel_pos))  # [B, L, L, c_z]
+        z = _add(z, self.linear_rel_pos(batch["seq_rel_pos"]))  # [B, L, L, c_z]
 
         # Mask the padded positions in the single and pair representations
         mask = batch["seq_mask"]  # [B, L]

@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from atlasfold.common import featurize, metadata, protein
+from atlasfold.utils.geometry.random_augment import do_centering_atom14
 from atlaslm.alphabet import Alphabet
 
 from .utils import cropper
@@ -214,6 +215,23 @@ class TrainingDataset(LMDBDataset):
         self,
         index: int,
     ) -> dict[str, dict[str, torch.Tensor]]:
+        while True:
+            feat = self.sample_item(index)
+            if feat["label"]["resolved_mask"][:, 1].sum() < 4:
+                # If there are less than 4 resolved residues with C-alpha coordinates,
+                # resample.
+                metadata_dict = self.metadatas[index]
+                name = metadata_dict["id"]
+                self.logger.warning(
+                    f"Sample {name} ({index}) has less than 4 resolved residues; "
+                    f"resampling."
+                )
+                index = np.random.choice(len(self))
+            else:
+                break
+        return feat
+
+    def sample_item(self, index: int) -> dict[str, dict[str, torch.Tensor]]:
         # Create a random number generator without a fixed seed.
         rng = np.random.default_rng()
 
@@ -319,6 +337,7 @@ class TrainingDataset(LMDBDataset):
         coords = prot.coordinates  # [L, 14, 3]
         resolved_mask = np.isfinite(coords).all(axis=-1)  # [L, 14]
         coords = np.nan_to_num(coords, nan=0.0)
+        coords = do_centering_atom14(coords, resolved_mask, mask_to_zero=True)
         return {"coordinates": coords, "resolved_mask": resolved_mask}
 
     def prepare_loss_masks(self, m: metadata.Metadata) -> dict[str, bool]:
@@ -414,4 +433,5 @@ class ValidationDataset(LMDBDataset):
         coords = prot.coordinates  # [L, 14, 3]
         resolved_mask = np.isfinite(coords).all(axis=-1)  # [L, 14]
         coords = np.nan_to_num(coords, nan=0.0)
+        coords = do_centering_atom14(coords, resolved_mask, mask_to_zero=True)
         return {"coordinates": coords, "resolved_mask": resolved_mask}
