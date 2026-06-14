@@ -1,0 +1,23 @@
+model:
+  _yaml_: model/atlasfold.yaml
+
+train:
+  _yaml_: train/full.yaml
+  name: stage4
+
+  data:
+    max_length: 768
+    max_seq_length: 1024
+    batch_size: 1
+    global_batch_size: 128
+
+  training:
+    train_trunk: true
+    train_diffusion_head: true
+    train_confidence_head: true
+    train_pae_head: false
+    diffusion_batch_size: 24
+
+  optimizer:
+    base_lr: 5e-4
+    decay_start_step: 100000000 # No decay

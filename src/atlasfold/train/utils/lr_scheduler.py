@@ -9,6 +9,7 @@ class AF2LRScheduler(torch.optim.lr_scheduler._LRScheduler):
         num_warmup_steps: int = 1000,
         decay_start_step: int = 50000,
         decay_factor: float = 0.95,
+        last_epoch: int = -1,
     ) -> None:
         """Initialize the learning rate scheduler.
 
@@ -30,7 +31,7 @@ class AF2LRScheduler(torch.optim.lr_scheduler._LRScheduler):
         self.num_warmup_steps: int = num_warmup_steps
         self.decay_start_step: int = decay_start_step
         self.decay_factor: float = decay_factor
-        super().__init__(optimizer)
+        super().__init__(optimizer, last_epoch)
 
     def state_dict(self) -> dict:
         state_dict = {k: v for k, v in self.__dict__.items() if k not in ["optimizer"]}

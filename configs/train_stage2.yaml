@@ -1,0 +1,23 @@
+model:
+  _yaml_: model/atlasfold.yaml
+
+train:
+  _yaml_: train/full.yaml
+  name: stage2
+
+  data:
+    max_length: 384
+    max_seq_length: 640
+    batch_size: 1
+    global_batch_size: 128
+
+  training:
+    train_trunk: true
+    train_diffusion_head: true
+    train_confidence_head: false
+    train_pae_head: false
+    diffusion_batch_size: 32
+
+  loss:
+    weights:
+      smooth_lddt: 1.0

@@ -1,0 +1,24 @@
+_yaml_: base.yaml
+
+data:
+  data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
+  train_datasets:
+    - name: rcsb
+      is_distillation: false
+      weight: 0.120
+      sampling_strategy: ['length', 'cluster']
+    - name: disordered_pdb
+      is_distillation: true
+      weight: 0.005
+      sampling_strategy: ['length', 'cluster']
+    - name: long_monomers
+      is_distillation: true
+      weight: 0.865
+      sampling_strategy: ['length', 'plddt']
+    - name: short_monomers
+      is_distillation: true
+      weight: 0.010
+      sampling_strategy: ['length', 'plddt']
+
+  val_dataset:
+    name: cameo_val

@@ -170,6 +170,8 @@ class TrainingModule(pl.LightningModule):
             0, self.training_config.num_recycles + 1, size=1000_000
         )
 
+        self.last_lr_step: int = -1
+
     def freeze_submodules(self):
         """Freeze submodules based on the training configuration."""
         modules_to_freeze: list[str] = []
@@ -297,6 +299,11 @@ class TrainingModule(pl.LightningModule):
         else:
             raise NotImplementedError(f"Optimizer {config.opt} not implemented yet.")
 
+        if self.last_lr_step != -1:
+            for group in optimizer.param_groups:
+                if "initial_lr" not in group:
+                    group["initial_lr"] = config.base_lr
+
         if config.lr_scheduler == "af2":
             scheduler = AF2LRScheduler(
                 optimizer,
@@ -304,6 +311,7 @@ class TrainingModule(pl.LightningModule):
                 num_warmup_steps=config.num_warmup_steps,
                 decay_start_step=config.decay_start_step,
                 decay_factor=config.lr_decay_factor,
+                last_epoch=self.last_lr_step,
             )
         else:
             raise NotImplementedError(
