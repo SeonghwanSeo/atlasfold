@@ -90,7 +90,18 @@ class ExponentialMovingAverage:
             "params": self.params,
         }
 
-    def load_state_dict(self, state_dict: dict[str, Any]):
+    def load_state_dict(
+        self,
+        state_dict: dict[str, Any],
+        strict: bool = True,
+    ):
         self.decay = state_dict["decay"]
         for k, p in state_dict["params"].items():
+            if k not in self.params:
+                if strict:
+                    raise KeyError(
+                        f"Parameter {k} from state_dict not found in EMA parameters."
+                    )
+                else:
+                    continue
             self.params[k] = p.clone()

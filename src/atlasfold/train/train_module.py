@@ -38,6 +38,9 @@ class TrainConfig:
     optimizer: "OptimizerConfig"
     loss: "LossConfig"
     kernel: "KernelConfig"
+    # multi-phase training
+    load_opt_state: bool = True
+    init_from_ema: bool = False  # if True, load EMA state instead of model weights
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -60,8 +63,6 @@ class OptimizerConfig:
     ema_decay: float = 0.999
     ema_ignore_params: tuple[str] | None = ("lm.",)
     ema_update_params: tuple[str] | None = None
-    # multi-phase training
-    load_opt_state_from_checkpoint: bool = True
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -237,9 +238,9 @@ class TrainingModule(pl.LightningModule):
 
     def configure_optimizers(self):
         config = self.optimizer_config
-        parameters = [p for p in self.parameters() if p.requires_grad]
-
         if config.opt.lower() == "adam":
+            # Adam optimizer without weight decay.
+            parameters = [p for p in self.parameters() if p.requires_grad]
             optimizer = torch.optim.Adam(
                 parameters,
                 betas=(config.beta_1, config.beta_2),
@@ -247,11 +248,50 @@ class TrainingModule(pl.LightningModule):
                 lr=config.base_lr,
             )
         elif config.opt.lower() == "adamw":
+            # AdamW optimizer with weight decay.
+            decay = set()
+            no_decay = set()
+
+            for pn, p in self.named_parameters():
+                if not p.requires_grad:
+                    continue
+                assert not pn.startswith("model.lm."), (
+                    "Language model parameters should not be optimized."
+                )
+                if pn.startswith(
+                    (
+                        "model.distogram_head.",
+                        "model.diffusion_head.",
+                        "model.confidence_head.",
+                    )
+                ):
+                    # No weight decay for head parameters
+                    no_decay.add(pn)
+                elif p.ndim == 1:
+                    # No weight decay for LayerNorm and bias parameters
+                    no_decay.add(pn)
+                else:
+                    decay.add(pn)
+
+            # Create a dictionary of all parameters
+            param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
+
+            # Group parameters for the optimizer
+            optim_groups = [
+                {
+                    "params": [param_dict[pn] for pn in sorted(list(decay))],
+                    "weight_decay": config.weight_decay,
+                },
+                {
+                    "params": [param_dict[pn] for pn in sorted(list(no_decay))],
+                    "weight_decay": 0.0,
+                },
+            ]
+
             optimizer = torch.optim.AdamW(
-                parameters,
+                optim_groups,
                 betas=(config.beta_1, config.beta_2),
                 eps=config.eps,
-                weight_decay=config.weight_decay,
                 lr=config.base_lr,
             )
         else:
@@ -648,15 +688,7 @@ class TrainingModule(pl.LightningModule):
         checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
-        if self.config.optimizer.load_opt_state_from_checkpoint is False:
-            # When loading optimizer state from checkpoint is disabled,
-            # replace the optimizer state in the checkpoint with the initialized state.
-            state = checkpoint["optimizer_states"][0]
-            init_state = self.configure_optimizers()[0][0].state_dict()
-            state["state"] = init_state["state"]
-            state["param_groups"][0]["params"] = init_state["param_groups"][0]["params"]
-            # checkpoint.pop("lr_schedulers", None)
-        self.load_ema_state_dict(checkpoint["ema"])
+        self.load_ema_state_dict(checkpoint["ema"], strict=True)
 
     def load_state_dict(
         self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
@@ -689,6 +721,6 @@ class TrainingModule(pl.LightningModule):
         else:
             return self.model.load_state_dict(state_dict, strict=False)
 
-    def load_ema_state_dict(self, state_dict: Mapping[str, Any]):
+    def load_ema_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
         """Load EMA state dict."""
-        self.ema.load_state_dict(state_dict)
+        self.ema.load_state_dict(state_dict, strict=strict)
