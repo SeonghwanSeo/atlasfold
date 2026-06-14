@@ -252,7 +252,9 @@ class TrainingDataset(LMDBDataset):
         label = {k: v[crop_indices] for k, v in label.items()}
 
         # Prepare the LM input with expanded crop indices and BOS/EOS tokens.
-        lm_crop_indices = self._expand_crop_indices_for_lm(crop_indices, len(prot))
+        lm_crop_indices = self._expand_crop_indices_for_lm(
+            crop_indices, len(prot), self.max_seq_length
+        )
         lm_input = {k: v[lm_crop_indices] for k, v in lm_input.items()}
 
         # Add lm to fold input mapping manually since the LM input are
@@ -277,60 +279,6 @@ class TrainingDataset(LMDBDataset):
             "loss_mask": loss_mask,
         }
 
-    def _expand_crop_indices_for_lm(
-        self,
-        crop_indices: np.ndarray,
-        seqlen: int,
-    ) -> np.ndarray:
-        assert len(crop_indices) <= seqlen, "Crop indices cannot exceed sequence length"
-        if seqlen <= self.max_seq_length - 2:
-            # If the full sequence fits within the LM input limit, use the entire sequence
-            return np.arange(seqlen + 2)
-
-        # Initialize a boolean mask for the LM input tokens (including BOS and EOS)
-        # BOS and EOS will include when the first/last residues are included.
-        seq_crop_mask = np.zeros(seqlen + 2, dtype=bool)
-        shifted_crops = crop_indices + 1  # Shift by 1 to account for BOS token at index 0
-        seq_crop_mask[shifted_crops] = True
-
-        # Determine the segments of contiguous indices in the crop
-        breaks = np.where(np.diff(shifted_crops) != 1)[0] + 1
-        segments = np.split(shifted_crops, breaks)
-        cursors = [[seg[0], seg[-1]] for seg in segments]  # [i, j] pairs for each segment
-        active_segments = list(range(len(cursors)))
-
-        budget = self.max_seq_length - len(crop_indices)
-        while budget > 0:
-            for seg_idx in list(active_segments):
-                i, j = cursors[seg_idx]
-
-                # Try to expand to the left
-                if i > 0 and (not seq_crop_mask[i - 1]):
-                    seq_crop_mask[i - 1] = True
-                    i -= 1
-                    budget -= 1
-                if budget <= 0:
-                    break
-
-                # Try to expand to the right
-                if j < seqlen + 1 and (not seq_crop_mask[j + 1]):
-                    seq_crop_mask[j + 1] = True
-                    j += 1
-                    budget -= 1
-
-                if budget <= 0:
-                    break
-
-                # Check if the segment can still be expanded
-                can_expand_left = i > 0 and (not seq_crop_mask[i - 1])
-                can_expand_right = j < seqlen + 1 and (not seq_crop_mask[j + 1])
-                if not (can_expand_left or can_expand_right):
-                    active_segments.remove(seg_idx)
-                else:
-                    cursors[seg_idx] = [i, j]
-
-        return np.where(seq_crop_mask)[0]
-
     def prepare_labels(self, prot: protein.Protein) -> dict[str, np.ndarray]:
         """Prepare the label tensors for training."""
         # Extract the coordinates and the mask for resolved residues.
@@ -353,6 +301,115 @@ class TrainingDataset(LMDBDataset):
         return {
             "confidence": confidence_loss,
         }
+
+    @staticmethod
+    def _expand_crop_indices_for_lm(
+        crop_indices: np.ndarray,
+        seqlen: int,
+        max_seq_length: int = 384,
+    ) -> np.ndarray:
+        assert len(crop_indices) <= seqlen, "Crop indices cannot exceed sequence length"
+        if seqlen <= max_seq_length - 2:
+            # If the full sequence fits within the LM input limit, use the entire sequence
+            return np.arange(seqlen + 2)
+
+        # NOTE: We assume that there is no missing residue in the input sequence.
+        # We already complete the missing residues to 'UNK' with 'NaN' coordinates.
+        budget = max_seq_length - len(crop_indices)
+
+        # Initialize a boolean mask for the LM input tokens
+        seq_crop_mask = np.zeros(seqlen + 2, dtype=bool)
+        shifted_crops = crop_indices + 1  # Shift by 1 to account for BOS token at index 0
+        seq_crop_mask[shifted_crops] = True
+
+        # Determine the segments of contiguous indices
+        breaks = np.where(np.diff(shifted_crops) != 1)[0] + 1
+        segments = np.split(shifted_crops, breaks)
+
+        # Identify internal gaps between segments: [start_idx, end_idx]
+        gaps = []
+        for i in range(len(segments) - 1):
+            gap_start = segments[i][-1] + 1
+            gap_end = segments[i + 1][0] - 1
+            if gap_start <= gap_end:
+                gaps.append([gap_start, gap_end])
+
+        # Phase 1: Try to completely fill internal gaps
+        # Sort gaps by size (smallest first) to maximize the number of merged segments
+        gaps.sort(key=lambda x: x[1] - x[0] + 1)
+
+        remaining_gaps = []
+        for gap_start, gap_end in gaps:
+            gap_size = gap_end - gap_start + 1
+            if budget >= gap_size:
+                # Fully fill the gap
+                seq_crop_mask[gap_start : gap_end + 1] = True
+                budget -= gap_size
+            else:
+                remaining_gaps.append([gap_start, gap_end])
+
+        # Restore original left-to-right order for the remaining gaps
+        remaining_gaps.sort(key=lambda x: x[0])
+
+        # Phase 2: Prioritize inner expansion
+        # Expand inwards into the remaining gaps
+        active_inner_edges = []
+        for gap_start, gap_end in remaining_gaps:
+            # Append left segment expanding right, and right segment expanding left
+            active_inner_edges.append({"pos": gap_start, "dir": 1, "limit": gap_end})
+            active_inner_edges.append({"pos": gap_end, "dir": -1, "limit": gap_start})
+
+        while budget > 0 and active_inner_edges:
+            for edge in list(active_inner_edges):
+                if budget <= 0:
+                    break
+
+                curr_pos = edge["pos"]
+                # Fill the position if not already filled
+                if not seq_crop_mask[curr_pos]:
+                    seq_crop_mask[curr_pos] = True
+                    budget -= 1
+
+                # Move cursor
+                next_pos = curr_pos + edge["dir"]
+
+                # Check limits and overlaps to remove inactive edges
+                if (
+                    (edge["dir"] == 1 and next_pos > edge["limit"])
+                    or (edge["dir"] == -1 and next_pos < edge["limit"])
+                    or seq_crop_mask[next_pos]
+                ):
+                    active_inner_edges.remove(edge)
+                else:
+                    edge["pos"] = next_pos
+
+        # Phase 3: Expand outer edges (leftmost and rightmost) if budget still remains
+        if budget > 0:
+            left_cursor = np.where(seq_crop_mask)[0][0] - 1
+            right_cursor = np.where(seq_crop_mask)[0][-1] + 1
+
+            while budget > 0:
+                expanded = False
+                # Expand leftmost anchor to the left
+                if left_cursor >= 0 and budget > 0:
+                    if not seq_crop_mask[left_cursor]:
+                        seq_crop_mask[left_cursor] = True
+                        budget -= 1
+                    left_cursor -= 1
+                    expanded = True
+
+                # Expand rightmost anchor to the right
+                if right_cursor <= seqlen + 1 and budget > 0:
+                    if not seq_crop_mask[right_cursor]:
+                        seq_crop_mask[right_cursor] = True
+                        budget -= 1
+                    right_cursor += 1
+                    expanded = True
+
+                if not expanded:
+                    break
+
+        return np.where(seq_crop_mask)[0]
 
 
 class MultiTrainingDataset(torch.utils.data.Dataset):
