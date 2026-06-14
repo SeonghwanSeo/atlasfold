@@ -8,15 +8,19 @@ import torch
 
 from atlasfold.model.model import AtlasFoldConfig
 from atlasfold.model.network import confidence_head, diffusion_head, distogram_head, trunk
+from atlasfold.model.network.diffusion_head import SamplingConfig
 from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
-from atlasfold.model.network.rel_pos_encoding import RelativePositionEncoding
+from atlasfold.model.network.rel_pos_encoding import (
+    AtomRelativePositionEncoding,
+    RelativePositionEncoding,
+)
 from atlasfold.model.utils import confidence_metrics
 from atlasfold.utils import torch_utils
 from atlaslm.model import AtlasLM
 from atlaslm.pretrained import load_model
 
 
-class AtlasFold(torch.nn.Module):
+class AtlasFold_Multimer(torch.nn.Module):
     def __init__(self, cfg: AtlasFoldConfig):
         """Initialize the AtlasFold model."""
         super().__init__()
@@ -29,15 +33,19 @@ class AtlasFold(torch.nn.Module):
         self.channel_a: int = cfg.diffusion_head.channel_a
         self.channel_atom: int = cfg.diffusion_head.channel_atom
 
+        # Relative positional encoding
+        self.seq_rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
+        self.atom_rel_pos_encoding = AtomRelativePositionEncoding(max_r=4)
+
         # === Language model === #
-        self.lm: AtlasLM = load_model(cfg.lm_name, dtype=torch.bfloat16)
+        self.lm: AtlasLM = load_model(cfg.lm_name, path=cfg.lm_path, dtype=torch.bfloat16)
         # Freeze LM parameters
         self.lm.requires_grad_(False)
         self.alphabet = self.lm.alphabet
 
         # === Representation initialization === #
         self.w_lm_emb = torch.nn.Parameter(torch.zeros(self.lm.n_layers + 1))
-        self.layernorm_lm_emb = LayerNorm(self.lm.d_model)
+        self.layernorm_lm_emb = LayerNorm(self.lm.d_model, precision=torch.float32)
         self.s_init = torch.nn.Sequential(
             LinearNoBias(self.lm.d_model, self.channel_s, init="relu"),
             torch.nn.ReLU(),
@@ -58,9 +66,8 @@ class AtlasFold(torch.nn.Module):
             torch.nn.ReLU(),
             LinearNoBias(self.channel_z, self.channel_z, init="default"),
         )
-        self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
         self.linear_rel_pos = LinearNoBias(
-            self.rel_pos_encoding.dim, self.channel_z, init="default"
+            self.seq_rel_pos_encoding.dim, self.channel_z, init="default"
         )
 
         # === Trunk body === #
@@ -93,7 +100,8 @@ class AtlasFold(torch.nn.Module):
         self.diffusion_head = diffusion_head.DiffusionHead(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
-            multimer=True,
+            seq_rel_pos_bins=self.seq_rel_pos_encoding.dim,
+            atom_rel_pos_bins=self.atom_rel_pos_encoding.dim,
             **dataclasses.asdict(cfg.diffusion_head),
         )
 
@@ -122,17 +130,29 @@ class AtlasFold(torch.nn.Module):
     # ==================================================
     # Inference
     # ==================================================
+    def fold(
+        self,
+        sequence: str,
+        mode: str = "full",
+        num_recycles: int = 10,
+        num_samples: int = 1,
+        sampling_config: SamplingConfig | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Fold a single sequence."""
+        raise NotImplementedError("Multimer folding is not implemented yet.")
+
     @torch.inference_mode()
     def inference(
         self,
         batch: dict[str, torch.Tensor],
-        num_recycles: int,
-        mode: str,
-        sampling_config: diffusion_head.SamplingConfig,
+        mode: str = "full",
+        num_samples: int = 3,
         compute_pae: bool = True,
         return_representations: bool = False,
         # Advanced options
         mlm_prob: float | None = None,
+        num_recycles: int = 3,
+        sampling_config: SamplingConfig | None = None,
     ) -> dict[str, torch.Tensor]:
         """Perform the forward pass.
 
@@ -141,7 +161,7 @@ class AtlasFold(torch.nn.Module):
         batch: dict[str, torch.Tensor]
             The input batch with the following keys:
             # Folding trunk inputs
-            - "aatype"          : [B, L, 21] float/int
+            - "aatype"          : [B, L, 21] float
                 One-hot encoded amino acid types.
             - "aatype_int"      : [B, L] int
                 Amino acid type indices.
@@ -203,8 +223,12 @@ class AtlasFold(torch.nn.Module):
         if mode not in ["base", "full"]:
             raise ValueError(f"Invalid mode: {mode}. Must be one of 'base' or 'full'.")
 
+        # Compute positional encodings
+        self.compute_rel_pos_encoding(batch)
+
         # Run trunk
         s, z = self.run_trunk(batch, num_recycles, mode, mlm_prob)
+        s, z = s.float(), z.float()
         if return_representations:
             out["trunk.s"] = s
             out["trunk.z"] = z
@@ -215,7 +239,10 @@ class AtlasFold(torch.nn.Module):
         out["distogram.boundaries"] = distogram_out["boundaries"]
 
         # Run diffusion heads
-        sample_coords = self.diffusion_head.sample(batch, s, z, sampling_config)
+        with torch.autocast(self.device.type, enabled=False):
+            sample_coords = self.diffusion_head.sample(
+                batch, s, z, num_samples, sampling_config
+            )
         out["sample_coords"] = sample_coords
 
         # Run confidence head
@@ -225,17 +252,20 @@ class AtlasFold(torch.nn.Module):
         del s, z
 
         # Compute confidence metrics
-        mask = batch["seq_mask"]
-        out["plddt"] = confidence_metrics.compute_plddt(
-            **confidence_out["plddt"], mask=mask
-        )
-        if compute_pae:
-            out["pae"] = confidence_metrics.compute_pae(
-                **confidence_out["pae"], mask=mask
+        with torch.autocast(self.device.type, enabled=False):
+            mask = batch["seq_mask"].unsqueeze(1)  # [B, 1, L]
+            out["plddt"] = confidence_metrics.compute_plddt(
+                **confidence_out["plddt"], mask=mask
             )
-            out["ptm"] = confidence_metrics.compute_ptm(
-                **confidence_out["pae"], mask=mask
-            )
+            if compute_pae:
+                out["pae"] = confidence_metrics.compute_pae(
+                    **confidence_out["pae"], mask=mask
+                )
+                out["ptm"] = confidence_metrics.compute_ptm(
+                    **confidence_out["pae"], mask=mask
+                )
+                # TODO: add iptm and related
+        del mask
 
         # Remove batch dimension if the input was not originally batched
         if not is_batched:
@@ -247,6 +277,13 @@ class AtlasFold(torch.nn.Module):
     # ==================================================
     # Forward pass components
     # ==================================================
+    def compute_rel_pos_encoding(self, batch: dict[str, torch.Tensor]) -> None:
+        """Compute the relative positional encodings"""
+        seq_rel_pos = self.seq_rel_pos_encoding(batch)  # [B, L, L, bins]
+        atom_rel_pos = self.atom_rel_pos_encoding(batch)  # [B, W, Lq, 14, Lk, 14, bins]
+        batch["seq_rel_pos"] = seq_rel_pos
+        batch["atom_rel_pos"] = atom_rel_pos
+
     def run_trunk(
         self,
         batch: dict[str, torch.Tensor],
@@ -368,7 +405,7 @@ class AtlasFold(torch.nn.Module):
         # === Prepare LM inputs === #
         input_ids = batch["lm.input_ids"]  # [B, S]
         pos_id = batch["lm.pos_id"]  # [B, S]
-        seq_id = batch["lm.seq_id"]  # [B, S]
+        seq_id = batch["lm.seq_id"]  # [B, S]. 1 for valid, 0 for padding
 
         # Apply MLM mask to input IDs for stochastic feature extraction
         if mlm_mask is not None:
@@ -385,7 +422,7 @@ class AtlasFold(torch.nn.Module):
         device = input_ids.device
         s = torch.zeros((B, S, self.lm.d_model), device=device, dtype=torch.float32)
         z = torch.zeros((B, S, S, self.channel_z), device=device, dtype=torch.float32)
-        w = self.w_lm_emb.softmax(dim=0)  # [n_layers,]
+        w = self.w_lm_emb.softmax(dim=0)  # [n_layers+1,]
 
         with torch.no_grad():
             x = self.lm.embed(input_ids)
@@ -394,13 +431,12 @@ class AtlasFold(torch.nn.Module):
         for i, block in enumerate(self.lm.transformer.blocks):
             with torch.no_grad():
                 x, attn = block(x, seq_id, pos_id, return_attn_logits=True)
-            attn = attn.moveaxis(1, -1)  # [B, S, S, n_heads]
+                # neginf will be set to 0 at the end of this function.
+                attn = attn.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+                attn = attn.clamp_(-100.0, 100.0)
+                attn = attn.moveaxis(1, -1)  # [B, S, S, n_heads]
             s = _add(s, w[i + 1] * self.layernorm_lm_emb(x))
             z = _add(z, self.proj_lm_attn[i](attn))
-
-        # Mask out inter-chain attention
-        intra_mask = seq_id[:, :, None] == seq_id[:, None, :]  # [B, S, S]
-        z = z * intra_mask[:, :, :, None]
 
         # Extract the single and pair representations for the valid sequence positions
         # [B, S, c_s], [B, S, S, c_z] -> [B, L, c_s], [B, L, L, c_z]
@@ -418,12 +454,54 @@ class AtlasFold(torch.nn.Module):
 
         # Initialize pair representation with relative positional encoding
         z = self.z_init(z / math.sqrt(self.lm.n_layers))
-        rel_pos = self.rel_pos_encoding(batch)  # [B, L, L, bins]
-        z = _add(z, self.linear_rel_pos(rel_pos))  # [B, L, L, c_z]
+        z = _add(z, self.linear_rel_pos(batch["seq_rel_pos"]))  # [B, L, L, c_z]
 
         # Mask the padded positions in the single and pair representations
         mask = batch["seq_mask"]  # [B, L]
-        pair_mask = mask[:, :, None] & mask[:, None, :]  # [B, L, L]
         s = s * mask[:, :, None]
+        asym_id = batch["asym_id"]  # [B, L]
+        pair_mask = mask[:, :, None] & mask[:, None, :]  # [B, L, L]
+        pair_mask &= asym_id[:, :, None] == asym_id[:, None, :]
         z = z * pair_mask[:, :, :, None]
         return s, z
+
+    # TODO: current implementation is for development.
+    # I may want to remove this method in the future.
+    @classmethod
+    def from_pretrained(
+        cls,
+        state_dict: dict,
+        config: AtlasFoldConfig | None = None,
+        dtype: torch.dtype = torch.bfloat16,
+        device: str | torch.device = "cuda",
+    ) -> "AtlasFold_Multimer":
+        """Create an AtlasFold model from a pretrained state dict."""
+        config = config if config is not None else AtlasFoldConfig()
+
+        # Create the model on meta device
+        with torch.device("meta"):
+            model = cls(config)
+            # Remove the LM, which will be loaded separately
+            del model.lm
+
+            if dtype is torch.bfloat16:
+                model.recycle_z = model.recycle_z.to(dtype)
+                model.lm_stack = model.lm_stack.to(dtype)
+                model.main_stack = model.main_stack.to(dtype)
+                model.confidence_head = model.confidence_head.to(dtype)
+
+        # Load the state dict onto the target device
+        model = model.to_empty(device=device)
+
+        # Load the state dict with the specified strictness
+        model.load_state_dict(state_dict, strict=True, assign=True)
+
+        # Finally, load the LM
+        model.lm = load_model(
+            config.lm_name, path=config.lm_path, device=device, dtype=dtype
+        )
+
+        # Freeze the model parameters and set to eval mode
+        model.requires_grad_(False)
+        model.eval()
+        return model
