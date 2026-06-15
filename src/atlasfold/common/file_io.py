@@ -80,7 +80,7 @@ def to_gemmi_structure(
             biso = b_factors[res_i]  # Shape: (14,)
         for atom_i, atom in enumerate(residue):
             x, y, z = coordinates[res_i, atom_i]
-            atom.pos = gemmi.Position(round(x, 3), round(y, 3), round(z, 3))
+            atom.pos = gemmi.Position(x, y, z)
             atom.b_iso = biso[atom_i] if b_factors is not None else 100.0
     chain.append_residues(residues)
     model.add_chain(chain)
@@ -132,4 +132,18 @@ def to_mmcif(
 
     struct = to_gemmi_structure(name, sequence, coordinates, b_factors)
     struct.update_mmcif_block(cif_block)
+
+    # Round coordinates to 3 decimal places
+    atom_site_table = cif_block.find("_atom_site.", ["Cartn_x", "Cartn_y", "Cartn_z"])
+    for row in atom_site_table:
+        row[0] = f"{float(row[0]):.3f}"
+        row[1] = f"{float(row[1]):.3f}"
+        row[2] = f"{float(row[2]):.3f}"
+
+    # Round B-factors to 2 decimal places
+    b_factor_table = cif_block.find("_atom_site.", ["B_iso_or_equiv"])
+    if b_factor_table:
+        for row in b_factor_table:
+            row[0] = f"{float(row[0]):.2f}"
+
     return cif_block.as_string()

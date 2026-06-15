@@ -113,6 +113,7 @@ class FoldingRunner:
             plddt, pae, ptm = None, None, None
             if "plddt" in out:
                 plddt = out["plddt"][i, :length]  # [L]
+                plddt = plddt * 100  # Scale to [0, 100]
             if "pae" in out:
                 pae = out["pae"][i, :length, :length]  # [L, L]
             if "ptm" in out:
