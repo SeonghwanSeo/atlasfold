@@ -1,7 +1,6 @@
 """Folding Trunk."""
 
 import dataclasses
-import math
 from functools import partial
 
 import torch
@@ -120,14 +119,13 @@ class AtlasFold(torch.nn.Module):
 
         self.proj_lm_attn = torch.nn.ModuleList(
             [
-                torch.nn.Sequential(
-                    LayerNorm(self.lm.n_heads),
-                    LinearNoBias(self.lm.n_heads, self.channel_z),
-                )
+                LinearNoBias(self.lm.n_heads, self.channel_z)
                 for _ in range(self.lm.n_layers)
             ]
         )
         self.z_init = torch.nn.Sequential(
+            LayerNorm(self.channel_z),
+            LinearNoBias(self.channel_z, self.channel_z, init="relu"),
             torch.nn.ReLU(),
             LinearNoBias(self.channel_z, self.channel_z, init="default"),
         )
@@ -548,7 +546,7 @@ class AtlasFold(torch.nn.Module):
         s = _add(s, self.embed_aa(batch["aatype"]))  # [B, L, c_s]
 
         # Initialize pair representation with relative positional encoding
-        z = self.z_init(z / math.sqrt(self.lm.n_layers))
+        z = self.z_init(z)
         z = _add(z, self.linear_rel_pos(batch["seq_rel_pos"]))  # [B, L, L, c_z]
 
         # Mask the padded positions in the single and pair representations
