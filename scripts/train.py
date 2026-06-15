@@ -251,6 +251,7 @@ def train(args) -> None:
 
         model_module.load_state_dict(ckpt["state_dict"], strict=True)
         model_module.ema.load_state_dict(ckpt["ema"], strict=True)
+        model_module.last_lr_step = ckpt["global_step"]
         trainer.fit_loop.load_state_dict(ckpt["loops"]["fit_loop"])
         trainer.fit(model_module, datamodule=data_module)
 

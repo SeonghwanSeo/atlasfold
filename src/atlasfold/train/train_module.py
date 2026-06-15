@@ -17,7 +17,7 @@ from . import losses, validation_metrics
 from .model_train import AtlasFoldForTrain
 from .utils.ema import ExponentialMovingAverage
 from .utils.gradient_logging import gradient_norm, parameter_norm
-from .utils.lr_scheduler import AF2LRScheduler
+from .utils.lr_scheduler import AlphaFoldLRScheduler
 
 
 def to_dict(config: DictConfig) -> dict:
@@ -54,10 +54,10 @@ class OptimizerConfig:
     eps: float = 1e-8
     weight_decay: float = 1e-4
     # lr scheduler
-    lr_scheduler: str = "af2"
-    base_lr: float = 1e-3
-    num_warmup_steps: int = 1000
-    decay_start_step: int = 50000
+    lr_scheduler: str = "alphafold"
+    max_lr: float = 1.8e-3
+    warmup_steps: int = 1000
+    decay_steps: int = 50000
     lr_decay_factor: float = 0.95
     # ema
     ema_decay: float = 0.999
@@ -247,7 +247,7 @@ class TrainingModule(pl.LightningModule):
                 parameters,
                 betas=(config.beta_1, config.beta_2),
                 eps=config.eps,
-                lr=config.base_lr,
+                lr=config.max_lr,
             )
         elif config.opt.lower() == "adamw":
             # AdamW optimizer with weight decay.
@@ -294,7 +294,7 @@ class TrainingModule(pl.LightningModule):
                 optim_groups,
                 betas=(config.beta_1, config.beta_2),
                 eps=config.eps,
-                lr=config.base_lr,
+                lr=config.max_lr,
             )
         else:
             raise NotImplementedError(f"Optimizer {config.opt} not implemented yet.")
@@ -302,14 +302,14 @@ class TrainingModule(pl.LightningModule):
         if self.last_lr_step != -1:
             for group in optimizer.param_groups:
                 if "initial_lr" not in group:
-                    group["initial_lr"] = config.base_lr
+                    group["initial_lr"] = config.max_lr
 
-        if config.lr_scheduler == "af2":
-            scheduler = AF2LRScheduler(
+        if config.lr_scheduler == "alphafold":
+            scheduler = AlphaFoldLRScheduler(
                 optimizer,
-                base_lr=config.base_lr,
-                num_warmup_steps=config.num_warmup_steps,
-                decay_start_step=config.decay_start_step,
+                max_lr=config.max_lr,
+                warmup_steps=config.warmup_steps,
+                decay_steps=config.decay_steps,
                 decay_factor=config.lr_decay_factor,
                 last_epoch=self.last_lr_step,
             )

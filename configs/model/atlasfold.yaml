@@ -1,6 +1,6 @@
 name: "atlasfold"
 lm_name: "atlaslm-3b-base"
-lm_path: /mnt/parallel_storage/wykim_lab/icl_shwan/esmc-reproduce/releases/atlaslm-3b-base/weights/atlaslm_3b_base.pth
+lm_path: /mnt/parallel_storage/wykim_lab/icl_shwan/esmc-reproduce/model_weights/v3/stage2_2m.pth
 channel_s: 768
 channel_z: 192
 trunk:

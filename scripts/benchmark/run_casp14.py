@@ -8,8 +8,8 @@ from atlasfold.data.fasta import read_fasta
 from atlasfold.model import AtlasFold, AtlasFoldConfig, SamplingConfig
 from atlasfold.runner import FoldingRunner
 
-CKPT = "./experiments/stage1/AtlasFlod/9taolbl0/checkpoints/epoch0011_step00012000_lddt0.7987.ckpt"
-CKPT_NAME = "12k"
+CKPT = "./experiments/stage1/AtlasFlod/hpfac2y1/checkpoints/epoch0033_step00017000_lddt0.8108.ckpt"
+CKPT_NAME = "17k"
 PRESET = "full"
 NUM_RECYCLES = 3
 NUM_STEPS = 200

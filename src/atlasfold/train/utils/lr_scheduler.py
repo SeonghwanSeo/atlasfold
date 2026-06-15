@@ -1,13 +1,13 @@
 import torch
 
 
-class AF2LRScheduler(torch.optim.lr_scheduler._LRScheduler):
+class AlphaFoldLRScheduler(torch.optim.lr_scheduler._LRScheduler):
     def __init__(
         self,
         optimizer: torch.optim.Optimizer,
-        base_lr: float = 1e-3,
-        num_warmup_steps: int = 1000,
-        decay_start_step: int = 50000,
+        max_lr: float = 1.8e-3,
+        warmup_steps: int = 1000,
+        decay_steps: int = 50000,
         decay_factor: float = 0.95,
         last_epoch: int = -1,
     ) -> None:
@@ -17,19 +17,20 @@ class AF2LRScheduler(torch.optim.lr_scheduler._LRScheduler):
         ----------
         optimizer : torch.optim.Optimizer
             The optimizer.
-        base_lr : float
-            The base learning rate, by default 1.0e-3
-        num_warmup_steps : int
+        max_lr : float
+            The max learning rate, by default 1.8e-3
+        warmup_steps : int
             The number of warmup steps, by default 1000
-        decay_start_step : int
-            The step number to start decay, by default 50000
+        decay_steps : int
+            The number of steps for decay, by default 50000
         decay_factor : float
             The decay factor, by default 0.95
         """
-        self.base_lr: float = base_lr
-        self.max_lr: float = base_lr
-        self.num_warmup_steps: int = num_warmup_steps
-        self.decay_start_step: int = decay_start_step
+        assert warmup_steps >= 0, "num_warmup_steps must be non-negative"
+        assert decay_steps > 0, "decay_steps must be positive"
+        self.max_lr: float = max_lr
+        self.warmup_steps: int = warmup_steps
+        self.decay_steps: int = decay_steps
         self.decay_factor: float = decay_factor
         super().__init__(optimizer, last_epoch)
 
@@ -42,11 +43,12 @@ class AF2LRScheduler(torch.optim.lr_scheduler._LRScheduler):
 
     def get_lr(self):
         step = self.last_epoch
-        if step <= self.num_warmup_steps:
-            lr_ratio = step / self.num_warmup_steps
-        elif step > self.decay_start_step:
-            lr_ratio = self.decay_factor
+        if step == -1:
+            lr_ratio = 0.0
+        elif step < self.warmup_steps:
+            lr_ratio = step / self.warmup_steps
         else:
-            lr_ratio = 1.0
-        lr = lr_ratio * self.base_lr
+            num_decays = step // self.decay_steps
+            lr_ratio = self.decay_factor**num_decays
+        lr = lr_ratio * self.max_lr
         return [lr for _ in self.optimizer.param_groups]

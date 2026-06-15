@@ -1,5 +1,13 @@
+seed: 4
+
 model:
   _yaml_: model/atlasfold.yaml
+  trunk:
+    blocks_per_ckpt: 6
+  diffusion_head:
+    blocks_per_ckpt: null
+  confidence_head:
+    blocks_per_ckpt: null
 
 train:
   _yaml_: train/full.yaml
@@ -9,7 +17,7 @@ train:
     max_length: 768
     max_seq_length: 1024
     batch_size: 1
-    global_batch_size: 128
+    global_batch_size: 256
 
   training:
     train_trunk: true
@@ -19,5 +27,5 @@ train:
     diffusion_batch_size: 24
 
   optimizer:
-    base_lr: 5e-4
+    peak_lr: 1e-3
     decay_start_step: 100000000 # No decay
