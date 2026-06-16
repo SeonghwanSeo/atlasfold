@@ -86,9 +86,11 @@ class PredictionRecord(JsonSerializable):
 class Metadata(JsonSerializable):
     id: str  # User/Author-defined name
     num_residues: int
-    label_asym_id: str | None = None
+    label_asym_id: str | None = None  # starts from 1
     auth_asym_id: str | None = None
     entity_id: int | None = None  # starts from 1
+    asym_id: int | None = None  # starts from 1
+    sym_id: int | None = None  # starts from 1
     cluster_id: str | None = None
     cluster_size: int | None = None
     exp: ExperimentRecord | None = None
@@ -106,6 +108,8 @@ class Metadata(JsonSerializable):
             "label_asym_id",
             "auth_asym_id",
             "entity_id",
+            "asym_id",
+            "sym_id",
         ]:
             if getattr(self, field) is not None:
                 data[field] = getattr(self, field)
@@ -133,8 +137,78 @@ class Metadata(JsonSerializable):
             label_asym_id=data.get("label_asym_id", None),
             auth_asym_id=data.get("auth_asym_id", None),
             entity_id=data.get("entity_id", None),
+            asym_id=data.get("asym_id", None),
+            sym_id=data.get("sym_id", None),
             cluster_id=data.get("cluster_id", None),
             cluster_size=data.get("cluster_size", None),
+            exp=exp,
+            pred=pred,
+        )
+
+
+@dataclasses.dataclass(slots=True, kw_only=True)
+class InterfaceMetadata(JsonSerializable):
+    chain_ids: tuple[int, int]  # (chain id of chain A, chain id of chain B)
+    cluster_id: str | None = None
+
+    def to_dict(self) -> dict:
+        data: dict = {"chain_ids": self.chain_ids}
+        if self.cluster_id is not None:
+            data["cluster_id"] = self.cluster_id
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Self:
+        return cls(
+            chain_ids=tuple(data["chain_ids"]),
+            cluster_id=data.get("cluster_id", None),
+        )
+
+
+@dataclasses.dataclass(slots=True)
+class ComplexMetadata(JsonSerializable):
+    id: str  # User/Author-defined name
+    chains: list[Metadata]  # List of metadata for each chain
+    interfaces: list[InterfaceMetadata]  # List of metadata for each interface
+    exp: ExperimentRecord | None = None  # Optional experimental record
+    pred: PredictionRecord | None = None  # Optional prediction record
+
+    @property
+    def num_chains(self) -> int:
+        return len(self.chains)
+
+    def to_dict(self) -> dict:
+        data = {
+            "id": self.id,
+            "chains": [chain.to_dict() for chain in self.chains],
+            "interfaces": [iface.to_dict() for iface in self.interfaces],
+        }
+        # Add metadata fields
+        for field in ["exp", "pred"]:
+            if getattr(self, field) is not None:
+                data[field] = getattr(self, field).to_dict()
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Self:
+        chains = [Metadata.from_dict(chain_data) for chain_data in data["chains"]]
+        interfaces = [
+            InterfaceMetadata.from_dict(iface_data) for iface_data in data["interfaces"]
+        ]
+
+        if data.get("exp", None):
+            exp = ExperimentRecord.from_dict(data["exp"])
+        else:
+            exp = None
+        if data.get("pred", None):
+            pred = PredictionRecord.from_dict(data["pred"])
+        else:
+            pred = None
+
+        return cls(
+            id=data["id"],
+            chains=chains,
+            interfaces=interfaces,
             exp=exp,
             pred=pred,
         )

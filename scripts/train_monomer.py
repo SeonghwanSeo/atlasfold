@@ -9,8 +9,8 @@ from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig
 
 from atlasfold.train.config import load_config, print_config, save_config, to_dict
-from atlasfold.train.datamodule import TrainingDataModule
-from atlasfold.train.train_module import TrainingModule
+from atlasfold.train.monomer.datamodule import TrainingDataModule
+from atlasfold.train.monomer.train_module import TrainingModule
 
 
 def parse_args() -> argparse.Namespace:

@@ -25,10 +25,18 @@ DEFAULT_BUCKETS = [
 
 def featurize(
     sequence: str,
+    *,
+    entity_id: int = 1,
+    asym_id: int = 1,
+    sym_id: int = 1,
     residue_index: Sequence[int] | None = None,
     pad_to_multiple_of: int | None = None,
 ) -> dict[str, np.ndarray]:
     """Featurize the input sequence for the model."""
+    assert entity_id > 0, "entity_id must be a positive integer starting from 1."
+    assert asym_id > 0, "asym_id must be a positive integer starting from 1."
+    assert sym_id > 0, "sym_id must be a positive integer starting from 1."
+
     # Sanitize the input sequence
     sequence = sequence.upper()
     sequence = "".join(
@@ -37,18 +45,13 @@ def featurize(
     length = len(sequence)
 
     # === Static features (chain-related) === #
-    entity_id = np.ones(length, dtype=np.int64)  # Single entity
-    asym_id = np.ones(length, dtype=np.int64)  # Single chain
-    sym_id = np.ones(length, dtype=np.int64)  # Single symmetric unit
+    entity_id_arr = np.full(length, entity_id, dtype=np.int64)
+    asym_id_arr = np.full(length, asym_id, dtype=np.int64)
+    sym_id_arr = np.full(length, sym_id, dtype=np.int64)
 
     # === Residue index === #
     if residue_index is not None:
-        if len(residue_index) != len(sequence):
-            raise ValueError(
-                f"Length of residue_index ({len(residue_index)}) does not match "
-                f"length of sequence ({len(sequence)})."
-            )
-        res_idx = np.array(residue_index, dtype=np.int64)
+        raise NotImplementedError("Custom residue_index is not supported yet.")
     else:
         res_idx = np.arange(1, length + 1, dtype=np.int64)
 
@@ -58,7 +61,7 @@ def featurize(
     )
 
     pos_id = np.concatenate(([0], res_idx, [res_idx[-1] + 1]))
-    seq_id = np.ones_like(input_ids, dtype=np.int64)
+    seq_id = np.full_like(input_ids, asym_id, dtype=np.int64)
 
     lm_input = {
         "lm.input_ids": input_ids,  # [L+2]
@@ -85,9 +88,9 @@ def featurize(
     seq_tok_idx = np.arange(1, length + 1, dtype=np.int64)
 
     folding_input = {
-        "entity_id": entity_id,  # [L]
-        "asym_id": asym_id,  # [L]
-        "sym_id": sym_id,  # [L]
+        "entity_id": entity_id_arr,  # [L]
+        "asym_id": asym_id_arr,  # [L]
+        "sym_id": sym_id_arr,  # [L]
         "aatype": aatype_onehot,  # [L, 21]
         "aatype_int": aatype,  # [L]
         "res_idx": res_idx,  # [L]
@@ -106,6 +109,45 @@ def featurize(
             feat[k] = np.pad(v, pad_width, constant_values=0)
 
     return feat
+
+
+def featurize_complex(
+    sequences: list[str],
+    entity_ids: list[int],
+    asym_ids: list[int],
+    sym_ids: list[int],
+    pad_to_multiple_of: int | None = None,
+) -> dict[str, np.ndarray]:
+    """Featurize the input sequence for the model."""
+    num_chains = len(sequences)
+    if not (len(entity_ids) == len(asym_ids) == len(sym_ids) == num_chains):
+        raise ValueError(
+            f"Number of sequences ({num_chains}) must match "
+            f"number of entity_ids ({len(entity_ids)}), "
+            f"asym_ids ({len(asym_ids)}), and sym_ids ({len(sym_ids)})."
+        )
+    feats = [
+        featurize(seq, entity_id=eid, asym_id=aid, sym_id=sid)
+        for seq, eid, aid, sid in zip(
+            sequences, entity_ids, asym_ids, sym_ids, strict=True
+        )
+    ]
+    # Concatenate features from all chains
+    concatenated_feats = {}
+    for k in feats[0].keys():
+        concatenated_feats[k] = np.concatenate([feat[k] for feat in feats], axis=0)
+    if pad_to_multiple_of is not None:
+        for k, v in concatenated_feats.items():
+            pad_len = (-len(v)) % pad_to_multiple_of
+            pad_width = ((0, pad_len),) + ((0, 0),) * (v.ndim - 1)
+            concatenated_feats[k] = np.pad(v, pad_width, constant_values=0)
+    return concatenated_feats
+
+
+# ============================================================
+# TODO: I do not use following methods and class yet.
+# In future, we have to use these methods and class.
+# ============================================================
 
 
 def featurize_batch(

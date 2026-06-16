@@ -10,10 +10,9 @@ import torch
 import torch.nn.functional as F
 
 from atlasfold.common import featurize, metadata, protein, residue_constants
+from atlasfold.train.utils.cropper import ProteinCropper
 from atlasfold.utils.geometry.random_augment import do_centering_atom14
 from atlaslm.alphabet import Alphabet
-
-from .utils import cropper
 
 
 class DataPipeline:
@@ -195,7 +194,9 @@ class TrainingDataset(LMDBDataset):
     ):
         super().__init__(config)
         self.config: TrainingDatasetConfig = config
-        self.cropper = cropper.ProteinCropper()
+        self.cropper = ProteinCropper(
+            prob_spatial=0.6, prob_contiguous=0.2, prob_multi_contiguous=0.2
+        )
         self.max_length: int = max_length  # Folding input length limit
         self.max_seq_length: int = max_seq_length  # LM input length limit
 

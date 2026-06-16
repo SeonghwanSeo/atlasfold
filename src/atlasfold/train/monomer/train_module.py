@@ -11,13 +11,13 @@ from torchmetrics import MeanMetric, MetricCollection
 
 from atlasfold.model import AtlasFoldConfig
 from atlasfold.model.network.diffusion_head import SamplingConfig
+from atlasfold.train import losses
+from atlasfold.train.monomer import validation_metrics
+from atlasfold.train.monomer.model_train import AtlasFoldForTrain
 from atlasfold.train.utils import structure_metrics
-
-from . import losses, validation_metrics
-from .model_train import AtlasFoldForTrain
-from .utils.ema import ExponentialMovingAverage
-from .utils.gradient_logging import gradient_norm, parameter_norm
-from .utils.lr_scheduler import AlphaFoldLRScheduler
+from atlasfold.train.utils.ema import ExponentialMovingAverage
+from atlasfold.train.utils.gradient_logging import gradient_norm, parameter_norm
+from atlasfold.train.utils.lr_scheduler import AlphaFoldLRScheduler
 
 
 def to_dict(config: DictConfig) -> dict:

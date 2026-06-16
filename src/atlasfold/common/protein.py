@@ -1,5 +1,7 @@
 import dataclasses
 import pathlib
+from collections import defaultdict
+from functools import cached_property
 
 import gemmi
 import numpy as np
@@ -113,3 +115,64 @@ class Protein:
         b_factors = np.stack(biso_list, axis=0)  # [L, 14]
         residue_index = np.array(res_idx_list, dtype=np.int32)  # [L,]
         return cls(name, sequence, coordinates, b_factors, residue_index)
+
+
+@dataclasses.dataclass
+class ProteinComplex:
+    """A data structure representing a protein complex"""
+
+    name: str
+    chains: list[Protein]
+
+    def __len__(self):
+        """Return the number of chains in the complex."""
+        return self.num_chains
+
+    @property
+    def num_chains(self) -> int:
+        """Return the number of chains in the complex."""
+        return len(self.chains)
+
+    @property
+    def sequences(self) -> list[str]:
+        """
+        Return the list of sequences for each chain in the complex.
+        """
+        return [c.sequence for c in self.chains]
+
+    @property
+    def sequence(self) -> str:
+        """
+        Return the concatenated sequence of all chains in the complex,
+        separated by colons.
+        """
+        return ":".join(self.sequences)
+
+    @property
+    def num_residues(self) -> int:
+        """Return the number of residues in the structure."""
+        return sum(c.num_residues for c in self.chains)
+
+    # === Chain IDs and Entity IDs === #
+    @cached_property
+    def asym_ids(self) -> list[int]:
+        return list(range(1, self.num_chains + 1))
+
+    @cached_property
+    def entity_ids(self) -> list[int]:
+        seq_to_eid = {}
+        i = 1
+        for c in self.chains:
+            if c.sequence not in seq_to_eid:
+                seq_to_eid[c.sequence] = i
+                i += 1
+        return [seq_to_eid[c.sequence] for c in self.chains]
+
+    @cached_property
+    def sym_ids(self) -> list[int]:
+        seq_to_symid = defaultdict(int)
+        sym_ids = []
+        for c in self.chains:
+            seq_to_symid[c.sequence] += 1
+            sym_ids.append(seq_to_symid[c.sequence])
+        return sym_ids
