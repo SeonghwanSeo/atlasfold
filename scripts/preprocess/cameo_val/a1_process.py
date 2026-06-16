@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 from atlasfold.common import metadata, protein
 from atlasfold.data import cif_factory
+from atlasfold.train.dataset import DataPipeline
 
 # Data filtering criteria
 logger = logging.getLogger(__name__)
@@ -85,7 +86,7 @@ def parse_cif(
 
     # Save each chain as a separate NPZ file
     npz_path = out_dir / f"{c.name}.npz"
-    c.save_npz(npz_path)
+    DataPipeline.save(c, npz_path)
     json_path = out_dir / f"{c.name}.json"
     m_dict = m.to_dict()
     with open(json_path, "w") as f:

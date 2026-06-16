@@ -1,9 +1,9 @@
 import dataclasses
-import io
 import pathlib
 
 import gemmi
 import numpy as np
+from typing_extensions import Self
 
 from atlasfold.common import file_io, residue_constants
 
@@ -26,6 +26,18 @@ class Protein:
                 f"Invalid coordinates shape: {self.coordinates.shape}. "
                 f"Expected (L, 14, 3) where L is the sequence length."
             )
+        # TODO: support the structure with missing residues
+        if self.residue_index is not None:
+            if self.residue_index.shape != (L,):
+                raise ValueError(
+                    f"Invalid residue_index shape: {self.residue_index.shape}. "
+                    f"Expected (L,) where L is the sequence length."
+                )
+            if not np.all(np.diff(self.residue_index) == 1):
+                raise ValueError(
+                    "residue_index must be a continuous range of integers. "
+                    f"Got {self.residue_index}."
+                )
 
     def __len__(self):
         """Return the number of residues in the structure."""
@@ -37,7 +49,7 @@ class Protein:
         return len(self.sequence)
 
     @classmethod
-    def get_empty(cls, name: str, sequence: str) -> "Protein":
+    def get_empty(cls, name: str, sequence: str) -> Self:
         """Create an empty structure with NaN coordinates."""
         L = len(sequence)
         coordinates = np.full((L, 14, 3), np.nan, dtype=np.float32)
@@ -57,66 +69,13 @@ class Protein:
             self.name, self.sequence, self.coordinates, self.b_factors
         )
 
-    # === Serialization === #
-    def save_npz(self, path: str | pathlib.Path):
-        np.savez_compressed(path, **self._to_arr_dict(atom14=False))
-
-    @classmethod
-    def load_npz(cls, path: str | pathlib.Path | io.BytesIO) -> "Protein":
-        # Load the structure from compressed npz format
-        with np.load(path) as data:
-            return cls._from_arr_dict(data, atom14=False)
-
-    def _to_arr_dict(self, atom14: bool) -> dict:
-        name_arr = np.array([self.name], dtype="S")
-        seq_arr = np.array([self.sequence], dtype="S")
-        if atom14:
-            coords_arr = self.coordinates  # [L, 14, 3]
-            b_factors_arr = self.b_factors  # [L, 14]
-        else:
-            # Only save the valid atom coordinates (include unresolved atoms as NaN)
-            pad_mask = residue_constants.get_atom14_mask_from_sequence(self.sequence)
-            coords_arr = self.coordinates[pad_mask]  # [Natom, 3]
-            b_factors_arr = self.b_factors[pad_mask]
-
-        data: dict[str, np.ndarray] = {
-            "name": name_arr,
-            "sequence": seq_arr,
-            "coordinates": coords_arr,
-            "b_factors": b_factors_arr,
-        }
-        if self.residue_index is not None:
-            data["residue_index"] = self.residue_index
-        return data
-
-    @classmethod
-    def _from_arr_dict(cls, data: dict, atom14: bool) -> "Protein":
-        name = data["name"].item().decode("utf-8")
-        sequence = data["sequence"].item().decode("utf-8")
-        if atom14:
-            coordinates = data["coordinates"]  # [L, 14, 3]
-            b_factors = data["b_factors"]  # [L, 14]
-        else:
-            coords_arr = data["coordinates"]  # [Natom, 3]
-            b_factors_arr = data["b_factors"]  # [Natom]
-            L = len(sequence)
-            full_coords = np.full((L, 14, 3), np.nan, dtype=np.float32)
-            pad_mask = residue_constants.get_atom14_mask_from_sequence(sequence)
-            full_coords[pad_mask] = coords_arr
-            full_b_factors = np.full((L, 14), np.nan, dtype=np.float32)
-            full_b_factors[pad_mask] = b_factors_arr
-            coordinates = full_coords
-            b_factors = full_b_factors
-        residue_index = data.get("residue_index", None)
-        return cls(name, sequence, coordinates, b_factors, residue_index)
-
     @classmethod
     def from_pdb(
         cls,
         path: str | pathlib.Path,
         chain_id: int | str | None = None,
         name: str | None = None,
-    ) -> "Protein":
+    ) -> Self:
         """Load a predicted protein structure from single monomer file."""
         if name is None:
             name = pathlib.Path(path).name.split(".")[0]

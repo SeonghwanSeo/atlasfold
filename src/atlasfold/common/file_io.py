@@ -88,8 +88,12 @@ def to_gemmi_structure(
     # Add model to structure
     struct.add_model(model)
     struct.setup_entities()
-    # struct.assign_subchains()
     return struct
+
+
+# ============================================================
+# PDB/mmCIF output functions
+# ============================================================
 
 
 RAW_PDB_HEADER = """
@@ -103,7 +107,10 @@ REMARK   1  REF    TO BE PUBLISHED
 
 
 def to_pdb(
-    name: str, sequence: str, coordinates: np.ndarray, b_factors: np.ndarray | None = None
+    name: str,
+    sequence: str,
+    coordinates: np.ndarray,
+    b_factors: np.ndarray | None = None,
 ) -> str:
     struct = to_gemmi_structure(name, sequence, coordinates, b_factors)
     header = RAW_PDB_HEADER % name
@@ -112,15 +119,22 @@ def to_pdb(
 
 
 def to_mmcif(
-    name: str, sequence: str, coordinates: np.ndarray, b_factors: np.ndarray | None = None
+    name: str,
+    sequence: str,
+    coordinates: np.ndarray,
+    b_factors: np.ndarray | None = None,
 ) -> str:
     cif_block = gemmi.cif.Block(name)
-    author_loop = cif_block.init_loop(
+
+    # Add metadata
+    cif_block.set_pair("_entry.id", name)
+
+    author_loop: gemmi.cif.Loop = cif_block.init_loop(
         "_citation_author.", ["citation_id", "ordinal", "name"]
     )
-    author_loop.add_row(["primary", "1", "Seo, Seonghwan"])
-    author_loop.add_row(["primary", "2", "Kim, Hyeongwoo"])
-    author_loop.add_row(["primary", "3", "Kim, Woo Youn"])
+    author_loop.add_row(["primary", "1", '"Seo, Seonghwan"'])
+    author_loop.add_row(["primary", "2", '"Kim, Hyeongwoo"'])
+    author_loop.add_row(["primary", "3", '"Kim, Woo Youn"'])
 
     software_loop = cif_block.init_loop(
         "_software.",
@@ -130,17 +144,16 @@ def to_mmcif(
         ["1", "AtlasFold", "model", '"Monomer Prediction Pipeline"', "0.1.0"]
     )
 
+    # Add structure data
     struct = to_gemmi_structure(name, sequence, coordinates, b_factors)
     struct.update_mmcif_block(cif_block)
 
-    # Round coordinates to 3 decimal places
+    # Round coordinates and B-factors
     atom_site_table = cif_block.find("_atom_site.", ["Cartn_x", "Cartn_y", "Cartn_z"])
     for row in atom_site_table:
         row[0] = f"{float(row[0]):.3f}"
         row[1] = f"{float(row[1]):.3f}"
         row[2] = f"{float(row[2]):.3f}"
-
-    # Round B-factors to 2 decimal places
     b_factor_table = cif_block.find("_atom_site.", ["B_iso_or_equiv"])
     if b_factor_table:
         for row in b_factor_table:

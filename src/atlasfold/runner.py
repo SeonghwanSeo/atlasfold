@@ -4,7 +4,7 @@ import dataclasses
 import numpy as np
 import torch
 
-from atlasfold.common import featurize, file_io
+from atlasfold.common import featurize, protein
 from atlasfold.model import AtlasFold, SamplingConfig
 
 
@@ -25,24 +25,22 @@ def seed_context(seed: int, device: torch.device):
 
 
 @dataclasses.dataclass
-class ProteinOutput:
+class ProteinOutput(protein.Protein):
     """A data structure representing a predicted 3D protein structure"""
 
     name: str
     sequence: str
     coordinates: np.ndarray  # [L, 14, 3]
-    plddt: np.ndarray | None  # [L]
-    pae: np.ndarray | None  # [L, L]
+    b_factors: np.ndarray  # [L, 14]
+    plddt: np.ndarray | None = None  # [L]
+    pae: np.ndarray | None = None  # [L, L]
     ptm: float | None = None
+    residue_index: np.ndarray | None = None  # [L], optional residue index
 
     def __post_init__(self):
         """Validate the input data."""
+        super().__post_init__()
         L = len(self.sequence)
-        if self.coordinates.shape not in [(L, 14, 3)]:
-            raise ValueError(
-                f"Invalid coordinates shape: {self.coordinates.shape}. "
-                f"Expected (L, 14, 3) where L is the sequence length."
-            )
         if self.plddt is not None and self.plddt.shape != (L,):
             raise ValueError(
                 f"Invalid pLDDT shape: {self.plddt.shape}. "
@@ -53,21 +51,7 @@ class ProteinOutput:
                 f"Invalid PAE shape: {self.pae.shape}. "
                 f"Expected (L, L) where L is the sequence length."
             )
-
-    def __len__(self):
-        """Return the number of residues in the structure."""
-        return len(self.sequence)
-
-    @property
-    def num_residues(self) -> int:
-        """Return the number of residues in the structure."""
-        return len(self.sequence)
-
-    def to_pdb(self) -> str:
-        return file_io.to_pdb(self.name, self.sequence, self.coordinates, self.plddt)
-
-    def to_mmcif(self) -> str:
-        return file_io.to_mmcif(self.name, self.sequence, self.coordinates, self.plddt)
+        assert self.residue_index is None
 
 
 class FoldingRunner:
@@ -113,7 +97,9 @@ class FoldingRunner:
             plddt, pae, ptm = None, None, None
             if "plddt" in out:
                 plddt = out["plddt"][i, :length]  # [L]
-                plddt = plddt * 100  # Scale to [0, 100]
+                b_factor = plddt * 100
+            else:
+                b_factor = np.full(length, 100.0, dtype=np.float32)
             if "pae" in out:
                 pae = out["pae"][i, :length, :length]  # [L, L]
             if "ptm" in out:
@@ -123,6 +109,7 @@ class FoldingRunner:
                 name=name,
                 sequence=sequence,
                 coordinates=coords,
+                b_factors=b_factor,
                 plddt=plddt,
                 pae=pae,
                 ptm=ptm,

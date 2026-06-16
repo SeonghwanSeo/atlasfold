@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from atlasfold.common import metadata, protein
 from atlasfold.data import cif_factory
+from atlasfold.train.dataset import DataPipeline
 
 # Error handling
 SUCCESS = 0
@@ -133,7 +134,7 @@ def parse_cif(
 
     cif_factory.clean_up_gemmi_structure(raw_struct)
 
-    chains = []
+    chains: list[tuple[protein.Protein, metadata.Metadata]] = []
     for c, ids in cif_factory.get_protein_chains(raw_struct):
         label_id = ids["label_id"]
         auth_id = ids["auth_id"]
@@ -167,7 +168,7 @@ def parse_cif(
     # Save each chain as a separate NPZ file
     for c, m in chains:
         npz_path = out_dir / f"{c.name}.npz"
-        c.save_npz(npz_path)
+        DataPipeline.save(c, npz_path)
         json_path = out_dir / f"{c.name}.json"
         m_dict = m.to_dict()
         with open(json_path, "w") as f:

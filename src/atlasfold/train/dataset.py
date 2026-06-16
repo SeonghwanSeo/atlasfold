@@ -9,11 +9,68 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from atlasfold.common import featurize, metadata, protein
+from atlasfold.common import featurize, metadata, protein, residue_constants
 from atlasfold.utils.geometry.random_augment import do_centering_atom14
 from atlaslm.alphabet import Alphabet
 
 from .utils import cropper
+
+
+class DataPipeline:
+    @staticmethod
+    def save(prot: protein.Protein, path: str | pathlib.Path):
+        np.savez_compressed(path, **DataPipeline._to_arr_dict(prot))
+
+    @staticmethod
+    def load(path: str | pathlib.Path | io.BytesIO) -> protein.Protein:
+        # Load the structure from compressed npz format
+        with np.load(path) as data:
+            return DataPipeline._from_arr_dict(data)
+
+    @staticmethod
+    def _to_arr_dict(prot: protein.Protein) -> dict:
+        name_arr = np.array([prot.name], dtype="S")
+        seq_arr = np.array([prot.sequence], dtype="S")
+        # Only save the valid atom coordinates (include unresolved atoms as NaN)
+        pad_mask = residue_constants.get_atom14_mask_from_sequence(prot.sequence)
+        coords_arr = prot.coordinates[pad_mask]  # [Natom, 3]
+        b_factors_arr = prot.b_factors[pad_mask]
+
+        data: dict[str, np.ndarray] = {
+            "name": name_arr,
+            "sequence": seq_arr,
+            "coordinates": coords_arr,
+            "b_factors": b_factors_arr,
+        }
+        if prot.residue_index is not None:
+            L = len(prot.sequence)
+            if not np.array_equal(prot.residue_index, np.arange(1, L + 1)):
+                raise NotImplementedError(
+                    "Structure with missing residues is not supported yet."
+                )
+        return data
+
+    @staticmethod
+    def _from_arr_dict(data: dict) -> protein.Protein:
+        name = data["name"].item().decode("utf-8")
+        sequence = data["sequence"].item().decode("utf-8")
+        coords_arr = data["coordinates"]  # [Natom, 3]
+        b_factors_arr = data["b_factors"]  # [Natom]
+        L = len(sequence)
+        full_coords = np.full((L, 14, 3), np.nan, dtype=np.float32)
+        pad_mask = residue_constants.get_atom14_mask_from_sequence(sequence)
+        full_coords[pad_mask] = coords_arr
+        full_b_factors = np.full((L, 14), np.nan, dtype=np.float32)
+        full_b_factors[pad_mask] = b_factors_arr
+        coordinates = full_coords
+        b_factors = full_b_factors
+        residue_index = data.get("residue_index", None)
+        if residue_index is not None:
+            if not np.array_equal(residue_index, np.arange(1, L + 1)):
+                raise NotImplementedError(
+                    "Structure with missing residues is not supported yet."
+                )
+        return protein.Protein(name, sequence, coordinates, b_factors)
 
 
 def pad_input(
@@ -117,7 +174,7 @@ class LMDBDataset(torch.utils.data.Dataset):
         if npz_bytes is None:
             raise KeyError(f"Key {key} not found in LMDB database.")
         with io.BytesIO(npz_bytes) as f:
-            prot = protein.Protein.load_npz(f)
+            prot = DataPipeline.load(f)
         # Check if the residue indices are contiguous and start from 1.
         # For training data preparation, we already complete the missing residues
         # in PDB files to 'UNK' with 'NaN' coordinates.

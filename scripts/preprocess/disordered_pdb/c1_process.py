@@ -10,6 +10,7 @@ import pathlib
 from tqdm import tqdm
 
 from atlasfold.common import protein
+from atlasfold.train.dataset import DataPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ def parse_args():
 def parse_pdb(name: str, pdb_path: pathlib.Path, out_dir: pathlib.Path):
     prot = protein.Protein.from_pdb(pdb_path, name=name)
     npz_path = out_dir / f"{name}.npz"
-    prot.save_npz(npz_path)
+    DataPipeline.save(prot, npz_path)
 
 
 def worker_fn(pdb_path: pathlib.Path, out_dir: pathlib.Path):
@@ -65,7 +66,7 @@ def main():
     print(f"Found {len(pdb_paths)} PDB files to process.")
 
     with multiprocessing.Pool(args.num_workers) as pool:
-        result = list(
+        _ = list(
             tqdm(
                 pool.imap_unordered(worker_wrapped, pdb_paths, chunksize=100),
                 total=len(pdb_paths),

@@ -11,6 +11,7 @@ import zstandard as zstd
 from tqdm import tqdm
 
 from atlasfold.common import protein, residue_constants
+from atlasfold.train.dataset import DataPipeline
 
 logger = logging.getLogger(__name__)
 SUCCESS = 0
@@ -135,7 +136,8 @@ def worker_fn(path: pathlib.Path, output_dir: pathlib.Path):
         return SUCCESS
     try:
         prot = read_protein_structure(path)
-        prot.save_npz(output_dir / f"{prot.name}.npz")
+        npz_path = output_dir / f"{prot.name}.npz"
+        DataPipeline.save(prot, npz_path)
         return SUCCESS
     except Exception as e:
         logger.error(f"Error processing {path}: {e}")
