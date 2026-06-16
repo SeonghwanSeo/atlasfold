@@ -1,4 +1,4 @@
-# Copyright 2026 KAIST
+# Copyright 2026 Seonghwan Seo (KAIST), MIT LICENSE
 # Copyright 2025 AlQuraishi Laboratory (LICENSE-2.0)
 
 from collections.abc import Callable, Sequence
@@ -21,7 +21,6 @@ def wrap(a: BLOCK_ARG) -> BLOCK_ARGS:
     return (a,) if type(a) is not tuple else a
 
 
-@torch.jit.ignore
 def checkpoint_blocks(
     blocks: list[Callable],
     args: BLOCK_ARGS,

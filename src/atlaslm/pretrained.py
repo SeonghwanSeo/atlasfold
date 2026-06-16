@@ -62,6 +62,7 @@ def get_model_name(model_name: str) -> str:
 
 
 def get_model(model_name: str) -> AtlasLM:
+    model_name = get_model_name(model_name)
     config_name = MODEL_CONFIG_MAP[model_name]
     config = MODEL_CONFIGS[config_name]
     model = AtlasLM(config.d_model, config.n_heads, config.n_layers)

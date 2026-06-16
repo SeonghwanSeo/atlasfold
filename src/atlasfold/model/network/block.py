@@ -134,12 +134,15 @@ class PairStack(torch.nn.Module):
             )
             for b in self.blocks
         ]
-        s, z = checkpoint_blocks(
-            blocks,
-            (s, z),
-            self.blocks_per_ckpt,
-            use_reentrant=False,
-        )
+        if self.blocks_per_ckpt is None or not self.training:
+            for b in blocks:
+                s, z = b(s, z)
+        else:
+            s, z = checkpoint_blocks(
+                blocks,
+                (s, z),
+                self.blocks_per_ckpt,
+            )
         return s, z
 
 
@@ -160,9 +163,9 @@ class PairBlock(torch.nn.Module):
     ) -> None:
         super().__init__()
         # Configurations for the block
-        self.single_to_pair = single_to_pair
-        self.pair_to_pair = pair_to_pair
-        self.pair_to_single = pair_to_single
+        self.single_to_pair: bool = single_to_pair
+        self.pair_to_pair: bool = pair_to_pair
+        self.pair_to_single: bool = pair_to_single
 
         # Single to pair
         if self.single_to_pair:

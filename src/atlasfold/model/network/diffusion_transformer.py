@@ -240,24 +240,31 @@ class DiffusionTransformerStack(nn.Module):
         pair_bias : torch.Tensor | None
             The pair bias tensor (num_blocks, *, num_heads, L, L)
         """
-        if pair_bias is not None:
-            # Move block dimension to batch dimension for checkpointing
-            a = checkpoint_blocks(
-                self.blocks,
-                args=(a,),
-                static_args={"single_cond": single_cond, "mask": mask},
-                layer_args={"pair_bias": pair_bias},
-                blocks_per_ckpt=self.blocks_per_ckpt,
-                use_reentrant=False,
-            )[0]
+        if self.blocks_per_ckpt is None or not self.training:
+            for i, block in enumerate(self.blocks):
+                pair_bias_i = pair_bias[i] if pair_bias is not None else None
+                a = block(a, mask, single_cond=single_cond, pair_bias=pair_bias_i)
         else:
-            a = checkpoint_blocks(
-                self.blocks,
-                args=(a,),
-                static_args={"single_cond": single_cond, "mask": mask, "pair_bias": None},
-                blocks_per_ckpt=self.blocks_per_ckpt,
-                use_reentrant=False,
-            )[0]
+            if pair_bias is not None:
+                # Move block dimension to batch dimension for checkpointing
+                a = checkpoint_blocks(
+                    self.blocks,
+                    args=(a,),
+                    static_args={"single_cond": single_cond, "mask": mask},
+                    layer_args={"pair_bias": pair_bias},
+                    blocks_per_ckpt=self.blocks_per_ckpt,
+                )[0]
+            else:
+                a = checkpoint_blocks(
+                    self.blocks,
+                    args=(a,),
+                    static_args={
+                        "single_cond": single_cond,
+                        "mask": mask,
+                        "pair_bias": None,
+                    },
+                    blocks_per_ckpt=self.blocks_per_ckpt,
+                )[0]
         return a
 
 
@@ -285,7 +292,7 @@ class DiffusionTransformerBlock(nn.Module):
             Whether to use pair bias in attention, by default True
         """
         super().__init__()
-        self.use_conditioning = channel_cond is not None
+        self.use_conditioning: bool = channel_cond is not None
         self.attention = SelfAttention(
             channel_a, num_heads, channel_cond, use_pair_bias=use_pair_bias
         )

@@ -65,12 +65,15 @@ class TriangularUpdateStack(torch.nn.Module):
             )
             for b in self.blocks
         ]
-        _, z = checkpoint_blocks(
-            blocks,
-            (None, z),
-            self.blocks_per_ckpt,
-            use_reentrant=False,
-        )
+        if self.blocks_per_ckpt is None or not self.training:
+            for b in blocks:
+                _, z = b(None, z)
+        else:
+            _, z = checkpoint_blocks(
+                blocks,
+                (None, z),
+                self.blocks_per_ckpt,
+            )
         return z
 
 
@@ -142,10 +145,13 @@ class LMStack(torch.nn.Module):
             )
             for b in self.blocks
         ]
-        s, z = checkpoint_blocks(
-            blocks,
-            (s, z),
-            self.blocks_per_ckpt,
-            use_reentrant=False,
-        )
+        if self.blocks_per_ckpt is None or not self.training:
+            for b in blocks:
+                s, z = b(s, z)
+        else:
+            s, z = checkpoint_blocks(
+                blocks,
+                (s, z),
+                self.blocks_per_ckpt,
+            )
         return s, z

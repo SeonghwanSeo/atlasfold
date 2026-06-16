@@ -15,8 +15,8 @@ from atlasfold.model.network.rel_pos_encoding import (
 )
 from atlasfold.model.utils import confidence_metrics
 from atlasfold.utils import torch_utils
-from atlaslm.model import AtlasLM
-from atlaslm.pretrained import load_model
+from atlaslm.model import Alphabet, AtlasLM
+from atlaslm.pretrained import get_model, load_model
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -85,10 +85,14 @@ class AtlasFoldConfig:
 
 
 class AtlasFold(torch.nn.Module):
-    def __init__(self, cfg: AtlasFoldConfig):
+    def __init__(
+        self,
+        cfg: AtlasFoldConfig,
+        load_lm: bool = True,
+    ) -> None:
         """Initialize the AtlasFold model."""
         super().__init__()
-        self.cfg = cfg
+        self.cfg: AtlasFoldConfig = cfg
         # Trunk dimensions
         self.channel_s: int = cfg.channel_s
         self.channel_z: int = cfg.channel_z
@@ -102,10 +106,14 @@ class AtlasFold(torch.nn.Module):
         self.atom_rel_pos_encoding = AtomRelativePositionEncoding(max_r=4)
 
         # === Language model === #
-        self.lm: AtlasLM = load_model(cfg.lm_name, path=cfg.lm_path, dtype=torch.bfloat16)
+        if load_lm:
+            lm = load_model(cfg.lm_name, path=cfg.lm_path, dtype=torch.bfloat16)
+        else:
+            lm = get_model(cfg.lm_name)
+        self.lm: AtlasLM = lm
         # Freeze LM parameters
         self.lm.requires_grad_(False)
-        self.alphabet = self.lm.alphabet
+        self.alphabet: Alphabet = self.lm.alphabet
 
         # === Representation initialization === #
         self.w_lm_emb = torch.nn.Parameter(torch.zeros(self.lm.n_layers + 1))
@@ -571,7 +579,7 @@ class AtlasFold(torch.nn.Module):
 
         # Create the model on meta device
         with torch.device("meta"):
-            model = cls(config)
+            model = cls(config, load_lm=False)
             # Remove the LM, which will be loaded separately
             del model.lm
 
