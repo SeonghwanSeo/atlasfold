@@ -1,4 +1,4 @@
-"""Folding Trunk."""
+"""Training module"""
 
 from typing import Any
 
@@ -30,6 +30,7 @@ class AtlasFoldForTrain(AtlasFold):
                 self.proj_lm_attn,
                 self.z_init,
                 self.linear_rel_pos,
+                self.recycle_s,
                 self.recycle_z,
                 self.lm_stack,
                 self.main_stack,
@@ -69,14 +70,17 @@ class AtlasFoldForTrain(AtlasFold):
         self.compute_rel_pos_encoding(batch)
 
         # Recycling iterations with stochastic masking during training.
+        s_prev = torch.zeros(B, L, self.channel_s, device=device, dtype=dtype)
         z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
-                s, z = self.__forward_trunk(batch, z_prev, mask, train=enable_grad)
-                z_prev = z
+                s, z = self.__forward_trunk(
+                    batch, s_prev, z_prev, mask, train=enable_grad
+                )
+            s_prev, z_prev = s, z
         s, z = s.float(), z.float()
 
         # Return distogram logits
@@ -131,6 +135,7 @@ class AtlasFoldForTrain(AtlasFold):
     def __forward_trunk(
         self,
         batch: dict[str, torch.Tensor],
+        s_prev: torch.Tensor,
         z_prev: torch.Tensor,
         mask: torch.Tensor,
         train: bool,
@@ -139,10 +144,11 @@ class AtlasFoldForTrain(AtlasFold):
         mlm_mask = self.sample_mlm_mask(batch, 0.15, synchronized=False)
         # Extract LM features
         s, z = self.run_lm_embedder(batch, mlm_mask, train)
+        # Recycling
+        s = s + self.recycle_s(s_prev)
+        z = z + self.recycle_z(z_prev)
         # Run LM module
         s, z = self.lm_stack(s, z, mask, self.use_kernel)
-        # Recycling
-        z = z + self.recycle_z(z_prev)
         # Run main trunk
         z = self.main_stack(z, mask, self.use_kernel)
         return s, z

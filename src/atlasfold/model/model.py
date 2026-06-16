@@ -142,6 +142,10 @@ class AtlasFold(torch.nn.Module):
         )
 
         # === Trunk body === #
+        self.recycle_s = torch.nn.Sequential(
+            LayerNorm(self.channel_s),
+            LinearNoBias(self.channel_s, self.channel_s, init="final"),
+        )
         self.recycle_z = torch.nn.Sequential(
             LayerNorm(self.channel_z),
             LinearNoBias(self.channel_z, self.channel_z, init="final"),
@@ -396,9 +400,9 @@ class AtlasFold(torch.nn.Module):
 
         # Run LM module once and reuse the features for all recycling steps
         mask = batch["seq_mask"]
-        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
 
         # Recycling iteration with shared LM features
+        s_prev = torch.zeros_like(s_lm)  # [B, L, c_s]
         z_prev = torch.zeros_like(z_lm)  # [B, L, L, c_z]
         for i in range(0, num_recycles + 1):
             enable_grad = train and i == num_recycles
@@ -406,11 +410,13 @@ class AtlasFold(torch.nn.Module):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
                 # Recycling embedding
+                s = s_lm + self.recycle_s(s_prev)
                 z = z_lm + self.recycle_z(z_prev)
                 # Run main stack
+                s, z = self.lm_stack(s, z, mask, self.use_kernel)
                 z = self.main_stack(z, mask, self.use_kernel)
-                z_prev = z
-        return s_lm, z
+                s_prev, z_prev = s, z
+        return s, z
 
     def run_trunk_full(
         self,
@@ -431,6 +437,7 @@ class AtlasFold(torch.nn.Module):
             raise ValueError("mlm_prob must be greater than 0 for full mode.")
 
         # Recycling iteration with stochastic LM features
+        s_prev = torch.zeros(B, L, self.channel_s, device=device, dtype=dtype)
         z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
         for i in range(0, num_recycles + 1):
             enable_grad = train and i == num_recycles
@@ -441,13 +448,14 @@ class AtlasFold(torch.nn.Module):
                 mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
                 # Extract LM features with different MLM masks for each recycle step
                 s, z = self.run_lm_embedder(batch, mlm_mask, enable_grad)
+                # Recycling
+                s += self.recycle_s(s_prev)
+                z += self.recycle_z(z_prev)
                 # Run LM module
                 s, z = self.lm_stack(s, z, mask, self.use_kernel)
-                # Recycling
-                z += self.recycle_z(z_prev)
                 # Run main trunk
                 z = self.main_stack(z, mask, self.use_kernel)
-                z_prev = z
+                s_prev, z_prev = s, z
         return s, z
 
     def sample_mlm_mask(
@@ -560,6 +568,7 @@ class AtlasFold(torch.nn.Module):
             del model.lm
 
             if dtype is torch.bfloat16:
+                model.recycle_s = model.recycle_s.to(dtype)
                 model.recycle_z = model.recycle_z.to(dtype)
                 model.lm_stack = model.lm_stack.to(dtype)
                 model.main_stack = model.main_stack.to(dtype)
