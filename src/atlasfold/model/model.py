@@ -298,10 +298,8 @@ class AtlasFold(torch.nn.Module):
             batch = {k: v.unsqueeze(0) for k, v in batch.items()}
 
         out: dict[str, torch.Tensor] = {}
-        if mode not in ["flash", "base", "full"]:
-            raise ValueError(
-                f"Invalid mode: {mode}. Must be one of 'flash', 'base', or 'full'."
-            )
+        if mode not in ["fast", "full"]:
+            raise ValueError(f"Invalid mode: {mode}. Must be one of 'fast' or 'full'.")
 
         # Compute positional encodings
         self.compute_rel_pos_encoding(batch)
@@ -372,38 +370,16 @@ class AtlasFold(torch.nn.Module):
         train: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the trunk."""
-        if mode == "flash":
-            if num_recycles != -1:
-                raise ValueError("num_recycles must be -1 for flash mode.")
-            return self.run_trunk_flash(batch, mlm_prob, train)
-        elif mode == "base":
+        if mode == "fast":
             if num_recycles < 0:
                 raise ValueError("num_recycles must be non-negative for base mode.")
-            return self.run_trunk_base(batch, num_recycles, mlm_prob, train)
+            return self.run_trunk_fast(batch, num_recycles, mlm_prob, train)
         else:  # mode == "full"
             if num_recycles <= 0:
                 raise ValueError("num_recycles must be positive for full mode.")
             return self.run_trunk_full(batch, num_recycles, mlm_prob, train)
 
-    def run_trunk_flash(
-        self,
-        batch: dict[str, torch.Tensor],
-        mlm_prob: float | None = None,
-        train: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run the trunk without triangular updates for fast inference."""
-        # Sample a single MLM mask
-        mlm_prob = mlm_prob if mlm_prob is not None else 0.0
-        mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
-
-        # Extract LM features
-        s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, train)
-        # Run LM module
-        mask = batch["seq_mask"]
-        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
-        return s_lm, z_lm
-
-    def run_trunk_base(
+    def run_trunk_fast(
         self,
         batch: dict[str, torch.Tensor],
         num_recycles: int,

@@ -349,13 +349,11 @@ class TrainingModule(pl.LightningModule):
             sampling_config = SamplingConfig(num_steps=val_config.num_steps)
             return self.model.inference(
                 batch,
-                mode="base",
                 num_recycles=num_recycles,
                 num_samples=val_config.num_diffusion_samples,
                 sampling_config=sampling_config,
                 compute_pae=False,
                 return_representations=False,
-                mlm_prob=0.0,
             )
 
     def training_step(
@@ -408,13 +406,6 @@ class TrainingModule(pl.LightningModule):
             )
             loss += loss_weights["distogram"] * distogram_loss
             metrics |= {f"distogram/{k}": v for k, v in distogram_metrics.items()}
-
-            # Augmented distogram loss directly from LM features.
-            distogram_loss_aug, distogram_aug_metrics = self.compute_distogram_loss(
-                model_out["distogram_aug"], batch, label
-            )
-            loss += loss_weights["distogram_aug"] * distogram_loss_aug
-            metrics |= {f"distogram_aug/{k}": v for k, v in distogram_aug_metrics.items()}
 
         if self.train_diffusion_head:
             diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(

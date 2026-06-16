@@ -70,36 +70,27 @@ class AtlasFoldForTrain(AtlasFold):
 
         # Recycling iterations with stochastic masking during training.
         z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
-        mlm_prob = torch.rand(1, device=device) * 0.2
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
-                s_lm, z_lm, z = self.__forward_trunk(
-                    batch, z_prev, mask, mlm_prob, train=enable_grad
-                )
+                s, z = self.__forward_trunk(batch, z_prev, mask, train=enable_grad)
                 z_prev = z
-        s_lm, z, z_lm = s_lm.float(), z.float(), z_lm.float()
-        s = s_lm
+        s, z = s.float(), z.float()
 
         # Return distogram logits
         if train_trunk:
             distogram_out = self.__forward_distogram(z)
-            distogram_aug_out = self.__forward_distogram(z_lm)
             out["distogram"] = distogram_out
-            out["distogram_aug"] = distogram_aug_out
 
         # Return diffusion head outputs
         if train_diffusion_head:
-            # Select the diffusion conditioning.
-            # trunk : init : zero = 6 : 2 : 2
+            # Diffusion conditioning.
             p = torch.rand(bs, device=s.device)
-            use_trunk = p < 0.6
-            use_init = (p >= 0.6) & (p < 0.8)
-            use_cond = use_trunk | use_init
-            _s = use_cond.view(bs, 1, 1) * s_lm  # s = s_lm
-            _z = use_trunk.view(bs, 1, 1, 1) * z + use_init.view(bs, 1, 1, 1) * z_lm
+            use_cond = p < 0.8
+            _s = use_cond.view(bs, 1, 1) * s
+            _z = use_cond.view(bs, 1, 1, 1) * z
             with torch.autocast(s.device.type, dtype=torch.float32, enabled=True):
                 diffusion_out = self.__forward_diffusion(
                     batch, label, _s, _z, diffusion_batch_size
@@ -112,12 +103,10 @@ class AtlasFoldForTrain(AtlasFold):
             sample_coords = self.__forward_mini_rollout(batch, s, z, sampling_config)
 
             # Select the confidence head conditioning.
-            # trunk : init : zero = 6 : 2 : 2
             p = torch.rand(bs, device=s.device)
-            use_trunk = p < 0.6
-            use_init = (p >= 0.6) & (p < 0.8)
-            _s = s_lm  # No augmentation for confidence head training.
-            _z = use_trunk.view(bs, 1, 1, 1) * z + use_init.view(bs, 1, 1, 1) * z_lm
+            use_cond = p < 0.8
+            _s = s  # No augmentation for confidence head training.
+            _z = use_cond.view(bs, 1, 1, 1) * z
 
             confidence_out = self.__forward_confidence(
                 batch, _s, _z, sample_coords, compute_pae=train_pae_head
@@ -144,20 +133,19 @@ class AtlasFoldForTrain(AtlasFold):
         batch: dict[str, torch.Tensor],
         z_prev: torch.Tensor,
         mask: torch.Tensor,
-        mlm_prob: float,
         train: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # For each recycle step, sample a MLM mask to extract new LM features.
-        mlm_mask = self.sample_mlm_mask(batch, mlm_prob, synchronized=False)
+        mlm_mask = self.sample_mlm_mask(batch, 0.15, synchronized=False)
         # Extract LM features
-        s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, train)
+        s, z = self.run_lm_embedder(batch, mlm_mask, train)
         # Run LM module
-        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
+        s, z = self.lm_stack(s, z, mask, self.use_kernel)
         # Recycling
-        z = z_lm + self.recycle_z(z_prev)
+        z = z + self.recycle_z(z_prev)
         # Run main trunk
         z = self.main_stack(z, mask, self.use_kernel)
-        return s_lm, z_lm, z
+        return s, z
 
     def sample_mlm_mask(
         self,

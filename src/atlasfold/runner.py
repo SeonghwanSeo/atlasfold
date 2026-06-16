@@ -65,7 +65,7 @@ class FoldingRunner:
         sequence: str,
         num_samples: int = 1,
         *,
-        preset: str = "full",  # 'flash', 'full', 'stochastic'
+        preset: str = "full",  # 'full', 'stochastic'
         seed: int = 1,
         num_recycles: int | None = None,
         mlm_prob: float | None = None,
@@ -118,18 +118,13 @@ class FoldingRunner:
         return samples
 
     def get_preset(self, preset: str) -> dict:
-        if preset == "flash":
-            mode = "flash"
-            num_recycles = -1
-            mlm_prob = 0.0
-            sampling_cfg = SamplingConfig(num_steps=75, sigma_max=32.0)
-        elif preset == "full":
+        if preset == "full":
             mode = "full"
             num_recycles = 3
             mlm_prob = 0.15
             sampling_cfg = SamplingConfig(num_steps=100)
         elif preset == "stochastic":
-            mode = "base"
+            mode = "fast"
             num_recycles = 3
             mlm_prob = 0.15
             sampling_cfg = SamplingConfig(num_steps=100)
