@@ -21,10 +21,12 @@ from atlaslm.pretrained import get_model, load_model
 
 @dataclasses.dataclass(kw_only=True)
 class TrunkConfig:
-    dropout_z: float = 0.25
     num_heads: int = 12
+    dropout_s: float = 0.15
+    dropout_z: float = 0.25
     num_lm_blocks: int = 4
     num_blocks: int = 48
+    num_pair_to_single_blocks: int = 8
     blocks_per_ckpt: int | None = None
 
 
@@ -154,14 +156,19 @@ class AtlasFold(torch.nn.Module):
             channel_s=self.channel_s,
             channel_z=self.channel_z,
             num_heads=cfg.trunk.num_heads,
+            dropout_s=cfg.trunk.dropout_s,
             dropout_z=cfg.trunk.dropout_z,
             num_blocks=cfg.trunk.num_lm_blocks,
             blocks_per_ckpt=cfg.trunk.blocks_per_ckpt,
         )
         self.main_stack = trunk.TriangularUpdateStack(
+            channel_s=self.channel_s,
             channel_z=self.channel_z,
+            num_heads=cfg.trunk.num_heads,
+            dropout_s=cfg.trunk.dropout_s,
             dropout_z=cfg.trunk.dropout_z,
             num_blocks=cfg.trunk.num_blocks,
+            num_pair_to_single_blocks=cfg.trunk.num_pair_to_single_blocks,
             blocks_per_ckpt=cfg.trunk.blocks_per_ckpt,
         )
 
@@ -273,8 +280,6 @@ class AtlasFold(torch.nn.Module):
                 where 0 for CLS and L+1 for SEP.
             - "lm.seq_id"       : [B, S] int
                 Sequence IDs for attention masking. 1 for valid tokens, 0 for padding.
-            - "lm.mlm_mask"     : [B, S] bool
-                Optional boolean mask for stochastic LM feature extraction.
         num_recycles : int
             The number of recycling steps.
         sampling_config : SamplingConfig
@@ -393,13 +398,13 @@ class AtlasFold(torch.nn.Module):
         """Run the trunk with shared LM features."""
         # Sample a single MLM mask for all recycling steps
         mlm_prob = mlm_prob if mlm_prob is not None else 0.0
-        mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
 
         # Extract LM features
+        mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
         s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, train)
-
-        # Run LM module once and reuse the features for all recycling steps
+        # Run LM module
         mask = batch["seq_mask"]
+        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
 
         # Recycling iteration with shared LM features
         s_prev = torch.zeros_like(s_lm)  # [B, L, c_s]
@@ -412,9 +417,8 @@ class AtlasFold(torch.nn.Module):
                 # Recycling embedding
                 s = s_lm + self.recycle_s(s_prev)
                 z = z_lm + self.recycle_z(z_prev)
-                # Run main stack
-                s, z = self.lm_stack(s, z, mask, self.use_kernel)
-                z = self.main_stack(z, mask, self.use_kernel)
+                # Run main trunk
+                s, z = self.main_stack(s, z, mask, self.use_kernel)
                 s_prev, z_prev = s, z
         return s, z
 
@@ -444,17 +448,16 @@ class AtlasFold(torch.nn.Module):
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
-                # For each recycle step, sample a MLM mask to extract new LM features.
-                mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
                 # Extract LM features with different MLM masks for each recycle step
+                mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
                 s, z = self.run_lm_embedder(batch, mlm_mask, enable_grad)
-                # Recycling
-                s += self.recycle_s(s_prev)
-                z += self.recycle_z(z_prev)
                 # Run LM module
                 s, z = self.lm_stack(s, z, mask, self.use_kernel)
+                # Recycling embedding
+                s += self.recycle_s(s_prev)
+                z += self.recycle_z(z_prev)
                 # Run main trunk
-                z = self.main_stack(z, mask, self.use_kernel)
+                s, z = self.main_stack(s, z, mask, self.use_kernel)
                 s_prev, z_prev = s, z
         return s, z
 

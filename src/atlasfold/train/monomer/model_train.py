@@ -144,13 +144,13 @@ class AtlasFoldForTrain(AtlasFold):
         mlm_mask = self.sample_mlm_mask(batch, 0.15, synchronized=False)
         # Extract LM features
         s, z = self.run_lm_embedder(batch, mlm_mask, train)
+        # Run LM module
+        s, z = self.lm_stack(s, z, mask, self.use_kernel)
         # Recycling
         s = s + self.recycle_s(s_prev)
         z = z + self.recycle_z(z_prev)
-        # Run LM module
-        s, z = self.lm_stack(s, z, mask, self.use_kernel)
         # Run main trunk
-        z = self.main_stack(z, mask, self.use_kernel)
+        s, z = self.main_stack(s, z, mask, self.use_kernel)
         return s, z
 
     def sample_mlm_mask(

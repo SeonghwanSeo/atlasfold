@@ -11,38 +11,49 @@ class TriangularUpdateStack(torch.nn.Module):
 
     def __init__(
         self,
+        channel_s: int = 768,
         channel_z: int = 192,
+        num_heads: int = 12,
+        dropout_s: float = 0.15,
         dropout_z: float = 0.25,
         num_blocks: int = 48,
+        num_pair_to_single_blocks: int = 4,
         blocks_per_ckpt: int | None = None,
     ) -> None:
         super().__init__()
+        pair_to_single_start = num_blocks - num_pair_to_single_blocks
         self.blocks = torch.nn.ModuleList(
             [
                 PairBlock(
+                    channel_s=channel_s,
                     channel_z=channel_z,
+                    num_heads_attn=num_heads,
+                    dropout_s=dropout_s,
                     dropout_z=dropout_z,
                     single_to_pair=False,
                     pair_to_pair=True,
-                    pair_to_single=False,
+                    pair_to_single=i >= pair_to_single_start,
                     use_tri_mul=True,
                     use_tri_attn=False,
                 )
-                for _ in range(num_blocks)
+                for i in range(num_blocks)
             ]
         )
         self.blocks_per_ckpt: int | None = blocks_per_ckpt
 
     def forward(
         self,
+        s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
         use_cuequiv_kernels: bool = False,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
         Parameters
         ----------
+        s : torch.Tensor
+            The single representations of shape (B, L, C_s)
         z : torch.Tensor
             The pair representations of shape (B, L, L, C_z)
         mask : torch.Tensor
@@ -67,14 +78,14 @@ class TriangularUpdateStack(torch.nn.Module):
         ]
         if self.blocks_per_ckpt is None or not self.training:
             for b in blocks:
-                _, z = b(None, z)
+                s, z = b(s, z)
         else:
-            _, z = checkpoint_blocks(
+            s, z = checkpoint_blocks(
                 blocks,
-                (None, z),
+                (s, z),
                 self.blocks_per_ckpt,
             )
-        return z
+        return s, z
 
 
 class LMStack(torch.nn.Module):
@@ -85,6 +96,7 @@ class LMStack(torch.nn.Module):
         channel_s: int = 768,
         channel_z: int = 192,
         num_heads: int = 12,
+        dropout_s: float = 0.15,
         dropout_z: float = 0.25,
         num_blocks: int = 4,
         blocks_per_ckpt: int | None = None,
@@ -96,6 +108,7 @@ class LMStack(torch.nn.Module):
                     channel_s=channel_s,
                     channel_z=channel_z,
                     num_heads_attn=num_heads,
+                    dropout_s=dropout_s,
                     dropout_z=dropout_z,
                     single_to_pair=True,
                     pair_to_pair=True,

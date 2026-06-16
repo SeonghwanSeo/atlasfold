@@ -5,11 +5,11 @@ monomer_config = model.AtlasFoldConfig(
     lm_name="SeonghwanSeo/atlaslm-3b-base",
     channel_s=768,
     channel_z=192,
-    multimer=False,
     trunk=model.TrunkConfig(
         dropout_z=0.25,
         num_heads=12,
         num_blocks=48,
+        num_pair_to_single_blocks=4,
         num_lm_blocks=4,
     ),
     diffusion_head=model.DiffusionHeadConfig(
