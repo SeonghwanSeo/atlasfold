@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from atlasfold.common import metadata, protein
 from atlasfold.data import cif_factory
-from atlasfold.train.dataset import DataPipeline
+from atlasfold.train.monomer.dataset import DataPipeline
 
 # Data filtering criteria
 logger = logging.getLogger(__name__)

@@ -11,7 +11,7 @@ import zstandard as zstd
 from tqdm import tqdm
 
 from atlasfold.common import protein, residue_constants
-from atlasfold.train.dataset import DataPipeline
+from atlasfold.train.monomer.dataset import DataPipeline
 
 logger = logging.getLogger(__name__)
 SUCCESS = 0
