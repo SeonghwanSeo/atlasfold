@@ -8,12 +8,12 @@ from atlasfold.data.fasta import read_fasta
 from atlasfold.model import AtlasFold, AtlasFoldConfig, SamplingConfig
 from atlasfold.runner import FoldingRunner
 
-CKPT = "./experiments/stage1/AtlasFlod/hpfac2y1/checkpoints/epoch0033_step00017000_lddt0.8108.ckpt"
-CKPT_NAME = "17k"
+CKPT = "/mnt/parallel_storage/wykim_lab/icl_shwan/train_results/stage1/stage1/AtlasFold/fuj7x3dw/checkpoints/epoch0031_step00032000_lddt0.8199.ckpt"
+CKPT_NAME = "32k"
 PRESET = "full"
 NUM_RECYCLES = 3
 NUM_STEPS = 200
-SIGMA_MAX = 160
+SIGMA_MAX = 128
 
 ROOT_DIR = Path("./outputs/cameo2022/")
 EXP_NAME = f"{CKPT_NAME}_{PRESET}_steps{NUM_STEPS}_sigma{SIGMA_MAX}"
@@ -23,9 +23,7 @@ EXP_NAME = f"{CKPT_NAME}_{PRESET}_steps{NUM_STEPS}_sigma{SIGMA_MAX}"
 def main():
     # Load model
     device = torch.device("cuda")
-    config = AtlasFoldConfig(
-        lm_path="/mnt/parallel_storage/share/kfold_weights/pretrained/prot_seq_3b.pth",
-    )
+    config = AtlasFoldConfig()
     state_dict = torch.load(CKPT, map_location="cuda")
     model_state_dict = {
         k.removeprefix("model."): v for k, v in state_dict["state_dict"].items()
@@ -55,6 +53,13 @@ def main():
     for header, seq in tqdm(sequences):
         print()
         name = header.split()[0]
+        out_path = OUT_DIR / f"{name}_seed-1_sample-0.cif"
+        if out_path.exists():
+            print(f"Output for {name} already exists, skipping...")
+            continue
+
+        print(f"Folding {name} with length {len(seq)}...")
+
         start_time = time.time()
         out = runner.fold(
             name=name,
@@ -68,7 +73,7 @@ def main():
         elapsed = time.time() - start_time
         print(f"Length {len(seq)}: {elapsed:.2f} seconds")
 
-        with open(f"{OUT_DIR}/{name}_seed-1_sample-0.cif", "w") as f:
+        with open(out_path, "w") as f:
             f.write(out.to_mmcif())
 
 

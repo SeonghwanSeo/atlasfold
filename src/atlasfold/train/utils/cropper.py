@@ -88,7 +88,7 @@ class ProteinCropper:
             return valid_indices
 
         # Pick a random anchor residue that has a CA
-        anchor_idx = rng.choice(valid_indices)
+        anchor_idx = rng.choice(list(valid_indices))
         anchor_coord = ca_coords[anchor_idx]
 
         # Compute distances to all CA coordinates
@@ -198,7 +198,7 @@ class ComplexCropper:
         max_length: int,
         bias_chain_id: int | tuple[int, int] | None,
         rng: np.random.Generator | None = None,
-    ) -> np.ndarray:
+    ) -> list[np.ndarray]:
         """Crop the input structure
 
         Parameters
@@ -210,32 +210,32 @@ class ComplexCropper:
 
         Returns
         -------
-        sequence_indices : np.ndarray
-            The indices of the residues to be included in the cropped structure.
-            NOTE: this is different from the residue index (1-based).
+        sequence_indices : list[np.ndarray]
+            A list of length num_chains, where each element is either an array of
+            residue indices to be included in the cropped structure for that chain.
         """
         rng = spawn_rng(rng)
         if compl.num_residues <= max_length:
-            return np.arange(compl.num_residues)
+            return [np.arange(c.num_residues) for c in compl.chains]
 
         # Randomly choose cropping strategy
         r = rng.random()
         if r < self.prob_spatial:
-            indices = self._crop_spatial(compl, max_length, bias_chain_id, rng)
+            indices_list = self._crop_spatial(compl, max_length, bias_chain_id, rng)
         elif r < self.prob_spatial + self.prob_contiguous:
-            indices = self._crop_contiguous(compl, max_length, rng)
+            indices_list = self._crop_contiguous(compl, max_length, rng)
         else:
-            indices = self._crop_interface_spatial(
+            indices_list = self._crop_interface_spatial(
                 compl, m, max_length, bias_chain_id, rng
             )
-        return np.sort(indices)
+        return [np.sort(indices) for indices in indices_list]
 
     def _crop_contiguous(
         self,
         compl: protein.ProteinComplex,
         max_length: int,
         rng: np.random.Generator,
-    ) -> np.ndarray:
+    ) -> list[np.ndarray]:
         """Crop a contiguous segment of the input structure."""
         # Compute the number of tokens and start indices per chain
         asym_ids = compl.asym_ids
@@ -256,7 +256,10 @@ class ComplexCropper:
         n_added: int = 0
         # Line 2
         n_remaining: int = sum(chain_sizes[asym_id] for asym_id in selected_asym_ids)
-        is_selected = np.zeros(compl.num_residues, dtype=bool)
+        is_selected: dict[int, np.ndarray] = {
+            asym_id: np.zeros(chain_sizes[asym_id], dtype=bool)
+            for asym_id in selected_asym_ids
+        }
 
         # Line 3-13
         for asym_id in selected_asym_ids:
@@ -284,13 +287,16 @@ class ComplexCropper:
             crop_start = int(rng.integers(0, n_k - crop_size + 1))
 
             # Line 11
-            crop_start += chain_starts[asym_id]
             selected_tokens = np.arange(crop_start, crop_start + crop_size)
 
             # Line 12
-            is_selected[selected_tokens] = True
+            is_selected[asym_id][selected_tokens] = True
 
-        return np.where(is_selected)[0]
+        indices_list = []
+        for asym_id in compl.asym_ids:
+            indices_list.append(np.where(is_selected[asym_id])[0])
+
+        return indices_list
 
     def _crop_spatial(
         self,
@@ -298,24 +304,21 @@ class ComplexCropper:
         max_length: int,
         bias_chain_id: int | tuple[int, int] | None,
         rng: np.random.Generator,
-    ) -> np.ndarray:
+    ) -> list[np.ndarray]:
         """Crop a spatial segment of the input structure."""
-        length = compl.num_residues
-
         # CA coordinates are at index 1 in coordinates [L, 14, 3]
         ca_coords_list = [c.coordinates[:, 1, :] for c in compl.chains]
+        ca_mask_list = [np.isfinite(coords).all(-1) for coords in ca_coords_list]
         ca_coords: np.ndarray = np.concatenate(ca_coords_list, axis=0)  # [L, 3]
-        ca_mask: np.ndarray = np.isfinite(ca_coords).all(-1)
-        valid_indices: np.ndarray = np.where(ca_mask)[0]
-
+        ca_mask: np.ndarray = np.concatenate(ca_mask_list, axis=0)  # [L]
         if not np.any(ca_mask):
             # Edge case. return dummy indices and re-sample datapoint.
-            return np.arange(min(length, max_length))
+            return [np.array([0]) for _ in compl.chains]
 
-        if len(valid_indices) <= max_length:
+        if sum(ca_mask) <= max_length:
             # If there are fewer valid CA residues than max_length,
             # return all valid indices
-            return valid_indices
+            return [mask.nonzero()[0] for mask in ca_mask_list]
 
         # Select anchor residue
         anchor_coord = None
@@ -331,10 +334,13 @@ class ComplexCropper:
                 anchor_coord = chain_ca_coords[rng.choice(valid_chain_indices)]
         if anchor_coord is None:
             # Pick a random anchor residue
+            valid_indices = np.where(ca_mask)[0]
             anchor_coord = ca_coords[rng.choice(valid_indices)]
 
         # Get the closest tokens to the anchor residue
-        return self.get_closest_residues(ca_coords, ca_mask, anchor_coord, max_length)
+        return self.get_closest_residues(
+            ca_coords_list, ca_mask_list, anchor_coord, max_length
+        )
 
     def _crop_interface_spatial(
         self,
@@ -343,7 +349,7 @@ class ComplexCropper:
         max_length: int,
         bias_chain_id: int | tuple[int, int] | None,
         rng: np.random.Generator,
-    ) -> np.ndarray:
+    ) -> list[np.ndarray]:
 
         def fallback():
             return self._crop_spatial(compl, max_length, bias_chain_id, rng)
@@ -394,22 +400,38 @@ class ComplexCropper:
             anchor_coord = chain2_coords[rng.choice(np.where(anchors2)[0])]
 
         # Get the closest tokens to the anchor residue
-        ca_coords = np.concatenate(ca_coords_list, axis=0)  # [L, 3]
-        ca_mask = np.concatenate(ca_mask_list, axis=0)  # [L]
-        return self.get_closest_residues(ca_coords, ca_mask, anchor_coord, max_length)
+        return self.get_closest_residues(
+            ca_coords_list, ca_mask_list, anchor_coord, max_length
+        )
 
     @staticmethod
     def get_closest_residues(
-        coords: np.ndarray,
-        mask: np.ndarray,
+        coords_list: list[np.ndarray],
+        mask_list: list[np.ndarray],
         anchor_coord: np.ndarray,
         max_length: int,
-    ) -> np.ndarray:
-        length = coords.shape[0]
+    ) -> list[np.ndarray]:
+        all_coords = np.concatenate(coords_list, axis=0)  # [L, 3]
+        all_mask = np.concatenate(mask_list, axis=0)  # [L]
+
+        length = all_coords.shape[0]
         # Compute distances to all CA coordinates
         distances = np.full(length, 1e6, dtype=np.float32)
-        valid_distances = np.linalg.norm(coords[mask] - anchor_coord, axis=-1)
-        distances[mask] = valid_distances
+        valid_distances = np.linalg.norm(all_coords[all_mask] - anchor_coord, axis=-1)
+        distances[all_mask] = valid_distances
 
         # Pick the max_length nearest residues
-        return np.argsort(distances)[:max_length]
+        indices = np.argsort(distances)[:max_length]
+
+        # Convert global indices to per-chain indices
+        indices_list = []
+        start = 0
+        for mask in mask_list:
+            chain_length = len(mask)
+            chain_indices = (
+                indices[(indices >= start) & (indices < start + chain_length)] - start
+            )
+            indices_list.append(chain_indices)
+            start += chain_length
+
+        return indices_list

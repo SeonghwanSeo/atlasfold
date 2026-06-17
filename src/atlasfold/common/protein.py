@@ -1,7 +1,6 @@
 import dataclasses
 import pathlib
 from collections import defaultdict
-from functools import cached_property
 
 import gemmi
 import numpy as np
@@ -35,10 +34,9 @@ class Protein:
                     f"Invalid residue_index shape: {self.residue_index.shape}. "
                     f"Expected (L,) where L is the sequence length."
                 )
-            if not np.all(np.diff(self.residue_index) == 1):
-                raise ValueError(
-                    "residue_index must be a continuous range of integers. "
-                    f"Got {self.residue_index}."
+            if not np.equal(self.residue_index, np.arange(1, L + 1)).all():
+                raise NotImplementedError(
+                    "Non-contiguous residue indices are not supported yet."
                 )
 
     def __len__(self):
@@ -123,6 +121,83 @@ class ProteinComplex:
 
     name: str
     chains: list[Protein]
+    entity_ids: list[int] = dataclasses.field(default_factory=list)
+    asym_ids: list[int] = dataclasses.field(default_factory=list)
+    sym_ids: list[int] = dataclasses.field(default_factory=list)
+
+    def __post_init__(self):
+        num_chains = len(self.chains)
+        if num_chains == 0:
+            raise ValueError("ProteinComplex must contain at least one chain.")
+
+        def check_length(ids, name):
+            if ids is not None and len(ids) != num_chains:
+                raise ValueError(
+                    f"Length of {name} ({len(ids)}) must match "
+                    f"the number of sequences ({num_chains})."
+                )
+
+        check_length(self.entity_ids, "entity_ids")
+        check_length(self.asym_ids, "asym_ids")
+        check_length(self.sym_ids, "sym_ids")
+
+        if len(self.entity_ids) == 0:
+            seq_to_eid = {}
+            i = 1
+            for c in self.chains:
+                if c.sequence not in seq_to_eid:
+                    seq_to_eid[c.sequence] = i
+                    i += 1
+            self.entity_ids = [seq_to_eid[c.sequence] for c in self.chains]
+        if len(self.asym_ids) == 0:
+            self.asym_ids = list(range(1, num_chains + 1))
+        if len(self.sym_ids) == 0:
+            seq_to_symid = defaultdict(int)
+            sym_ids = []
+            for c in self.chains:
+                seq_to_symid[c.sequence] += 1
+                sym_ids.append(seq_to_symid[c.sequence])
+            self.sym_ids = sym_ids
+
+    @classmethod
+    def get_empty(
+        cls,
+        name: str,
+        sequence: list[str],
+        chain_ids: list[str] | None = None,
+        entity_ids: list[int] | None = None,
+        asym_ids: list[int] | None = None,
+        sym_ids: list[int] | None = None,
+    ) -> Self:
+        """Create an empty structure with NaN coordinates."""
+        # Check that the lengths of chain_ids and entity_ids match the
+        # number of sequences
+        num_chains = len(sequence)
+
+        def check_length(ids, name):
+            if ids is not None and len(ids) != num_chains:
+                raise ValueError(
+                    f"Length of {name} ({len(ids)}) must match "
+                    f"the number of sequences ({num_chains})."
+                )
+
+        check_length(chain_ids, "chain_ids")
+        check_length(entity_ids, "entity_ids")
+        check_length(asym_ids, "asym_ids")
+        check_length(sym_ids, "sym_ids")
+
+        if chain_ids is None:
+            # Generate chain IDs as A, B, C, ..., Z, AA, AB, ...
+            chain_ids = []
+            for i in range(len(sequence)):
+                chain_id = ""
+                n = i
+                while True:
+                    chain_id = chr(ord("A") + (n % 26)) + chain_id
+                    n //= 26
+                    if n == 0:
+                        break
+                chain_ids.append(chain_id)
 
     def __len__(self):
         """Return the number of chains in the complex."""
@@ -152,27 +227,3 @@ class ProteinComplex:
     def num_residues(self) -> int:
         """Return the number of residues in the structure."""
         return sum(c.num_residues for c in self.chains)
-
-    # === Chain IDs and Entity IDs === #
-    @cached_property
-    def asym_ids(self) -> list[int]:
-        return list(range(1, self.num_chains + 1))
-
-    @cached_property
-    def entity_ids(self) -> list[int]:
-        seq_to_eid = {}
-        i = 1
-        for c in self.chains:
-            if c.sequence not in seq_to_eid:
-                seq_to_eid[c.sequence] = i
-                i += 1
-        return [seq_to_eid[c.sequence] for c in self.chains]
-
-    @cached_property
-    def sym_ids(self) -> list[int]:
-        seq_to_symid = defaultdict(int)
-        sym_ids = []
-        for c in self.chains:
-            seq_to_symid[c.sequence] += 1
-            sym_ids.append(seq_to_symid[c.sequence])
-        return sym_ids
