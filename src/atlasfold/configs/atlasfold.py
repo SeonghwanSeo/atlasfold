@@ -32,7 +32,6 @@ monomer_config = model.AtlasFoldConfig(
         dropout_s=0.15,
         dropout_z=0.25,
         num_blocks=4,
-        num_pae_blocks=2,
         num_bins=39,
         min_dist=3.25,
         max_dist=50.75,

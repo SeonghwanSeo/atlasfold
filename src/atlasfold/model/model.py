@@ -56,7 +56,6 @@ class ConfidenceHeadConfig:
     dropout_s: float = 0.15
     dropout_z: float = 0.25
     num_blocks: int = 4
-    num_pae_blocks: int = 2
     num_bins: int = 39
     min_dist: float = 3.25
     max_dist: float = 50.75

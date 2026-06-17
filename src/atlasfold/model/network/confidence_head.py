@@ -99,25 +99,10 @@ class PredictedAlignedErrorHead(nn.Module):
     def __init__(
         self,
         channel_z: int = 192,
-        dropout_z: float = 0.25,
-        num_blocks: int = 2,
         num_bins: int = 64,
-        blocks_per_ckpt: int | None = None,
     ):
         super().__init__()
         self.num_bins: int = num_bins
-        # Pair-to-pair updates only.
-        self.stack: PairStack = PairStack(
-            channel_s=0,
-            channel_z=channel_z,
-            dropout_z=dropout_z,
-            num_blocks=num_blocks,
-            single_to_pair=False,
-            pair_to_pair=True,
-            pair_to_single=False,
-            use_tri_attn=False,
-            blocks_per_ckpt=blocks_per_ckpt,
-        )
         self.head = nn.Sequential(
             LayerNorm(channel_z),
             LinearNoBias(channel_z, num_bins, init="final"),
@@ -158,7 +143,6 @@ class ConfidenceHead(nn.Module):
         channel_z: int = 196,
         num_heads: int = 12,
         num_blocks: int = 4,
-        num_pae_blocks: int = 4,
         dropout_s: float = 0.15,
         dropout_z: float = 0.25,
         # distogram bins
@@ -191,10 +175,12 @@ class ConfidenceHead(nn.Module):
             channel_z=channel_z,
             num_heads_attn=num_heads,
             dropout_s=dropout_s,
+            dropout_z=dropout_z,
             num_blocks=num_blocks,
             single_to_pair=False,
-            pair_to_pair=False,
+            pair_to_pair=True,
             pair_to_single=True,
+            blocks_per_ckpt=blocks_per_ckpt,
         )
 
         self.plddt_head = PredictedLDDTHead(channel_a, num_plddt_bins)
@@ -202,11 +188,7 @@ class ConfidenceHead(nn.Module):
 
         # PAE head with pair-to-pair updates
         self.pae_head = PredictedAlignedErrorHead(
-            channel_z=channel_z,
-            dropout_z=dropout_z,
-            num_blocks=num_pae_blocks,
-            num_bins=num_pae_bins,
-            blocks_per_ckpt=blocks_per_ckpt,
+            channel_z=channel_z, num_bins=num_pae_bins
         )
 
         # Store PAE and lDDT binning parameters
