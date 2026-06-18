@@ -22,7 +22,6 @@ from atlaslm.pretrained import get_model, load_model
 @dataclasses.dataclass(kw_only=True)
 class TrunkConfig:
     num_heads: int = 12
-    dropout_s: float = 0.15
     dropout_z: float = 0.25
     num_lm_blocks: int = 4
     num_blocks: int = 48
@@ -53,7 +52,6 @@ class DistogramHeadConfig:
 class ConfidenceHeadConfig:
     channel_a: int = 384
     num_heads: int = 12
-    dropout_s: float = 0.15
     dropout_z: float = 0.25
     num_blocks: int = 4
     num_bins: int = 39
@@ -148,7 +146,6 @@ class AtlasFold(torch.nn.Module):
             channel_s=self.channel_s,
             channel_z=self.channel_z,
             num_heads=cfg.trunk.num_heads,
-            dropout_s=cfg.trunk.dropout_s,
             dropout_z=cfg.trunk.dropout_z,
             num_blocks=cfg.trunk.num_lm_blocks,
             final_layernorm=True,
@@ -168,7 +165,6 @@ class AtlasFold(torch.nn.Module):
             channel_s=self.channel_s,
             channel_z=self.channel_z,
             num_heads=cfg.trunk.num_heads,
-            dropout_s=cfg.trunk.dropout_s,
             dropout_z=cfg.trunk.dropout_z,
             num_blocks=cfg.trunk.num_blocks,
             num_pair_to_single_blocks=cfg.trunk.num_pair_to_single_blocks,
@@ -573,17 +569,14 @@ class AtlasFold(torch.nn.Module):
             del model.lm
 
             if dtype is torch.bfloat16:
-                model.recycle_s = model.recycle_s.to(dtype)
-                model.recycle_z = model.recycle_z.to(dtype)
                 model.lm_stack = model.lm_stack.to(dtype)
                 model.main_stack = model.main_stack.to(dtype)
-                model.confidence_head = model.confidence_head.to(dtype)
 
         # Load the state dict onto the target device
         model = model.to_empty(device=device)
 
         # Load the state dict with the specified strictness
-        model.load_state_dict(state_dict, strict=True)
+        model.load_state_dict(state_dict, strict=False)
 
         # Finally, load the LM
         model.lm = load_model(

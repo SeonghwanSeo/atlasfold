@@ -72,7 +72,8 @@ class PredictedLDDTHead(nn.Module):
     ) -> None:
         super().__init__()
         self.head = nn.Sequential(
-            LayerNorm(channel_s), LinearNoBias(channel_s, num_bins, init="final")
+            LayerNorm(channel_s),
+            LinearNoBias(channel_s, num_bins, init="final"),
         )
 
     def forward(self, s: torch.Tensor) -> torch.Tensor:
@@ -136,7 +137,6 @@ class ConfidenceHead(nn.Module):
         channel_z: int = 196,
         num_heads: int = 12,
         num_blocks: int = 4,
-        dropout_s: float = 0.15,
         dropout_z: float = 0.25,
         # distogram bins
         num_bins: int = 39,
@@ -167,13 +167,13 @@ class ConfidenceHead(nn.Module):
             channel_s=channel_a,
             channel_z=channel_z,
             num_heads_attn=num_heads,
-            dropout_s=dropout_s,
             dropout_z=dropout_z,
             num_blocks=num_blocks,
             single_to_pair=False,
             pair_to_pair=True,
             pair_to_single=True,
             blocks_per_ckpt=blocks_per_ckpt,
+            use_tri_attn=False,
         )
 
         self.plddt_head = PredictedLDDTHead(channel_a, num_plddt_bins)

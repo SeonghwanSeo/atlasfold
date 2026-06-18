@@ -29,7 +29,6 @@ monomer_config = model.AtlasFoldConfig(
     confidence_head=model.ConfidenceHeadConfig(
         channel_a=384,
         num_heads=12,
-        dropout_s=0.15,
         dropout_z=0.25,
         num_blocks=4,
         num_bins=39,

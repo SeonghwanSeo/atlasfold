@@ -66,7 +66,6 @@ class PairStack(torch.nn.Module):
         channel_z: int = 128,
         num_heads_attn: int = 12,
         num_heads_tri_attn: int = 4,
-        dropout_s: float = 0.15,
         dropout_z: float = 0.25,
         single_to_pair: bool = True,
         pair_to_pair: bool = True,
@@ -84,7 +83,6 @@ class PairStack(torch.nn.Module):
                     channel_z,
                     num_heads_attn,
                     num_heads_tri_attn,
-                    dropout_s,
                     dropout_z,
                     single_to_pair,
                     pair_to_pair,
@@ -153,7 +151,6 @@ class PairBlock(torch.nn.Module):
         channel_z: int = 128,
         num_heads_attn: int = 12,
         num_heads_tri_attn: int = 4,
-        dropout_s: float = 0.15,
         dropout_z: float = 0.25,
         single_to_pair: bool = True,
         pair_to_pair: bool = True,
@@ -203,7 +200,6 @@ class PairBlock(torch.nn.Module):
                 use_pair_bias=True,
             )
             self.transition_s = Transition(channel_s, 4)
-            self.dropout_s = torch.nn.Dropout(dropout_s)
 
     def forward(
         self,
@@ -280,12 +276,7 @@ class PairBlock(torch.nn.Module):
             pair_bias = einops.rearrange(
                 self.pair_to_single_bias(z), "... i j h -> ... h i j"
             )  # [*, H, L, L]
-            s = _add(
-                s,
-                self.dropout_s(
-                    self.attention(s, mask, pair_bias=pair_bias),
-                ),
-            )
+            s = _add(s, self.attention(s, mask, pair_bias=pair_bias))
             s = _add(s, self.transition_s(s))
             s = s * mask[..., None]
 

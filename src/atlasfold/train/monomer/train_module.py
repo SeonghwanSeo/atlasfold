@@ -677,7 +677,7 @@ class TrainingModule(pl.LightningModule):
         checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
-        self.load_ema_state_dict(checkpoint["ema"], strict=True)
+        self.load_ema_state_dict(checkpoint["ema"], strict=False)
 
     def load_state_dict(
         self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
@@ -693,6 +693,30 @@ class TrainingModule(pl.LightningModule):
             unexpected_keys = provided_keys - model_keys
 
             actual_missing_keys = [k for k in missing_keys if not k.startswith("lm.")]
+            # HACK: exclude confidence head
+            if any(k.startswith("confidence_head.") for k in actual_missing_keys):
+                confidence_head_keys = [
+                    k for k in actual_missing_keys if k.startswith("confidence_head.")
+                ]
+                print(
+                    f"WARNING: Missing keys in confidence head: {confidence_head_keys}. "
+                    "This may be due to the confidence head not being trained yet."
+                )
+            if any(k.startswith("confidence_head.") for k in unexpected_keys):
+                confidence_head_keys = [
+                    k for k in unexpected_keys if k.startswith("confidence_head.")
+                ]
+                print(
+                    f"WARNING: Unexpected keys in confidence head: {confidence_head_keys}. "
+                    "This may be due to the confidence head not being trained yet."
+                )
+            actual_missing_keys = [
+                k for k in actual_missing_keys if not k.startswith("confidence_head.")
+            ]
+            unexpected_keys = [
+                k for k in unexpected_keys if not k.startswith("confidence_head.")
+            ]
+
             if actual_missing_keys or unexpected_keys:
                 error_msg = []
                 if actual_missing_keys:

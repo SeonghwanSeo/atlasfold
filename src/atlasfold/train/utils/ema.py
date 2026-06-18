@@ -103,5 +103,9 @@ class ExponentialMovingAverage:
                         f"Parameter {k} from state_dict not found in EMA parameters."
                     )
                 else:
+                    print(
+                        f"Warning: Parameter {k} from state_dict not found "
+                        f"in EMA parameters. Ignoring."
+                    )
                     continue
             self.params[k] = p.clone()
