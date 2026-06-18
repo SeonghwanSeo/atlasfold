@@ -102,6 +102,8 @@ class SingleConditioning(nn.Module):
         cond : torch.Tensor
             Tensor of shape (B, N, L, c_s) containing conditioned single embeddings.
         """
+        # TODO: remove trunk single conditioning.
+        s = s * 0.0  # zero out single representations
         s = self.proj_single_cond(torch.cat([s, batch["aatype"]], dim=-1))
 
         # Embed fourier embedding of noise level
