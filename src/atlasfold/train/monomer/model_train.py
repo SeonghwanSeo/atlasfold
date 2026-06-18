@@ -138,8 +138,8 @@ class AtlasFoldForTrain(AtlasFold):
         train: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
 
-        s = self.s_init(batch["aatype"])
-        z = self.z_init(batch["seq_rel_pos"])
+        s = self.s_init(batch["aatype"]).float()
+        z = self.z_init(batch["seq_rel_pos"]).float()
 
         # Recycling embedding
         s = s + self.recycle_s(s_prev)
