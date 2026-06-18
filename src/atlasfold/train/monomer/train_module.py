@@ -73,7 +73,6 @@ class TrainingConfig:
     train_trunk: bool = True
     train_diffusion_head: bool = True
     train_confidence_head: bool = True
-    train_pae_head: bool = False
 
     # trunk recycling
     num_recycles: int = 3
@@ -132,7 +131,6 @@ class TrainingModule(pl.LightningModule):
         self.train_trunk: bool = self.training_config.train_trunk
         self.train_diffusion_head: bool = self.training_config.train_diffusion_head
         self.train_confidence_head: bool = self.training_config.train_confidence_head
-        self.train_pae_head: bool = self.training_config.train_pae_head
 
         # Initialize model here
         model_cfg = OmegaConf.to_object(
@@ -183,8 +181,6 @@ class TrainingModule(pl.LightningModule):
             modules_to_freeze.append("diffusion_head")
         if self.train_confidence_head is False:
             modules_to_freeze.append("confidence_head")
-        if self.train_pae_head is False:
-            modules_to_freeze.append("pae_head")
         print(f"Freezing modules: {modules_to_freeze}")
         self.modules_to_freeze: list[str] = modules_to_freeze
 
@@ -340,7 +336,6 @@ class TrainingModule(pl.LightningModule):
                 train_trunk=self.train_trunk,
                 train_diffusion_head=self.train_diffusion_head,
                 train_confidence_head=self.train_confidence_head,
-                train_pae_head=self.train_pae_head,
                 sampling_config=sampling_config,
             )
 
@@ -352,7 +347,6 @@ class TrainingModule(pl.LightningModule):
                 num_recycles=num_recycles,
                 num_samples=val_config.num_diffusion_samples,
                 sampling_config=sampling_config,
-                compute_pae=False,
                 return_representations=False,
             )
 
@@ -603,19 +597,15 @@ class TrainingModule(pl.LightningModule):
         L_resolved = (L_resolved * w).sum() / n_valid_samples
         metrics["resolved_loss"] = L_resolved.detach()
 
-        # NOTE: PAE loss return 0.0 when alpha_pae is 0.
-        if alpha_pae > 0:
-            L_pae = self.pae_loss(
-                logits=pred["pae"]["logits"],
-                bin_centers=pred["pae"]["bin_centers"],
-                x_pred=x_pred,
-                x_gt=x_gt,
-                mask=resolved_mask,
-            )
-            L_pae = (L_pae * w).sum() / n_valid_samples
-            metrics["pae_loss"] = L_pae.detach()
-        else:
-            L_pae = 0.0
+        L_pae = self.pae_loss(
+            logits=pred["pae"]["logits"],
+            bin_centers=pred["pae"]["bin_centers"],
+            x_pred=x_pred,
+            x_gt=x_gt,
+            mask=resolved_mask,
+        )
+        L_pae = (L_pae * w).sum() / n_valid_samples
+        metrics["pae_loss"] = L_pae.detach()
 
         L_confidence = L_plddt + L_resolved + alpha_pae * L_pae
         metrics["loss"] = L_confidence.detach()

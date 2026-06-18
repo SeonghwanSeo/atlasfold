@@ -245,7 +245,6 @@ class AtlasFold(torch.nn.Module):
         batch: dict[str, torch.Tensor],
         mode: str = "full",
         num_samples: int = 3,
-        compute_pae: bool = True,
         return_representations: bool = False,
         # Advanced options
         mlm_prob: float | None = None,
@@ -287,9 +286,6 @@ class AtlasFold(torch.nn.Module):
             The number of recycling steps.
         sampling_config : SamplingConfig
             The configuration for the diffusion sampling process.
-        compute_pae : bool
-            Whether to compute the predicted aligned error (PAE) and
-            predicted TM-score (pTM).
         return_representations : bool
             Whether to return the single and pair representations.
 
@@ -336,9 +332,7 @@ class AtlasFold(torch.nn.Module):
         out["sample_coords"] = sample_coords
 
         # Run confidence head
-        confidence_out = self.confidence_head(
-            batch, s, z, sample_coords, compute_pae, self.use_kernel
-        )
+        confidence_out = self.confidence_head(batch, s, z, sample_coords, self.use_kernel)
         del s, z
 
         # Compute confidence metrics
@@ -347,13 +341,12 @@ class AtlasFold(torch.nn.Module):
             out["plddt"] = confidence_metrics.compute_plddt(
                 **confidence_out["plddt"], mask=mask
             )
-            if compute_pae:
-                out["pae"] = confidence_metrics.compute_pae(
-                    **confidence_out["pae"], mask=mask
-                )
-                out["ptm"] = confidence_metrics.compute_ptm(
-                    **confidence_out["pae"], mask=mask
-                )
+            out["pae"] = confidence_metrics.compute_pae(
+                **confidence_out["pae"], mask=mask
+            )
+            out["ptm"] = confidence_metrics.compute_ptm(
+                **confidence_out["pae"], mask=mask
+            )
         del mask
 
         # Remove batch dimension if the input was not originally batched
@@ -522,11 +515,12 @@ class AtlasFold(torch.nn.Module):
         device = input_ids.device
         s = torch.zeros((B, S, self.lm.d_model), device=device, dtype=torch.float32)
         z = torch.zeros((B, S, S, self.channel_z), device=device, dtype=torch.float32)
-        w = self.w_lm_emb.softmax(dim=0)  # [n_layers+1,]
+        w_emb = self.w_lm_emb.softmax(dim=0)  # [n_layers+1,]
+        w_attn = 1 / self.lm.n_layers
 
         with torch.no_grad():
             x = self.lm.embed(input_ids)
-        s = _add(s, w[0] * self.layernorm_lm_emb(x))
+        s = _add(s, w_emb[0] * self.layernorm_lm_emb(x))
 
         for i, block in enumerate(self.lm.transformer.blocks):
             with torch.no_grad():
@@ -535,8 +529,8 @@ class AtlasFold(torch.nn.Module):
                 attn = attn.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
                 attn = attn.clamp_(-100.0, 100.0)
                 attn = attn.moveaxis(1, -1)  # [B, S, S, n_heads]
-            s = _add(s, w[i + 1] * self.layernorm_lm_emb(x))
-            z = _add(z, self.proj_lm_attn[i](attn))
+            s = _add(s, w_emb[i + 1] * self.layernorm_lm_emb(x))
+            z = _add(z, self.proj_lm_attn[i](w_attn * attn))
 
         # Extract the single and pair representations for the valid sequence positions
         # [B, S, c_s], [B, S, S, c_z] -> [B, L, c_s], [B, L, L, c_z]
@@ -589,7 +583,7 @@ class AtlasFold(torch.nn.Module):
         model = model.to_empty(device=device)
 
         # Load the state dict with the specified strictness
-        model.load_state_dict(state_dict, strict=True, assign=True)
+        model.load_state_dict(state_dict, strict=True)
 
         # Finally, load the LM
         model.lm = load_model(

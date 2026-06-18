@@ -108,12 +108,7 @@ class PredictedAlignedErrorHead(nn.Module):
             LinearNoBias(channel_z, num_bins, init="final"),
         )
 
-    def forward(
-        self,
-        z: torch.Tensor,
-        mask: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
-    ) -> torch.Tensor:
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
         """Forward pass of predicted aligned error head module.
 
         Parameters
@@ -130,9 +125,7 @@ class PredictedAlignedErrorHead(nn.Module):
         logits: torch.Tensor
             The predicted PAE logits, shape [B, L, L, num_bins].
         """
-        _, z = self.stack(None, z, mask, use_cuequiv_kernels=use_cuequiv_kernels)
-        with torch.autocast(z.device.type, enabled=False):
-            return self.head(z.float())  # [B, L, L, num_bins]
+        return self.head(z.float())  # [B, L, L, num_bins]
 
 
 class ConfidenceHead(nn.Module):
@@ -185,11 +178,7 @@ class ConfidenceHead(nn.Module):
 
         self.plddt_head = PredictedLDDTHead(channel_a, num_plddt_bins)
         self.experimentally_resolved_head = ExperimentallyResolvedHead(channel_a)
-
-        # PAE head with pair-to-pair updates
-        self.pae_head = PredictedAlignedErrorHead(
-            channel_z=channel_z, num_bins=num_pae_bins
-        )
+        self.pae_head = PredictedAlignedErrorHead(channel_z, num_pae_bins)
 
         # Store PAE and lDDT binning parameters
         self.num_pae_bins: int = num_pae_bins
@@ -202,7 +191,6 @@ class ConfidenceHead(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         x_pred: torch.Tensor,
-        compute_pae: bool = True,
         use_cuequiv_kernels: bool = False,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of confidence head module.
@@ -217,9 +205,6 @@ class ConfidenceHead(nn.Module):
             The pair representation, shape [B, L, L, c_z].
         x_pred: torch.Tensor
             The predicted coordinates, shape (B, N, L, 14, 3).
-        compute_pae: bool, optional
-            Whether to compute PAE logits, by default True.
-            PAE computation is expensive, so it can be skipped if only plddt is needed.
         use_cuequiv_kernels : bool, optional
             Whether to use cuEQUIV kernels, by default False.
 
@@ -261,7 +246,6 @@ class ConfidenceHead(nn.Module):
             z: torch.Tensor,
             mask: torch.Tensor,
             coords: torch.Tensor,
-            compute_pae: bool = True,
         ) -> dict[str, torch.Tensor]:
             # Prepare pair representation with distogram features
             cbeta_idx = batch["pseudo_beta"]  # [B, L]
@@ -269,7 +253,8 @@ class ConfidenceHead(nn.Module):
             z = z + self.linear_distogram(distogram.to(z.dtype))  # [B, L, L, c_z]
 
             # Run the stack
-            s, _ = self.stack(s, z, mask)
+            s, z = self.stack(s, z, mask, use_cuequiv_kernels=use_cuequiv_kernels)
+            s, z = s.float(), z.float()
 
             # Compute the confidence logits
             logits = {}
@@ -277,10 +262,7 @@ class ConfidenceHead(nn.Module):
                 s = s.float()
                 logits["plddt"] = self.plddt_head(s)
                 logits["experimentally_resolved"] = self.experimentally_resolved_head(s)
-            if compute_pae:
-                logits["pae"] = self.pae_head(
-                    z, mask, use_cuequiv_kernels=use_cuequiv_kernels
-                )
+                logits["pae"] = self.pae_head(z)
             return logits
 
         B, N, L, _, _ = x_pred.shape
@@ -289,21 +271,18 @@ class ConfidenceHead(nn.Module):
         pae_logits = torch.zeros(B, N, L, L, self.num_pae_bins, device=device)
 
         for i in range(N):
-            logits = compute_confidences_single(s, z, mask, x_pred[:, i], compute_pae)
+            logits = compute_confidences_single(s, z, mask, x_pred[:, i])
             plddt_logits[:, i] = logits["plddt"]
             experimentally_resolved_logits[:, i] = logits["experimentally_resolved"]
-            if compute_pae:
-                pae_logits[:, i] = logits["pae"]
+            pae_logits[:, i] = logits["pae"]
 
         out: dict[str, dict[str, torch.Tensor]] = {}
+        out["experimentally_resolved"] = {"logits": experimentally_resolved_logits}
         plddt_bin_centers = get_bin_centers(0.0, 1.0, self.num_plddt_bins, device=device)
         out["plddt"] = {"logits": plddt_logits, "bin_centers": plddt_bin_centers}
-        out["experimentally_resolved"] = {"logits": experimentally_resolved_logits}
-
-        if compute_pae and self.pae_head is not None:
-            pae_bin_centers = get_bin_centers(
-                0.0, self.max_pae_error, self.num_pae_bins, device=device
-            )
-            out["pae"] = {"logits": pae_logits, "bin_centers": pae_bin_centers}
+        pae_bin_centers = get_bin_centers(
+            0.0, self.max_pae_error, self.num_pae_bins, device=device
+        )
+        out["pae"] = {"logits": pae_logits, "bin_centers": pae_bin_centers}
 
         return out

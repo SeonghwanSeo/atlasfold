@@ -16,7 +16,6 @@ class AtlasFoldForTrain(AtlasFold):
         self.__forward_trunk = torch.compile(self.__forward_trunk, **kwargs)
         self.__forward_distogram = torch.compile(self.__forward_distogram, **kwargs)
         self.__forward_diffusion = torch.compile(self.__forward_diffusion, **kwargs)
-        self.__forward_mini_rollout = torch.compile(self.__forward_mini_rollout, **kwargs)
         self.__forward_confidence = torch.compile(self.__forward_confidence, **kwargs)
 
     def get_module_groups(self) -> dict[str, list[torch.nn.Module | torch.nn.Parameter]]:
@@ -53,7 +52,6 @@ class AtlasFoldForTrain(AtlasFold):
         train_trunk: bool,
         train_diffusion_head: bool,
         train_confidence_head: bool,
-        train_pae_head: bool,
         sampling_config: SamplingConfig,
     ) -> dict[str, Any]:
         bs = batch["aatype"].shape[0]
@@ -103,6 +101,7 @@ class AtlasFoldForTrain(AtlasFold):
 
         # Return confidence head outputs
         if train_confidence_head:
+            s, z = s.detach(), z.detach()
             # Sample the structure for confidence head training.
             sample_coords = self.__forward_mini_rollout(batch, s, z, sampling_config)
 
@@ -112,9 +111,7 @@ class AtlasFoldForTrain(AtlasFold):
             _s = s  # No augmentation for confidence head training.
             _z = use_cond.view(bs, 1, 1, 1) * z
 
-            confidence_out = self.__forward_confidence(
-                batch, _s, _z, sample_coords, compute_pae=train_pae_head
-            )
+            confidence_out = self.__forward_confidence(batch, _s, _z, sample_coords)
             confidence_out["mini_rollout"] = {"sample_coords": sample_coords}
 
             # Remove the sample dimension
@@ -261,8 +258,5 @@ class AtlasFoldForTrain(AtlasFold):
         s: torch.Tensor,
         z: torch.Tensor,
         sample_coords: torch.Tensor,
-        compute_pae: bool,
     ) -> dict[str, dict[str, torch.Tensor]]:
-        return self.confidence_head(
-            batch, s, z, sample_coords, compute_pae, self.use_kernel
-        )
+        return self.confidence_head(batch, s, z, sample_coords, self.use_kernel)

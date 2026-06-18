@@ -23,5 +23,4 @@ train:
     train_trunk: true
     train_diffusion_head: true
     train_confidence_head: true
-    train_pae_head: false
     diffusion_batch_size: 24
