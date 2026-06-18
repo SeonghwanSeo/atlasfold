@@ -124,7 +124,6 @@ class AtlasFold(torch.nn.Module):
 
         # === LM Stack === #
         self.w_lm_emb = torch.nn.Parameter(torch.zeros(self.lm.n_layers + 1))
-        self.w_lm_attn = torch.nn.Parameter(torch.zeros(self.lm.n_layers))
         self.layernorm_lm_emb = LayerNorm(self.lm.d_model, precision=torch.float32)
         self.lm_emb_to_s = torch.nn.Sequential(
             LinearNoBias(self.lm.d_model, self.channel_s, init="relu"),
@@ -517,7 +516,7 @@ class AtlasFold(torch.nn.Module):
         s = torch.zeros((B, S, self.lm.d_model), device=device, dtype=torch.float32)
         z = torch.zeros((B, S, S, self.channel_z), device=device, dtype=torch.float32)
         w_emb = self.w_lm_emb.softmax(dim=0)  # [n_layers+1,]
-        w_attn = self.w_lm_attn.softmax(dim=0)  # [n_layers,]
+        w_attn = 1 / self.lm.n_layers
 
         with torch.no_grad():
             x = self.lm.embed(input_ids)
@@ -531,7 +530,7 @@ class AtlasFold(torch.nn.Module):
                 attn = attn.clamp_(-100.0, 100.0)
                 attn = attn.moveaxis(1, -1)  # [B, S, S, n_heads]
             s = _add(s, w_emb[i + 1] * self.layernorm_lm_emb(x))
-            z = _add(z, self.proj_lm_attn[i](w_attn[i] * attn))
+            z = _add(z, self.proj_lm_attn[i](w_attn * attn))
 
         # Extract the single and pair representations for the valid sequence positions
         # [B, S, c_s], [B, S, S, c_z] -> [B, L, c_s], [B, L, L, c_z]
