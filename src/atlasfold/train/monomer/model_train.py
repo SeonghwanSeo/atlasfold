@@ -23,16 +23,16 @@ class AtlasFoldForTrain(AtlasFold):
         return {
             "lm": [self.lm],
             "trunk": [
+                self.s_init,
+                self.z_init,
                 self.w_lm_emb,
                 self.layernorm_lm_emb,
-                self.s_init,
-                self.embed_aa,
+                self.lm_emb_to_s,
                 self.proj_lm_attn,
-                self.z_init,
-                self.linear_rel_pos,
+                self.lm_attn_to_z,
+                self.lm_stack,
                 self.recycle_s,
                 self.recycle_z,
-                self.lm_stack,
                 self.main_stack,
             ],
             "distogram_head": [self.distogram_head],
@@ -140,15 +140,20 @@ class AtlasFoldForTrain(AtlasFold):
         mask: torch.Tensor,
         train: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        # For each recycle step, sample a MLM mask to extract new LM features.
-        mlm_mask = self.sample_mlm_mask(batch, 0.15, synchronized=False)
-        # Extract LM features
-        s, z = self.run_lm_embedder(batch, mlm_mask, train)
-        # Run LM module
-        s, z = self.lm_stack(s, z, mask, self.use_kernel)
-        # Recycling
+
+        s = self.s_init(batch["aatype"])
+        z = self.z_init(batch["seq_rel_pos"])
+
+        # Recycling embedding
         s = s + self.recycle_s(s_prev)
         z = z + self.recycle_z(z_prev)
+
+        # Run LM module with stochastic masking
+        mlm_mask = self.sample_mlm_mask(batch, 0.15)
+        s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, train)
+        s = s + s_lm
+        z = z + z_lm
+
         # Run main trunk
         s, z = self.main_stack(s, z, mask, self.use_kernel)
         return s, z

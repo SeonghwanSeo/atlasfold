@@ -8,12 +8,12 @@ from atlasfold.data.fasta import read_fasta
 from atlasfold.model import AtlasFold, AtlasFoldConfig, SamplingConfig
 from atlasfold.runner import FoldingRunner
 
-CKPT = "/mnt/parallel_storage/wykim_lab/icl_shwan/train_results/stage1/stage1/AtlasFold/fuj7x3dw/checkpoints/epoch0031_step00032000_lddt0.8199.ckpt"
+CKPT = "/mnt/parallel_storage/wykim_lab/icl_shwan/train_results/v2/stage1/AtlasFold/6nq4w5pn/checkpoints/epoch0031_step00032000_lddt0.8203.ckpt"
 CKPT_NAME = "32k"
 PRESET = "full"
 NUM_RECYCLES = 3
-NUM_STEPS = 200
-SIGMA_MAX = 128
+NUM_STEPS = 64
+SIGMA_MAX = 80
 
 ROOT_DIR = Path("./outputs/casp14/")
 EXP_NAME = f"{CKPT_NAME}_{PRESET}_steps{NUM_STEPS}_sigma{SIGMA_MAX}"

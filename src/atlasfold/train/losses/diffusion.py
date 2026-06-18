@@ -40,7 +40,8 @@ class MSELoss(torch.nn.Module):
         mask = mask.unsqueeze(1)  # [B, 1, L, 14]
 
         # Align predicted coordinates to ground truth coordinates using Kabsch algorithm.
-        x_gt = rigid_align_atom14_torch(x_gt, x_pred, mask, align_mode="backbone")
+        with torch.no_grad():
+            x_gt = rigid_align_atom14_torch(x_gt, x_pred, mask, align_mode="backbone")
 
         # Compute mse loss
         w = mask.float()

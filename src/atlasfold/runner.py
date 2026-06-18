@@ -83,7 +83,7 @@ class FoldingRunner:
             sampling_config = preset_cfg["sampling_config"]
 
         # Pad the features to the next multiple of 32
-        feat = self.pad(feat, 32)
+        feat = self.pad(feat, 16)
 
         # Model inference
         out = self.model_run(

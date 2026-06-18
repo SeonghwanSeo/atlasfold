@@ -91,7 +91,7 @@ class Attention(nn.Module):
         else:
             # Use Scaled Dot-Product Attention (SDPA)
             # Compute bias
-            attn_bias = (~mask.bool()).to(q.dtype) * (-self.inf)
+            attn_bias = (~mask).to(q.dtype) * (-self.inf)
             attn_bias = attn_bias.unsqueeze(-3)  # [*, 1, Lq, Lk]
             if pair_bias is not None:
                 attn_bias = attn_bias + pair_bias.to(q.dtype)  # [*, H, Lq, Lk]

@@ -72,7 +72,7 @@ class SingleConditioning(nn.Module):
         super().__init__()
         self.proj_single_cond = nn.Sequential(
             LayerNorm(channel_s + 21, create_offset=False, precision=32),
-            LinearNoBias(channel_s, channel_cond, init="default", precision=32),
+            LinearNoBias(channel_s + 21, channel_cond, init="default", precision=32),
         )
 
         self.fourier_embed = FourierEmbedding(dim_fourier)

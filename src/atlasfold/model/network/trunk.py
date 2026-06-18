@@ -3,6 +3,7 @@ from functools import partial
 import torch
 
 from atlasfold.model.network.block import PairBlock
+from atlasfold.model.network.primitives import LayerNorm
 from atlasfold.utils.checkpointing import checkpoint_blocks
 
 
@@ -99,6 +100,7 @@ class LMStack(torch.nn.Module):
         dropout_s: float = 0.15,
         dropout_z: float = 0.25,
         num_blocks: int = 4,
+        final_layernorm: bool = True,
         blocks_per_ckpt: int | None = None,
     ) -> None:
         super().__init__()
@@ -120,6 +122,12 @@ class LMStack(torch.nn.Module):
             ]
         )
         self.blocks_per_ckpt: int | None = blocks_per_ckpt
+        if final_layernorm:
+            self.layernorm_s = LayerNorm(channel_s)
+            self.layernorm_z = LayerNorm(channel_z)
+        else:
+            self.layernorm_s = torch.nn.Identity()
+            self.layernorm_z = torch.nn.Identity()
 
     def forward(
         self,
@@ -167,4 +175,5 @@ class LMStack(torch.nn.Module):
                 (s, z),
                 self.blocks_per_ckpt,
             )
+        s, z = self.layernorm_s(s), self.layernorm_z(z)
         return s, z

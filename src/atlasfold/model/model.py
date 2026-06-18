@@ -117,15 +117,19 @@ class AtlasFold(torch.nn.Module):
         self.alphabet: Alphabet = self.lm.alphabet
 
         # === Representation initialization === #
+        self.s_init = LinearNoBias(21, self.channel_s)
+        self.z_init = LinearNoBias(
+            self.seq_rel_pos_encoding.dim, self.channel_z, init="default"
+        )
+
+        # === LM Stack === #
         self.w_lm_emb = torch.nn.Parameter(torch.zeros(self.lm.n_layers + 1))
         self.layernorm_lm_emb = LayerNorm(self.lm.d_model, precision=torch.float32)
-        self.s_init = torch.nn.Sequential(
+        self.lm_emb_to_s = torch.nn.Sequential(
             LinearNoBias(self.lm.d_model, self.channel_s, init="relu"),
             torch.nn.ReLU(),
             LinearNoBias(self.channel_s, self.channel_s, init="default"),
-            LayerNorm(self.channel_s),
         )
-        self.embed_aa = LinearNoBias(21, self.channel_s)
 
         self.proj_lm_attn = torch.nn.ModuleList(
             [
@@ -133,15 +137,22 @@ class AtlasFold(torch.nn.Module):
                 for _ in range(self.lm.n_layers)
             ]
         )
-        self.z_init = torch.nn.Sequential(
+        self.lm_attn_to_z = torch.nn.Sequential(
             LayerNorm(self.channel_z),
             LinearNoBias(self.channel_z, self.channel_z, init="relu"),
             torch.nn.ReLU(),
             LinearNoBias(self.channel_z, self.channel_z, init="default"),
-            LayerNorm(self.channel_s),
         )
-        self.linear_rel_pos = LinearNoBias(
-            self.seq_rel_pos_encoding.dim, self.channel_z, init="default"
+
+        self.lm_stack = trunk.LMStack(
+            channel_s=self.channel_s,
+            channel_z=self.channel_z,
+            num_heads=cfg.trunk.num_heads,
+            dropout_s=cfg.trunk.dropout_s,
+            dropout_z=cfg.trunk.dropout_z,
+            num_blocks=cfg.trunk.num_lm_blocks,
+            final_layernorm=True,
+            blocks_per_ckpt=cfg.trunk.blocks_per_ckpt,
         )
 
         # === Trunk body === #
@@ -152,15 +163,6 @@ class AtlasFold(torch.nn.Module):
         self.recycle_z = torch.nn.Sequential(
             LayerNorm(self.channel_z),
             LinearNoBias(self.channel_z, self.channel_z, init="final"),
-        )
-        self.lm_stack = trunk.LMStack(
-            channel_s=self.channel_s,
-            channel_z=self.channel_z,
-            num_heads=cfg.trunk.num_heads,
-            dropout_s=cfg.trunk.dropout_s,
-            dropout_z=cfg.trunk.dropout_z,
-            num_blocks=cfg.trunk.num_lm_blocks,
-            blocks_per_ckpt=cfg.trunk.blocks_per_ckpt,
         )
         self.main_stack = trunk.TriangularUpdateStack(
             channel_s=self.channel_s,
@@ -396,24 +398,30 @@ class AtlasFold(torch.nn.Module):
         # Sample a single MLM mask for all recycling steps
         mlm_prob = mlm_prob if mlm_prob is not None else 0.0
 
-        # Extract LM features
+        # Run LM module
         mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
         s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, train)
-        # Run LM module
-        mask = batch["seq_mask"]
-        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
 
         # Recycling iteration with shared LM features
         s_prev = torch.zeros_like(s_lm)  # [B, L, c_s]
         z_prev = torch.zeros_like(z_lm)  # [B, L, L, c_z]
+        mask = batch["seq_mask"]
         for i in range(0, num_recycles + 1):
             enable_grad = train and i == num_recycles
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
+                s = self.s_init(batch["aatype"])
+                z = self.z_init(batch["seq_rel_pos"])
+
                 # Recycling embedding
-                s = s_lm + self.recycle_s(s_prev)
-                z = z_lm + self.recycle_z(z_prev)
+                s += self.recycle_s(s_prev)
+                z += self.recycle_z(z_prev)
+
+                # Add LM features
+                s += s_lm
+                z += z_lm
+
                 # Run main trunk
                 s, z = self.main_stack(s, z, mask, self.use_kernel)
                 s_prev, z_prev = s, z
@@ -440,19 +448,26 @@ class AtlasFold(torch.nn.Module):
         # Recycling iteration with stochastic LM features
         s_prev = torch.zeros(B, L, self.channel_s, device=device, dtype=dtype)
         z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
+
         for i in range(0, num_recycles + 1):
             enable_grad = train and i == num_recycles
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
-                # Extract LM features with different MLM masks for each recycle step
-                mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
-                s, z = self.run_lm_embedder(batch, mlm_mask, enable_grad)
-                # Run LM module
-                s, z = self.lm_stack(s, z, mask, self.use_kernel)
+
+                s = self.s_init(batch["aatype"])
+                z = self.z_init(batch["seq_rel_pos"])
+
                 # Recycling embedding
                 s += self.recycle_s(s_prev)
                 z += self.recycle_z(z_prev)
+
+                # Run LM module with stochastic masking
+                mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
+                s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, enable_grad)
+                s += s_lm
+                z += z_lm
+
                 # Run main trunk
                 s, z = self.main_stack(s, z, mask, self.use_kernel)
                 s_prev, z_prev = s, z
@@ -532,18 +547,14 @@ class AtlasFold(torch.nn.Module):
         s = s[b_i_s, row_s]  # [B, L, c_s]
         z = z[b_i_z, row_z, col_z]  # [B, L, L, c_z]
 
-        # === Initialize representations === #
-        # Initialize single representation with amino acid embedding
-        s = self.s_init(s)
-        s = _add(s, self.embed_aa(batch["aatype"]))  # [B, L, c_s]
+        s = self.lm_emb_to_s(s)
+        z = self.lm_attn_to_z(z)
 
-        # Initialize pair representation with relative positional encoding
-        z = self.z_init(z)
-        z = _add(z, self.linear_rel_pos(batch["seq_rel_pos"]))  # [B, L, L, c_z]
-
-        # Mask the padded positions in the single and pair representations
+        # Run LM stack
         mask = batch["seq_mask"]  # [B, L]
-        pair_mask = mask[:, :, None] & mask[:, None, :]  # [B, L, L]
+        s, z = self.lm_stack(s, z, mask, self.use_kernel)
+
+        pair_mask = mask[:, None, :] & mask[:, :, None]
         s = s * mask[:, :, None]
         z = z * pair_mask[:, :, :, None]
         return s, z
