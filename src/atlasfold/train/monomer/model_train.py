@@ -25,6 +25,7 @@ class AtlasFoldForTrain(AtlasFold):
                 self.s_init,
                 self.z_init,
                 self.w_lm_emb,
+                self.w_lm_attn,
                 self.layernorm_lm_emb,
                 self.lm_emb_to_s,
                 self.proj_lm_attn,
