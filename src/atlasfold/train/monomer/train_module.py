@@ -677,6 +677,21 @@ class TrainingModule(pl.LightningModule):
         checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        if False:
+            # HACK: reduce the scale
+            print("HACK: remove pair to single")
+            model_state_dict = checkpoint["state_dict"]
+            ema_state_dict = checkpoint["ema"]["params"]
+            for state_dict in [model_state_dict, ema_state_dict]:
+                for k in state_dict.keys():
+                    if "main_stack" in k:
+                        if "transition_s" in k:
+                            state_dict.pop(k)
+                        elif "pair_to_single_bias" in k:
+                            state_dict.pop(k)
+                        elif ".attention." in k:
+                            state_dict.pop(k)
+
         self.load_ema_state_dict(checkpoint["ema"], strict=False)
 
     def load_state_dict(
@@ -691,31 +706,7 @@ class TrainingModule(pl.LightningModule):
             provided_keys = set(state_dict.keys())
             missing_keys = model_keys - provided_keys
             unexpected_keys = provided_keys - model_keys
-
             actual_missing_keys = [k for k in missing_keys if not k.startswith("lm.")]
-            # HACK: exclude confidence head
-            if any(k.startswith("confidence_head.") for k in actual_missing_keys):
-                confidence_head_keys = [
-                    k for k in actual_missing_keys if k.startswith("confidence_head.")
-                ]
-                print(
-                    f"WARNING: Missing keys in confidence head: {confidence_head_keys}. "
-                    "This may be due to the confidence head not being trained yet."
-                )
-            if any(k.startswith("confidence_head.") for k in unexpected_keys):
-                confidence_head_keys = [
-                    k for k in unexpected_keys if k.startswith("confidence_head.")
-                ]
-                print(
-                    f"WARNING: Unexpected keys in confidence head: {confidence_head_keys}. "
-                    "This may be due to the confidence head not being trained yet."
-                )
-            actual_missing_keys = [
-                k for k in actual_missing_keys if not k.startswith("confidence_head.")
-            ]
-            unexpected_keys = [
-                k for k in unexpected_keys if not k.startswith("confidence_head.")
-            ]
 
             if actual_missing_keys or unexpected_keys:
                 error_msg = []

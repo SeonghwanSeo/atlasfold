@@ -576,7 +576,7 @@ class AtlasFold(torch.nn.Module):
         model = model.to_empty(device=device)
 
         # Load the state dict with the specified strictness
-        model.load_state_dict(state_dict, strict=False)
+        model.load_state_dict(state_dict, strict=True)
 
         # Finally, load the LM
         model.lm = load_model(
