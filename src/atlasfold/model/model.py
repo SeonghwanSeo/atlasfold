@@ -123,6 +123,7 @@ class AtlasFold(torch.nn.Module):
             LinearNoBias(self.lm.d_model, self.channel_s, init="relu"),
             torch.nn.ReLU(),
             LinearNoBias(self.channel_s, self.channel_s, init="default"),
+            LayerNorm(self.channel_s),
         )
         self.embed_aa = LinearNoBias(21, self.channel_s)
 
@@ -137,6 +138,7 @@ class AtlasFold(torch.nn.Module):
             LinearNoBias(self.channel_z, self.channel_z, init="relu"),
             torch.nn.ReLU(),
             LinearNoBias(self.channel_z, self.channel_z, init="default"),
+            LayerNorm(self.channel_s),
         )
         self.linear_rel_pos = LinearNoBias(
             self.seq_rel_pos_encoding.dim, self.channel_z, init="default"
@@ -379,12 +381,8 @@ class AtlasFold(torch.nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the trunk."""
         if mode == "fast":
-            if num_recycles < 0:
-                raise ValueError("num_recycles must be non-negative for base mode.")
             return self.run_trunk_fast(batch, num_recycles, mlm_prob, train)
         else:  # mode == "full"
-            if num_recycles <= 0:
-                raise ValueError("num_recycles must be positive for full mode.")
             return self.run_trunk_full(batch, num_recycles, mlm_prob, train)
 
     def run_trunk_fast(

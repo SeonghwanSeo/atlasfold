@@ -71,10 +71,9 @@ class SingleConditioning(nn.Module):
     ):
         super().__init__()
         self.proj_single_cond = nn.Sequential(
-            LayerNorm(channel_s, create_offset=False, precision=32),
+            LayerNorm(channel_s + 21, create_offset=False, precision=32),
             LinearNoBias(channel_s, channel_cond, init="default", precision=32),
         )
-        self.embedding_aa = LinearNoBias(21, channel_cond)
 
         self.fourier_embed = FourierEmbedding(dim_fourier)
         self.layernorm_fourier = LayerNorm(dim_fourier, create_offset=False)
@@ -103,10 +102,7 @@ class SingleConditioning(nn.Module):
         cond : torch.Tensor
             Tensor of shape (B, N, L, c_s) containing conditioned single embeddings.
         """
-        s = self.proj_single_cond(s)  # [B, L, c_s]
-
-        # Embed residue type
-        s = s + self.embedding_aa(batch["aatype"])  # [B, L, c_s]
+        s = self.proj_single_cond(torch.cat([s, batch["aatype"]], dim=-1))
 
         # Embed fourier embedding of noise level
         fourier_embed = self.fourier_embed(c_noise)  # [B, N, d_fourier]

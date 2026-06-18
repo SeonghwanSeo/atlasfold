@@ -273,6 +273,7 @@ class PairBlock(torch.nn.Module):
                     ),
                 )
             z = _add(z, self.transition_z(z))
+            z = z * pair_mask[..., None]
 
         # Step 3: pair to single
         if self.pair_to_single:
@@ -286,5 +287,6 @@ class PairBlock(torch.nn.Module):
                 ),
             )
             s = _add(s, self.transition_s(s))
+            s = s * mask[..., None]
 
         return s, z
