@@ -107,7 +107,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         batch_size = x_pred.shape[0]
         losses = []
         for b_i in range(batch_size):
-            losses.extend(
+            losses.append(
                 self._forward_single(
                     x_pred[b_i],  # [N, L, 14, 3]
                     x_gt[b_i],  # [L, 14, 3]
@@ -122,7 +122,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         x_pred: torch.Tensor,
         x_gt: torch.Tensor,
         mask: torch.Tensor,
-    ) -> list[torch.Tensor]:
+    ) -> torch.Tensor:
         N, L, _, _ = x_pred.shape
 
         # Create pair mask
@@ -153,10 +153,10 @@ class SmoothLDDTLoss(torch.nn.Module):
             use_kernel=self.use_kernel,
         )
 
-        losses = []
         if self.chunk_size is None:
-            losses.append(loss_fn(x_pred))  # [N,]
+            loss = loss_fn(x_pred)  # [N,]
         else:
+            losses = []
             for i in range(0, N, self.chunk_size):
                 st, end = i, i + self.chunk_size
                 x_chunk = x_pred[st:end]  # [chunk_size, L, 14, 3]
@@ -167,7 +167,8 @@ class SmoothLDDTLoss(torch.nn.Module):
                     determinism_check="none",  # No randomness in loss function
                 )
                 losses.append(loss_chunk)
-        return losses
+            loss = torch.cat(losses, dim=0)  # [N,]
+        return loss
 
     @staticmethod
     def _chunk_forward(
