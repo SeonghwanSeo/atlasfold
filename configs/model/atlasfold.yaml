@@ -26,7 +26,7 @@ distogram_head:
   max_dist: 22.0
 confidence_head:
   channel_a: 384
-  num_heads: 12
+  num_heads: 16
   dropout_z: 0.25
   num_blocks: 4
   num_bins: 39

@@ -51,7 +51,7 @@ class DistogramHeadConfig:
 @dataclasses.dataclass(kw_only=True)
 class ConfidenceHeadConfig:
     channel_a: int = 384
-    num_heads: int = 12
+    num_heads: int = 16
     dropout_z: float = 0.25
     num_blocks: int = 4
     num_bins: int = 39
@@ -70,7 +70,7 @@ class AtlasFoldConfig:
     lm_path: str | None = None
 
     channel_s: int = 384
-    channel_s_lm: int = 1152
+    channel_s_lm: int = 768
     channel_z: int = 192
     trunk: TrunkConfig = dataclasses.field(default_factory=TrunkConfig)
     distogram_head: DistogramHeadConfig = dataclasses.field(
@@ -379,12 +379,12 @@ class AtlasFold(torch.nn.Module):
         train: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the trunk."""
-        if mode == "fast":
-            return self.run_trunk_fast(batch, num_recycles, mlm_prob, train)
+        if mode == "stochastic":
+            return self.run_trunk_stochastic(batch, num_recycles, mlm_prob, train)
         else:  # mode == "full"
-            return self.run_trunk_full(batch, num_recycles, mlm_prob, train)
+            return self.run_trunk_ensemble(batch, num_recycles, mlm_prob, train)
 
-    def run_trunk_fast(
+    def run_trunk_stochastic(
         self,
         batch: dict[str, torch.Tensor],
         num_recycles: int,
@@ -392,17 +392,20 @@ class AtlasFold(torch.nn.Module):
         train: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the trunk with shared LM features."""
-        # Sample a single MLM mask for all recycling steps
-        mlm_prob = mlm_prob if mlm_prob is not None else 0.0
+        mask = batch["seq_mask"]
+        B, L = mask.shape
+        device = mask.device
+        dtype = torch_utils.get_context_dtype(device.type)
 
-        # Run LM module
+        # Recycling iteration with stochastic LM features
+        s_prev = torch.zeros(B, L, self.channel_s, device=device, dtype=dtype)
+        z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
+
+        # Run LM module with shared masking
+        mlm_prob = mlm_prob if mlm_prob is not None else 0.15
         mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
         s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, train)
 
-        # Recycling iteration with shared LM features
-        s_prev = torch.zeros_like(s_lm)  # [B, L, c_s]
-        z_prev = torch.zeros_like(z_lm)  # [B, L, L, c_z]
-        mask = batch["seq_mask"]
         for i in range(0, num_recycles + 1):
             enable_grad = train and i == num_recycles
             with torch.set_grad_enabled(enable_grad):
@@ -426,7 +429,7 @@ class AtlasFold(torch.nn.Module):
                 s_prev, z_prev = s, z
         return s, z
 
-    def run_trunk_full(
+    def run_trunk_ensemble(
         self,
         batch: dict[str, torch.Tensor],
         num_recycles: int,

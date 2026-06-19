@@ -3,11 +3,12 @@ from atlasfold.model import model
 monomer_config = model.AtlasFoldConfig(
     name="atlasfold-3b-base",
     lm_name="SeonghwanSeo/atlaslm-3b-base",
-    channel_s=768,
+    channel_s=384,
+    channel_s_lm=768,
     channel_z=192,
     trunk=model.TrunkConfig(
         dropout_z=0.25,
-        num_heads=12,
+        num_heads=16,
         num_blocks=48,
         num_pair_to_single_blocks=4,
         num_lm_blocks=4,
@@ -28,7 +29,7 @@ monomer_config = model.AtlasFoldConfig(
     ),
     confidence_head=model.ConfidenceHeadConfig(
         channel_a=384,
-        num_heads=12,
+        num_heads=16,
         dropout_z=0.25,
         num_blocks=4,
         num_bins=39,
