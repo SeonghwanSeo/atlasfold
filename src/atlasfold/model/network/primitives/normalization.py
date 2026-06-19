@@ -26,7 +26,7 @@ class LayerNorm(nn.Module):
         else:
             self.bias = None
 
-    def forward(self, x) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         d = x.dtype
         x = x.float()
         weight = self.weight.float() if self.weight is not None else None

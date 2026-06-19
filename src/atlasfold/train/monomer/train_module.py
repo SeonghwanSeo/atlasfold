@@ -48,11 +48,10 @@ class OptimizerConfig:
     """Optimizer configuration."""
 
     # optimizer
-    opt: str = "adamw"
+    opt: str = "adam"
     beta_1: float = 0.9
     beta_2: float = 0.95
     eps: float = 1e-8
-    weight_decay: float = 1e-4
     # lr scheduler
     lr_scheduler: str = "alphafold"
     max_lr: float = 1.8e-3
@@ -241,53 +240,6 @@ class TrainingModule(pl.LightningModule):
             parameters = [p for p in self.parameters() if p.requires_grad]
             optimizer = torch.optim.Adam(
                 parameters,
-                betas=(config.beta_1, config.beta_2),
-                eps=config.eps,
-                lr=config.max_lr,
-            )
-        elif config.opt.lower() == "adamw":
-            # AdamW optimizer with weight decay.
-            decay = set()
-            no_decay = set()
-
-            for pn, p in self.named_parameters():
-                if not p.requires_grad:
-                    continue
-                assert not pn.startswith("model.lm."), (
-                    "Language model parameters should not be optimized."
-                )
-                if pn.startswith(
-                    (
-                        "model.distogram_head.",
-                        "model.diffusion_head.",
-                        "model.confidence_head.",
-                    )
-                ):
-                    # No weight decay for head parameters
-                    no_decay.add(pn)
-                elif p.ndim == 1:
-                    # No weight decay for LayerNorm and bias parameters
-                    no_decay.add(pn)
-                else:
-                    decay.add(pn)
-
-            # Create a dictionary of all parameters
-            param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
-
-            # Group parameters for the optimizer
-            optim_groups = [
-                {
-                    "params": [param_dict[pn] for pn in sorted(list(decay))],
-                    "weight_decay": config.weight_decay,
-                },
-                {
-                    "params": [param_dict[pn] for pn in sorted(list(no_decay))],
-                    "weight_decay": 0.0,
-                },
-            ]
-
-            optimizer = torch.optim.AdamW(
-                optim_groups,
                 betas=(config.beta_1, config.beta_2),
                 eps=config.eps,
                 lr=config.max_lr,
@@ -677,21 +629,6 @@ class TrainingModule(pl.LightningModule):
         checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
-        if False:
-            # HACK: reduce the scale
-            print("HACK: remove pair to single")
-            model_state_dict = checkpoint["state_dict"]
-            ema_state_dict = checkpoint["ema"]["params"]
-            for state_dict in [model_state_dict, ema_state_dict]:
-                for k in state_dict.keys():
-                    if "main_stack" in k:
-                        if "transition_s" in k:
-                            state_dict.pop(k)
-                        elif "pair_to_single_bias" in k:
-                            state_dict.pop(k)
-                        elif ".attention." in k:
-                            state_dict.pop(k)
-
         self.load_ema_state_dict(checkpoint["ema"], strict=False)
 
     def load_state_dict(

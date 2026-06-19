@@ -70,11 +70,10 @@ validation:
   num_diffusion_samples: 3
 
 optimizer:
-  opt: "adamw"
+  opt: "adam"
   beta_1: 0.9
   beta_2: 0.95
   eps: 1e-8
-  weight_decay: 1e-4
   lr_scheduler: alphafold
   max_lr: 0.0018
   warmup_steps: 1000

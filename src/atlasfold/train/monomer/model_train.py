@@ -22,16 +22,23 @@ class AtlasFoldForTrain(AtlasFold):
         return {
             "lm": [self.lm],
             "trunk": [
+                # Initialization
                 self.s_init,
                 self.z_init,
-                self.w_lm_emb,
-                self.layernorm_lm_emb,
-                self.lm_emb_to_s,
-                self.proj_lm_attn,
-                self.lm_attn_to_z,
-                self.lm_stack,
+                self.z_rel_pos,
+                # Recycling
                 self.recycle_s,
                 self.recycle_z,
+                # LM stack
+                self.lm_layer_weights,
+                self.layernorm_lm_emb,
+                self.lm_emb_to_s_lm,
+                self.proj_lm_attn,
+                self.lm_attn_to_z_lm,
+                self.lm_stack,
+                self.proj_s_lm,
+                self.proj_z_lm,
+                # Main stack
                 self.main_stack,
             ],
             "distogram_head": [self.distogram_head],
@@ -138,8 +145,13 @@ class AtlasFoldForTrain(AtlasFold):
         train: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
 
-        s = self.s_init(batch["aatype"]).float()
-        z = self.z_init(batch["seq_rel_pos"]).float()
+        s = self.s_init(batch["aatype"])
+        a, b = self.z_init(batch["aatype"]).chunk(2, dim=-1)
+        z = a[..., :, None, :] + b[..., None, :, :]
+        z += self.z_rel_pos(batch["seq_rel_pos"])
+
+        # For training stability.
+        s, z = s.float(), z.float()
 
         # Recycling embedding
         s = s + self.recycle_s(s_prev)
@@ -148,8 +160,8 @@ class AtlasFoldForTrain(AtlasFold):
         # Run LM module with stochastic masking
         mlm_mask = self.sample_mlm_mask(batch, 0.15)
         s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, train)
-        s = s + s_lm
-        z = z + z_lm
+        s = s + self.proj_s_lm(s_lm)
+        z = z + self.proj_z_lm(z_lm)
 
         # Run main trunk
         s, z = self.main_stack(s, z, mask, self.use_kernel)
