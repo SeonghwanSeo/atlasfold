@@ -122,7 +122,7 @@ class AtlasFold(torch.nn.Module):
 
         # === LM Stack === #
         self.w_lm_emb = torch.nn.Parameter(torch.zeros(self.lm.n_layers + 1))
-        self.layernorm_lm_emb = LayerNorm(self.lm.d_model, precision=torch.float32)
+        self.layernorm_lm_emb = LayerNorm(self.lm.d_model)
         self.lm_emb_to_s = torch.nn.Sequential(
             LinearNoBias(self.lm.d_model, self.channel_s, init="relu"),
             torch.nn.ReLU(),

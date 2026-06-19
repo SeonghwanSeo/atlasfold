@@ -13,7 +13,6 @@ class LayerNorm(nn.Module):
         create_scale: bool = True,
         create_offset: bool = True,
         eps=1e-5,
-        precision: str | int | torch.dtype | None = None,
     ):
         super().__init__()
         self.normalized_shape: int = normalized_shape
@@ -27,48 +26,19 @@ class LayerNorm(nn.Module):
         else:
             self.bias = None
 
-        if isinstance(precision, str):
-            assert precision in {"bfloat16", "float32"}, (
-                f"Unsupported precision string: {precision}. "
-                "Supported values are 'bfloat16', and 'float32'."
-            )
-            precision = getattr(torch, precision)
-        elif isinstance(precision, int):
-            if precision == 32:
-                precision = torch.float32
-            else:
-                raise ValueError(
-                    f"Unsupported precision integer: {precision}. Supported values is 32."
-                )
-
-        self.precision: torch.dtype | None = precision
-
     def forward(self, x) -> torch.Tensor:
         d = x.dtype
-        if self.precision is not None:
-            d = self.precision
-
-        if d is torch.bfloat16:
-            with torch.autocast(x.device.type, enabled=False):
-                x = x.to(d)
-                weight = self.weight.to(d) if self.weight is not None else None
-                bias = self.bias.to(d) if self.bias is not None else None
-                out = nn.functional.layer_norm(
-                    input=x,
-                    normalized_shape=(self.normalized_shape,),
-                    weight=weight,
-                    bias=bias,
-                    eps=self.eps,
-                )
-        else:
-            out = nn.functional.layer_norm(
-                input=x,
-                normalized_shape=(self.normalized_shape,),
-                weight=self.weight,
-                bias=self.bias,
-                eps=self.eps,
-            )
-        return out
+        x = x.float()
+        weight = self.weight.float() if self.weight is not None else None
+        bias = self.bias.float() if self.bias is not None else None
+        out = nn.functional.layer_norm(
+            input=x,
+            normalized_shape=(self.normalized_shape,),
+            weight=weight,
+            bias=bias,
+            eps=self.eps,
+        )
+        return out.to(d)
 
 
 class AdaLN(nn.Module):

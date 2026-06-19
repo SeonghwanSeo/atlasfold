@@ -71,7 +71,7 @@ class SingleConditioning(nn.Module):
     ):
         super().__init__()
         self.proj_single_cond = nn.Sequential(
-            LayerNorm(channel_s + 21, create_offset=False, precision=32),
+            LayerNorm(channel_s + 21, create_offset=False),
             LinearNoBias(channel_s + 21, channel_cond, init="default", precision=32),
         )
 
@@ -131,7 +131,7 @@ class PairConditioning(nn.Module):
         self.channel_bias: tuple[int, int] = channel_bias
 
         in_channel = channel_z + channel_rel_pos
-        self.layernorm = LayerNorm(in_channel, create_offset=False, precision=32)
+        self.layernorm = LayerNorm(in_channel, create_offset=False)
         self.linear = LinearNoBias(in_channel, channel_z, init="default", precision=32)
         self.transitions = nn.ModuleList(
             [Transition(channel_z, expansion_factor=2) for _ in range(2)]

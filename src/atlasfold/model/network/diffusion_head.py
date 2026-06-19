@@ -93,7 +93,7 @@ class DiffusionModule(nn.Module):
         self.proj_q_to_a = LinearNoBias(channel_atom * 14, channel_a, init="default")
 
         self.proj_s_to_a = nn.Sequential(
-            LayerNorm(channel_cond, create_offset=False, precision=32),
+            LayerNorm(channel_cond, create_offset=False),
             LinearNoBias(channel_cond, channel_a, init="final", precision=32),
         )
 

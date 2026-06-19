@@ -217,7 +217,7 @@ class AtomDecoder(nn.Module):
         )
         self.mlp = AtomMLP(channel_atom, hidden_dim=channel_atom // 2)
         self.linear_out = nn.Sequential(
-            LayerNorm(channel_atom, precision=32),
+            LayerNorm(channel_atom),
             LinearNoBias(channel_atom, 3, init="final", precision=32),
         )
 
