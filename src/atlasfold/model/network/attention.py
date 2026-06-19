@@ -75,7 +75,7 @@ class Attention(nn.Module):
         )  # [*, H, Lq/k, c_h]
 
         # Compute attention weights and output
-        if self.use_high_precision or self.training:
+        if self.use_high_precision:
             # Compute attention weights and output in high precision (float32)
             with torch.autocast(device_type=q.device.type, enabled=False):
                 q, k = q.float(), k.float()
