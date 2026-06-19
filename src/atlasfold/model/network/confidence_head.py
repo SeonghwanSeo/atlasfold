@@ -247,6 +247,10 @@ class ConfidenceHead(nn.Module):
             mask: torch.Tensor,
             coords: torch.Tensor,
         ) -> dict[str, torch.Tensor]:
+            # Clone representations to prevent in-place mutation contamination across samples
+            s = s.clone()
+            z = z.clone()
+
             # Prepare pair representation with distogram features
             cbeta_idx = batch["pseudo_beta"]  # [B, L]
             distogram = get_distogram(coords, cbeta_idx, distogram_boundaries)
