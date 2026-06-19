@@ -73,15 +73,12 @@ class AtomAttentionStack(nn.Module):
         self.num_heads: int = num_heads
         self.num_blocks: int = num_blocks
         self.linear_pair_bais = LinearNoBias(channel_atompair, (num_blocks * num_heads))
-        self.stack = AtomTransformerStack(
-            channel_atom, channel_atom, num_heads, num_blocks
-        )
+        self.stack = AtomTransformerStack(channel_atom, None, num_heads, num_blocks)
 
     def forward(
         self,
         batch: dict[str, torch.Tensor],
         q: torch.Tensor,
-        c: torch.Tensor,
     ) -> torch.Tensor:
         """Perform the forward pass.
 
@@ -91,8 +88,6 @@ class AtomAttentionStack(nn.Module):
             The input batch containing 'aatype', 'atom_mask', and 'res_idx'.
         q: torch.Tensor
             The atom representations of shape (B, N, L, 14, C_a)
-        c: torch.Tensor
-            The atom conditioning of shape (B, N, L, 14, C_a)
 
         Returns
         -------
@@ -130,7 +125,7 @@ class AtomAttentionStack(nn.Module):
             q,  # [B, N, L, 14, C_a]
             mask=atom_mask,  # [B, 1, L, 14]
             local_attn_index=local_attn_idx,
-            single_cond=c,  # [B, N, L, 14, C_a]
+            single_cond=None,
             pair_bias=p,  # [Nblocks, B, 1, W, Nheads, Lq, 14, Lk, 14]
         )
         return q
@@ -141,7 +136,6 @@ class AtomEncoder(nn.Module):
         self,
         channel_atom: int = 96,
         channel_atompair: int = 14,
-        channel_cond: int = 768,
         num_heads: int = 2,
         num_blocks: int = 2,
     ) -> None:
@@ -160,9 +154,8 @@ class AtomEncoder(nn.Module):
         self.num_heads: int = num_heads
         self.num_blocks: int = num_blocks
 
-        self.embedding_aa_atoms = LinearNoBias(21, 14 * channel_atom)
+        self.embedding_atoms = LinearNoBias(21, 14 * channel_atom)
         self.linear_in = LinearNoBias(3, channel_atom, init="default", precision=32)
-        self.linear_cond = LinearNoBias(channel_cond, channel_atom, init="final")
         self.mlp = AtomMLP(channel_atom, hidden_dim=channel_atom // 2)
         self.stack = AtomAttentionStack(
             channel_atom, channel_atompair, num_heads, num_blocks
@@ -172,8 +165,7 @@ class AtomEncoder(nn.Module):
         self,
         batch: dict[str, torch.Tensor],
         r_noisy: torch.Tensor,
-        cond: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """Perform the forward pass.
 
         Parameters
@@ -182,23 +174,16 @@ class AtomEncoder(nn.Module):
             The input batch containing 'aatype', 'atom_mask', and 'res_idx'.
         r_noisy: torch.Tensor
             The noisy atom coordinates of shape (B, N, L, 14, 3)
-        cond : torch.Tensor
-            The single conditioning of shape (B, N, L, C_s)
 
         Returns
         -------
         q : torch.Tensor
             The atom representations of shape (B, N, L, 14, C_a)
-        c : torch.Tensor
-            The atom conditioning of shape (B, N, L, 14, C_a)
         """
         # Get the atom representations
         aatype = batch["aatype"]  # (B, L, 21)
-        a = self.embedding_aa_atoms(aatype).unflatten(-1, (14, -1))  # (B, L, 14, C_a)
-        a = a.unsqueeze(-4)  # (B, 1, L, 14, C_a)
-
-        # Initialize the atom representations and conditioning
-        q, c = a, a
+        q = self.embedding_atoms(aatype).unflatten(-1, (14, -1))  # (B, L, 14, C_a)
+        q = q.unsqueeze(-4)  # (B, 1, L, 14, C_a)
 
         mask = batch["atom14_mask"].unsqueeze(1).to(q.dtype)  # (B, 1, L, 14)
 
@@ -208,16 +193,13 @@ class AtomEncoder(nn.Module):
         # Residue-wise MLP on the intra-residue geometry
         q = q + self.mlp(q, mask)  # (B, N, L, 14, C_a)
 
-        # Prepare the conditioning
-        c = c + self.linear_cond(cond).unsqueeze(-2)  # (B, N, L, 14, C_a)
-
         # Stack of local attention blocks
-        q = self.stack(batch, q, c)  # (B, N, L, 14, C_a)
+        q = self.stack(batch, q)  # (B, N, L, 14, C_a)
 
         # Mask out dummy atoms
         q = q * mask[..., None]
 
-        return q, c
+        return q
 
 
 class AtomDecoder(nn.Module):
@@ -243,11 +225,10 @@ class AtomDecoder(nn.Module):
         self,
         batch: dict[str, torch.Tensor],
         q: torch.Tensor,
-        c: torch.Tensor,
     ) -> torch.Tensor:
         """Maps updated representations back to raw 3D coordinate updates."""
         # Another stack of local attention blocks
-        q = self.stack(batch, q, c)  # (B, N, L, 14, C_a)
+        q = self.stack(batch, q)  # (B, N, L, 14, C_a)
 
         # Final post-processing block of intra-residue updates
         mask = batch["atom14_mask"].unsqueeze(-3).to(q.dtype)  # (B, 1, L, 14)

@@ -102,8 +102,6 @@ class SingleConditioning(nn.Module):
         cond : torch.Tensor
             Tensor of shape (B, N, L, c_s) containing conditioned single embeddings.
         """
-        # TODO: remove trunk single conditioning.
-        s = s * 0.0  # zero out single representations
         s = self.proj_single_cond(torch.cat([s, batch["aatype"]], dim=-1))
 
         # Embed fourier embedding of noise level
@@ -342,7 +340,7 @@ class AtomTransformerStack(nn.Module):
     def __init__(
         self,
         channel_a: int,
-        channel_cond: int,
+        channel_cond: int | None,
         num_heads: int,
         num_blocks: int,
         use_pair_bias: bool = True,
@@ -375,7 +373,7 @@ class AtomTransformerStack(nn.Module):
         a: torch.Tensor,
         mask: torch.Tensor,
         local_attn_index: LocalAttentionIndex,
-        single_cond: torch.Tensor,
+        single_cond: torch.Tensor | None,
         pair_bias: torch.Tensor | None,
     ) -> torch.Tensor:
         """See Section 3.7 Algorithm 23 Diffusion Transformer
@@ -408,13 +406,17 @@ class AtomTransformerStack(nn.Module):
         attn_mask &= einops.rearrange(mask_k, "... w k a -> ... w 1 (k a)", a=14)
 
         # Create windowed q/k for local attention
-        # [*, L, 14, c_cond] -> [*, W, Lq/Lk, 14, c_cond]
-        single_cond_q, single_cond_k = local_attn_index(single_cond, dim=-3)
-        # [*, W, Lq/Lk, 14, c_cond] -> [*, W, Nq/Nk, c_cond]
-        single_cond_q, single_cond_k = map(
-            lambda x: einops.rearrange(x, "... w l a c -> ... w (l a) c", a=14),
-            (single_cond_q, single_cond_k),
-        )
+        if single_cond is not None:
+            # [*, L, 14, c_cond] -> [*, W, Lq/Lk, 14, c_cond]
+            single_cond_q, single_cond_k = local_attn_index(single_cond, dim=-3)
+            # [*, W, Lq/Lk, 14, c_cond] -> [*, W, Nq/Nk, c_cond]
+            single_cond_q, single_cond_k = map(
+                lambda x: einops.rearrange(x, "... w l a c -> ... w (l a) c", a=14),
+                (single_cond_q, single_cond_k),
+            )
+        else:
+            single_cond_q, single_cond_k = None, None
+
         if pair_bias is not None:
             pair_bias = einops.rearrange(
                 pair_bias,
@@ -475,8 +477,8 @@ class AtomTransformerBlock(nn.Module):
         a_q: torch.Tensor,
         a_k: torch.Tensor,
         mask: torch.Tensor,
-        single_cond_q: torch.Tensor,
-        single_cond_k: torch.Tensor,
+        single_cond_q: torch.Tensor | None,
+        single_cond_k: torch.Tensor | None,
         pair_bias: torch.Tensor | None,
     ) -> torch.Tensor:
         """See Section 3.7 Algorithm 23 Diffusion Transformer

@@ -86,7 +86,7 @@ class DiffusionModule(nn.Module):
 
         # Atom attention encoder
         self.atom_encoder = AtomEncoder(
-            channel_atom, channel_atompair, channel_cond, num_atom_heads, num_atom_blocks
+            channel_atom, channel_atompair, num_atom_heads, num_atom_blocks
         )
 
         # Global transformer stack
@@ -141,10 +141,11 @@ class DiffusionModule(nn.Module):
         # [B, N, L, 14, 3] -> [B, N, L, 14, c_atom] -> [B, N, L, c_a]
         # Encode atom positions with single conditioning
         with torch.autocast(r_noisy.device.type, enabled=False):
-            q, c = self.atom_encoder(batch, r_noisy, single_cond)
+            q = self.atom_encoder(batch, r_noisy)
         # Pool atom representations to residue level
         a = self.proj_q_to_a(q.flatten(-2))
-        q_skip, c_skip = q, c  # For skip connection to the atom decoder
+        # For skip connection to the atom decoder
+        q_skip = q
 
         # Global transformer stack (bfloat16 context)
         mask = batch["seq_mask"]
@@ -162,7 +163,7 @@ class DiffusionModule(nn.Module):
         q = q_skip + self.proj_a_to_q(a).unflatten(-1, (14, -1))
         # Decode to coordinates
         with torch.autocast(r_noisy.device.type, enabled=False):
-            r_update = self.atom_decoder(batch, q, c_skip)
+            r_update = self.atom_decoder(batch, q)
 
         return r_update
 
