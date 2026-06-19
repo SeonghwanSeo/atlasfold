@@ -9,9 +9,9 @@ monomer_config = model.AtlasFoldConfig(
     trunk=model.TrunkConfig(
         dropout_z=0.25,
         num_heads=16,
-        num_blocks=48,
-        num_pair_to_single_blocks=4,
         num_lm_blocks=4,
+        num_blocks=48,
+        num_pair_to_single_blocks=12,
     ),
     diffusion_head=model.DiffusionHeadConfig(
         channel_a=768,

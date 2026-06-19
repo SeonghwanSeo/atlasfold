@@ -9,7 +9,7 @@ trunk:
   dropout_z: 0.25
   num_lm_blocks: 4
   num_blocks: 48
-  num_pair_to_single_blocks: 16
+  num_pair_to_single_blocks: 12
   blocks_per_ckpt: null
 diffusion_head:
   channel_a: 768

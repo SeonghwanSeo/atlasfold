@@ -25,7 +25,7 @@ class TrunkConfig:
     dropout_z: float = 0.25
     num_lm_blocks: int = 4
     num_blocks: int = 48
-    num_pair_to_single_blocks: int = 8
+    num_pair_to_single_blocks: int = 12
     blocks_per_ckpt: int | None = None
 
 
