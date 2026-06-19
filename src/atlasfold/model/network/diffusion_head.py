@@ -92,6 +92,11 @@ class DiffusionModule(nn.Module):
         # Global transformer stack
         self.proj_q_to_a = LinearNoBias(channel_atom * 14, channel_a, init="default")
 
+        self.proj_s_to_a = nn.Sequential(
+            LayerNorm(channel_cond, create_offset=False, precision=32),
+            LinearNoBias(channel_cond, channel_a, init="final", precision=32),
+        )
+
         self.diffusion_transformer = DiffusionTransformerStack(
             channel_a=channel_a,
             channel_cond=channel_cond,
@@ -147,9 +152,11 @@ class DiffusionModule(nn.Module):
         # For skip connection to the atom decoder
         q_skip = q
 
-        # Global transformer stack (bfloat16 context)
+        # Global transformer stack
         mask = batch["seq_mask"]
         a = a.float()
+        a = a + self.proj_s_to_a(single_cond)  # [B, N, L, c_a]
+
         a = self.diffusion_transformer(
             a,  # [B, N, L, c_a]
             mask=mask.unsqueeze(1),  # [B, 1, L]
