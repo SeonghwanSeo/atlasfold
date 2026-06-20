@@ -45,7 +45,7 @@ trainer:
   log_every_n_steps: 10
   enable_checkpointing: true
   accumulate_grad_batches: null # Automatically set based on global_batch_size and batch_size
-  gradient_clip_val: 1.0
+  gradient_clip_val: 5.0
 
 # Exponential Moving Average (EMA)
 training:
@@ -86,8 +86,8 @@ optimizer:
 loss:
   weights:
     # Global loss weights
-    distogram: 0.1
-    diffusion: 1.0
+    distogram: 0.4
+    diffusion: 2.0
     confidence: 0.01
     # Diffusion loss weights
     smooth_lddt: 0.0
