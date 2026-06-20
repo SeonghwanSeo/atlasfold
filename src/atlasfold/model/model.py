@@ -22,6 +22,7 @@ from atlaslm.pretrained import get_model, load_model
 @dataclasses.dataclass(kw_only=True)
 class TrunkConfig:
     num_heads: int = 16
+    num_tri_heads: int = 4
     dropout_z: float = 0.25
     num_lm_blocks: int = 4
     num_blocks: int = 48
@@ -71,7 +72,7 @@ class AtlasFoldConfig:
 
     channel_s: int = 384
     channel_s_lm: int = 768
-    channel_z: int = 192
+    channel_z: int = 128
     trunk: TrunkConfig = dataclasses.field(default_factory=TrunkConfig)
     distogram_head: DistogramHeadConfig = dataclasses.field(
         default_factory=DistogramHeadConfig
@@ -155,6 +156,7 @@ class AtlasFold(torch.nn.Module):
             channel_s=self.channel_s_lm,
             channel_z=self.channel_z,
             num_heads=cfg.trunk.num_heads,
+            num_tri_heads=cfg.trunk.num_tri_heads,
             dropout_z=cfg.trunk.dropout_z,
             num_blocks=cfg.trunk.num_lm_blocks,
             blocks_per_ckpt=cfg.trunk.blocks_per_ckpt,
@@ -169,10 +171,11 @@ class AtlasFold(torch.nn.Module):
         )
 
         # === Trunk body === #
-        self.main_stack = trunk.TriangularUpdateStack(
+        self.main_stack = trunk.PairformerStack(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
             num_heads=cfg.trunk.num_heads,
+            num_tri_heads=cfg.trunk.num_tri_heads,
             dropout_z=cfg.trunk.dropout_z,
             num_blocks=cfg.trunk.num_blocks,
             num_pair_to_single_blocks=cfg.trunk.num_pair_to_single_blocks,

@@ -6,17 +6,18 @@ from atlasfold.model.network.block import PairBlock
 from atlasfold.utils.checkpointing import checkpoint_blocks
 
 
-class TriangularUpdateStack(torch.nn.Module):
+class PairformerStack(torch.nn.Module):
     """Main trunk of the AtlasFold model"""
 
     def __init__(
         self,
         channel_s: int = 384,
-        channel_z: int = 192,
+        channel_z: int = 128,
         num_heads: int = 16,
+        num_tri_heads: int = 4,
         dropout_z: float = 0.25,
         num_blocks: int = 48,
-        num_pair_to_single_blocks: int = 16,
+        num_pair_to_single_blocks: int = 8,
         blocks_per_ckpt: int | None = None,
     ) -> None:
         super().__init__()
@@ -27,12 +28,11 @@ class TriangularUpdateStack(torch.nn.Module):
                     channel_s=channel_s,
                     channel_z=channel_z,
                     num_heads_attn=num_heads,
+                    num_tri_heads=num_tri_heads,
                     dropout_z=dropout_z,
                     single_to_pair=False,
                     pair_to_pair=True,
                     pair_to_single=i >= pair_to_single_start,
-                    use_tri_mul=True,
-                    use_tri_attn=False,
                 )
                 for i in range(num_blocks)
             ]
@@ -92,8 +92,9 @@ class LMStack(torch.nn.Module):
     def __init__(
         self,
         channel_s: int = 768,
-        channel_z: int = 192,
+        channel_z: int = 128,
         num_heads: int = 16,
+        num_tri_heads: int = 4,
         dropout_z: float = 0.25,
         num_blocks: int = 4,
         blocks_per_ckpt: int | None = None,
@@ -105,12 +106,11 @@ class LMStack(torch.nn.Module):
                     channel_s=channel_s,
                     channel_z=channel_z,
                     num_heads_attn=num_heads,
+                    num_tri_heads=num_tri_heads,
                     dropout_z=dropout_z,
                     single_to_pair=True,
                     pair_to_pair=True,
                     pair_to_single=True,
-                    use_tri_mul=True,
-                    use_tri_attn=False,
                 )
                 for _ in range(num_blocks)
             ]

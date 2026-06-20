@@ -132,10 +132,10 @@ class PredictedAlignedErrorHead(nn.Module):
 class ConfidenceHead(nn.Module):
     def __init__(
         self,
-        channel_a: int = 384,
-        channel_s: int = 768,
-        channel_z: int = 196,
-        num_heads: int = 12,
+        channel_s: int = 384,
+        channel_z: int = 128,
+        num_heads: int = 16,
+        num_tri_heads: int = 4,
         num_blocks: int = 4,
         dropout_z: float = 0.25,
         # distogram bins
@@ -152,7 +152,7 @@ class ConfidenceHead(nn.Module):
         super().__init__()
         self.proj_s = nn.Sequential(
             LayerNorm(channel_s),
-            LinearNoBias(channel_s, channel_a),
+            LinearNoBias(channel_s, channel_s),
         )
         self.embed_aa = LinearNoBias(21, channel_z)
 
@@ -164,7 +164,7 @@ class ConfidenceHead(nn.Module):
 
         # Attention stack for confidence prediction
         self.stack: PairStack = PairStack(
-            channel_s=channel_a,
+            channel_s=channel_s,
             channel_z=channel_z,
             num_heads_attn=num_heads,
             dropout_z=dropout_z,
@@ -176,8 +176,8 @@ class ConfidenceHead(nn.Module):
             use_tri_attn=False,
         )
 
-        self.plddt_head = PredictedLDDTHead(channel_a, num_plddt_bins)
-        self.experimentally_resolved_head = ExperimentallyResolvedHead(channel_a)
+        self.plddt_head = PredictedLDDTHead(channel_s, num_plddt_bins)
+        self.experimentally_resolved_head = ExperimentallyResolvedHead(channel_s)
         self.pae_head = PredictedAlignedErrorHead(channel_z, num_pae_bins)
 
         # Store PAE and lDDT binning parameters
@@ -247,7 +247,6 @@ class ConfidenceHead(nn.Module):
             mask: torch.Tensor,
             coords: torch.Tensor,
         ) -> dict[str, torch.Tensor]:
-            # Clone representations to prevent in-place mutation contamination across samples
             s = s.clone()
             z = z.clone()
 

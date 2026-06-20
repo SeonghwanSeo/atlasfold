@@ -3,9 +3,10 @@ lm_name: "atlaslm-3b-base"
 lm_path: "/mnt/parallel_storage/wykim_lab/icl_shwan/esmc-reproduce/releases/atlaslm-3b-base/weights/atlaslm_3b_base.pth"
 channel_s: 384
 channel_s_lm: 768
-channel_z: 192
+channel_z: 128
 trunk:
   num_heads: 16
+  num_tri_heads: 4
   dropout_z: 0.25
   num_lm_blocks: 4
   num_blocks: 48
@@ -25,8 +26,8 @@ distogram_head:
   min_dist: 2.0
   max_dist: 22.0
 confidence_head:
-  channel_a: 384
   num_heads: 16
+  num_tri_heads: 4
   dropout_z: 0.25
   num_blocks: 4
   num_bins: 39
