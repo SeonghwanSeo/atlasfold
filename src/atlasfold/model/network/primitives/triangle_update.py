@@ -75,7 +75,7 @@ def cueq_tri_attn(
         q.view(-1, *q.shape[-4:]),
         k.view(-1, *k.shape[-4:]),
         v.view(-1, *v.shape[-4:]),
-        bias.view(-1, *bias.shape[-4:]),
+        bias.view(-1, *bias.shape[-4:]).float(),
         mask=mask.view(-1, *mask.shape[-4:]),
         scale=scale,
     ).view(*original_shape)

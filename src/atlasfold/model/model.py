@@ -51,8 +51,8 @@ class DistogramHeadConfig:
 
 @dataclasses.dataclass(kw_only=True)
 class ConfidenceHeadConfig:
-    channel_a: int = 384
     num_heads: int = 16
+    num_tri_heads: int = 4
     dropout_z: float = 0.25
     num_blocks: int = 4
     num_bins: int = 39

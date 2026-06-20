@@ -173,7 +173,6 @@ class ConfidenceHead(nn.Module):
             pair_to_pair=True,
             pair_to_single=True,
             blocks_per_ckpt=blocks_per_ckpt,
-            use_tri_attn=False,
         )
 
         self.plddt_head = PredictedLDDTHead(channel_s, num_plddt_bins)
