@@ -90,7 +90,10 @@ class DiffusionModule(nn.Module):
         )
 
         # Global transformer stack
-        self.proj_q_to_a = LinearNoBias(channel_atom * 14, channel_a, init="default")
+        self.proj_q_to_a = nn.Sequential(
+            LinearNoBias(channel_atom, channel_a, init="default"),
+            nn.ReLU(),
+        )
 
         self.proj_s_to_a = nn.Sequential(
             LayerNorm(channel_cond, create_offset=False),
@@ -125,6 +128,8 @@ class DiffusionModule(nn.Module):
     ) -> torch.Tensor:
         """Single diffusion step forward pass
 
+        See Section 3.7 Algorithm 20 Diffusion Module in AlphaFold3 SI
+
         Parameters
         ----------
         batch: dict[str, torch.Tensor]
@@ -142,21 +147,22 @@ class DiffusionModule(nn.Module):
         r_update : torch.Tensor
             The scaled updated atom positions, shape [B, N, L, 14, 3].
         """
-        # Atom encoder
-        # [B, N, L, 14, 3] -> [B, N, L, 14, c_atom] -> [B, N, L, c_a]
-        # Encode atom positions with single conditioning
+        # Line 3: Atom encoder
         with torch.autocast(r_noisy.device.type, enabled=False):
-            q = self.atom_encoder(batch, r_noisy)
-        # Pool atom representations to residue level
-        a = self.proj_q_to_a(q.flatten(-2))
-        # For skip connection to the atom decoder
-        q_skip = q
+            q, c = self.atom_encoder(batch, r_noisy)
+
+        # Algorithm 5 Line 16
+        num_atoms = batch["atom14_mask"].float().sum(-1)  # [B, L]
+        a = self.proj_q_to_a(q).sum(dim=-2)  # [B, N, L, c_a]
+        a = a / num_atoms[:, None, :, None].clamp(1.0)
 
         # Global transformer stack
         mask = batch["seq_mask"]
         a = a.float()
+        # Line 4: Full self-attention on token level
         a = a + self.proj_s_to_a(single_cond)  # [B, N, L, c_a]
 
+        # Line 5: Diffusion transformer stack
         a = self.diffusion_transformer(
             a,  # [B, N, L, c_a]
             mask=mask.unsqueeze(1),  # [B, 1, L]
@@ -165,12 +171,12 @@ class DiffusionModule(nn.Module):
         )  # [B, N, L, c_a]
 
         # Atom decoder
-        # [B, N, L, c_a] -> [B, N, L, 14, c_atom] -> [B, N, L, 14, 3]
-        # Skip connection from the atom encoder
-        q = q_skip + self.proj_a_to_q(a).unflatten(-1, (14, -1))
-        # Decode to coordinates
+        # Algorithm 6 Line 1
+        q = q + self.proj_a_to_q(a).unflatten(-1, (14, -1))
+
+        # Line 7: Atom decoder
         with torch.autocast(r_noisy.device.type, enabled=False):
-            r_update = self.atom_decoder(batch, q)
+            r_update = self.atom_decoder(batch, q, c)
 
         return r_update
 
@@ -326,11 +332,13 @@ class DiffusionHead(nn.Module):
         x.masked_fill_(~mask[..., None], 0.0)  # apply atom mask
 
         # Compute time-independent variables
+        # Algorithm 20 Line 1: DiffusionConditioning
         pair_bias = self.pair_conditioning(batch, z)
         del z
 
         def run_step(x_noisy: torch.Tensor, t_hat: float) -> torch.Tensor:
             c_noise = torch.tensor(self.c_noise(t_hat), device=device).view(1, 1)
+            # Algorithm 20 Line 1: DiffusionConditioning
             single_cond = self.single_conditioning(batch, s, c_noise)
             return self.inference_step(
                 batch,
@@ -393,7 +401,7 @@ class DiffusionHead(nn.Module):
         chunk_size: int | None = None,
     ) -> torch.Tensor:
         """Forward pass through the score model.
-        See Section 3.7: Diffusion Module, Algorithm 20 of AlphaFold3 paper.
+        See Section 3.7: Algorithm 5 Diffusion Module in AlphaFold3 SI.
 
         Parameters
         ----------

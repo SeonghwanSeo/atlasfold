@@ -523,7 +523,6 @@ class TrainingModule(pl.LightningModule):
         n_valid_samples = w.sum().clamp(1)
 
         metrics: dict[str, torch.Tensor] = {}
-        alpha_pae = self.loss_weights["pae"]
 
         x_pred = pred["mini_rollout"]["sample_coords"]  # [B, L, 14, 3]
         x_gt = label["coordinates"]  # [B, L, 14, 3]
@@ -559,7 +558,7 @@ class TrainingModule(pl.LightningModule):
         L_pae = (L_pae * w).sum() / n_valid_samples
         metrics["pae_loss"] = L_pae.detach()
 
-        L_confidence = L_plddt + L_resolved + alpha_pae * L_pae
+        L_confidence = L_plddt + L_resolved + L_pae
         metrics["loss"] = L_confidence.detach()
         return L_confidence, metrics
 

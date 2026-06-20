@@ -91,8 +91,6 @@ loss:
     confidence: 1e-3
     # Diffusion loss weights
     smooth_lddt: 0.0
-    # Confidence loss weights
-    pae: 0.0 # 1 for final stage training
 
   # Distogram loss
   distogram_loss: {}
