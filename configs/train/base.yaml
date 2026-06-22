@@ -58,7 +58,7 @@ training:
   num_recycles: 3
 
   # For structure module training
-  diffusion_batch_size: 64
+  diffusion_batch_size: 32
 
   # For confidence module training
   num_mini_rollout_steps: 20 # Number of rollout steps for confidence training
@@ -88,7 +88,7 @@ loss:
     # Global loss weights
     distogram: 0.4
     diffusion: 2.0
-    confidence: 0.01
+    confidence: 0.0001
     # Diffusion loss weights
     smooth_lddt: 0.0
 

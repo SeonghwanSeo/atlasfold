@@ -5,11 +5,11 @@ data:
   train_datasets:
     - name: rcsb
       is_distillation: false
-      weight: 0.122
+      weight: 0.120
       sampling_strategy: ['length', 'cluster']
     - name: disordered_pdb
       is_distillation: true
-      weight: 0.003
+      weight: 0.005
       sampling_strategy: ['length', 'cluster']
     - name: long_monomers
       is_distillation: true

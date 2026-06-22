@@ -15,16 +15,39 @@ train:
 
   data:
     max_length: 384
-    max_seq_length: 640
+    max_seq_length: 768
     batch_size: 1
     global_batch_size: 256
+
+    train_datasets:
+      - name: rcsb
+        is_distillation: false
+        weight: 0.123
+        sampling_strategy: ['length', 'cluster']
+      - name: disordered_pdb
+        is_distillation: true
+        weight: 0.002
+        sampling_strategy: ['length', 'cluster']
+      - name: long_monomers
+        is_distillation: true
+        weight: 0.865
+        sampling_strategy: ['length', 'plddt']
+      - name: short_monomers
+        is_distillation: true
+        weight: 0.010
+        sampling_strategy: ['length', 'plddt']
 
   training:
     train_trunk: true
     train_diffusion_head: true
-    train_confidence_head: false
+    train_confidence_head: true
     diffusion_batch_size: 32
 
   loss:
     weights:
       smooth_lddt: 1.0
+
+    diffusion_loss:
+      mse_loss: {}
+      smooth_lddt_loss:
+        chunk_size: 4

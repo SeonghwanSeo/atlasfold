@@ -14,10 +14,28 @@ train:
   name: stage4
 
   data:
-    max_length: 768
+    max_length: 640
     max_seq_length: 1024
     batch_size: 1
     global_batch_size: 256
+
+    train_datasets:
+      - name: rcsb
+        is_distillation: false
+        weight: 0.245
+        sampling_strategy: ['length', 'cluster']
+      - name: disordered_pdb
+        is_distillation: true
+        weight: 0.005
+        sampling_strategy: ['length', 'cluster']
+      - name: long_monomers
+        is_distillation: true
+        weight: 0.745
+        sampling_strategy: ['length', 'plddt']
+      - name: short_monomers
+        is_distillation: true
+        weight: 0.005
+        sampling_strategy: ['length', 'plddt']
 
   training:
     train_trunk: true
