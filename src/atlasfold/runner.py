@@ -10,18 +10,17 @@ from atlasfold.model import AtlasFold, SamplingConfig
 
 @contextlib.contextmanager
 def seed_context(seed: int, device: torch.device):
-    old_cpu_state = torch.get_rng_state()
-    is_cuda = device.type == "cuda"
-    if is_cuda:
-        old_cuda_states = torch.cuda.get_rng_state(device)
-    try:
+    if device.type == "cuda":
+        device_idx = device.index
+        if device_idx is None:
+            device_idx = torch.cuda.current_device()
+        devices = [device_idx]
+    else:
+        devices = []
+
+    with torch.random.fork_rng(devices=devices):
         torch.manual_seed(seed)
-        torch.cuda.manual_seed(seed)
         yield
-    finally:
-        torch.set_rng_state(old_cpu_state)
-        if is_cuda:
-            torch.cuda.set_rng_state(old_cuda_states, device)
 
 
 @dataclasses.dataclass

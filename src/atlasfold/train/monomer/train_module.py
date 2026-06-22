@@ -403,13 +403,16 @@ class TrainingModule(pl.LightningModule):
     ):
         feat, label = batch["feat"], batch["label"]
         val_config = self.validation_config
+        seed = batch_idx
         try:
-            sample_out: dict[str, torch.Tensor] = self(
-                batch=feat,
-                label=None,
-                num_recycles=val_config.num_recycles,
-                mode="validation",
-            )
+            with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
+                torch.manual_seed(seed)
+                sample_out: dict[str, torch.Tensor] = self(
+                    batch=feat,
+                    label=None,
+                    num_recycles=val_config.num_recycles,
+                    mode="validation",
+                )
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 print("**WARNING**: ran out of memory, skipping batch")
