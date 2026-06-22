@@ -20,9 +20,8 @@ from .normalization import LayerNorm
 
 
 @torch.compiler.disable
-def cueq_tri_mul(
+def cueq_tri_mul_outgoing(
     z: torch.Tensor,
-    direction: str,
     mask: torch.Tensor,
     norm_in_weight: torch.Tensor,
     norm_in_bias: torch.Tensor,
@@ -42,7 +41,43 @@ def cueq_tri_mul(
     original_shape = z.shape
     return _cueq_triangle_multiplicative_update(
         z.view(-1, *original_shape[-3:]),
-        direction=direction,
+        direction="outgoing",
+        mask=mask.view(-1, *mask.shape[-2:]),
+        norm_in_weight=norm_in_weight,
+        norm_in_bias=norm_in_bias,
+        p_in_weight=p_in_weight,
+        g_in_weight=g_in_weight,
+        norm_out_weight=norm_out_weight,
+        norm_out_bias=norm_out_bias,
+        p_out_weight=p_out_weight,
+        g_out_weight=g_out_weight,
+        eps=eps,
+    ).view(*original_shape)
+
+
+@torch.compiler.disable
+def cueq_tri_mul_incoming(
+    z: torch.Tensor,
+    mask: torch.Tensor,
+    norm_in_weight: torch.Tensor,
+    norm_in_bias: torch.Tensor,
+    p_in_weight: torch.Tensor,
+    g_in_weight: torch.Tensor,
+    norm_out_weight: torch.Tensor,
+    norm_out_bias: torch.Tensor,
+    p_out_weight: torch.Tensor,
+    g_out_weight: torch.Tensor,
+    eps: float,
+):
+    if _cueq_triangle_multiplicative_update is None:
+        raise ImportError(
+            "cuequivariance_torch is not installed. "
+            "Please install cuequivariance_torch to use the kernel implementation."
+        )
+    original_shape = z.shape
+    return _cueq_triangle_multiplicative_update(
+        z.view(-1, *original_shape[-3:]),
+        direction="incoming",
         mask=mask.view(-1, *mask.shape[-2:]),
         norm_in_weight=norm_in_weight,
         norm_in_bias=norm_in_bias,
@@ -81,27 +116,20 @@ def cueq_tri_attn(
     ).view(*original_shape)
 
 
-class TriangleMultiplication(nn.Module):
+class TriangleMultiplicationOutgoing(nn.Module):
     """TriangleMultiplication.
-    See Seion 3.4 Algorithm 12 and Algorithm 13 of AlphaFold2 paper.
+    See Section 3.4 Algorithm 12 of AlphaFold2 paper.
     """
 
-    def __init__(self, channel: int, direction: str) -> None:
+    def __init__(self, channel: int) -> None:
         """Initialize the TriangularUpdate module.
 
         Parameters
         ----------
         channel: int
             The input channel dimension.
-        direction: str
-            The direction of the triangle multiplication, either "outgoing" or "incoming"
-
         """
         super().__init__()
-        assert direction in ["outgoing", "incoming"], (
-            "direction must be either 'outgoing' or 'incoming'"
-        )
-
         self.layernorm_in = LayerNorm(channel)
         self.linear_in = LinearNoBias(channel, 2 * channel, init="default")
         self.linear_g_in = LinearNoBias(channel, 2 * channel, init="gating")
@@ -109,13 +137,6 @@ class TriangleMultiplication(nn.Module):
         self.layernorm_out = LayerNorm(channel)
         self.linear_out = LinearNoBias(channel, channel, init="final")
         self.linear_g_out = LinearNoBias(channel, channel, init="gating")
-
-        self.direction: str = direction
-        self.equation: str = (
-            "...ikd,...jkd->...ijd"
-            if direction == "outgoing"
-            else "...kid,...kjd->...ijd"
-        )
 
     def forward(
         self,
@@ -141,9 +162,8 @@ class TriangleMultiplication(nn.Module):
 
         """
         if use_kernels and _cueq_triangle_multiplicative_update is not None:
-            return cueq_tri_mul(
+            return cueq_tri_mul_outgoing(
                 z,
-                direction=self.direction,
                 mask=mask,
                 norm_in_weight=self.layernorm_in.weight,
                 norm_in_bias=self.layernorm_in.bias,
@@ -169,10 +189,7 @@ class TriangleMultiplication(nn.Module):
         # Line 4
         # a, b shape: (*, L, L, C) -> move to (*, C, L, L)
         a, b = a.movedim(-1, -3), b.movedim(-1, -3)
-        if self.direction == "outgoing":
-            z = a @ b.mT
-        else:
-            z = a.mT @ b
+        z = a @ b.mT
         # move back to (*, L, L, C)
         z = z.movedim(-3, -1)
         z = g * self.linear_out(self.layernorm_out(z))
@@ -180,34 +197,95 @@ class TriangleMultiplication(nn.Module):
         return z
 
 
-class TriangleMultiplicationOutgoing(TriangleMultiplication):
-    """TriangleMultiplication.
-    See Section 3.4 Algorithm 12 of AlphaFold2 paper.
-    """
-
-    def __init__(self, channel: int) -> None:
-        super().__init__(channel, direction="outgoing")
-
-
-class TriangleMultiplicationIncoming(TriangleMultiplication):
+class TriangleMultiplicationIncoming(nn.Module):
     """TriangleMultiplication.
     See Section 3.4 Algorithm 13 of AlphaFold2 paper.
     """
 
     def __init__(self, channel: int) -> None:
-        super().__init__(channel, direction="incoming")
+        """Initialize the TriangularUpdate module.
 
+        Parameters
+        ----------
+        channel: int
+            The input channel dimension.
 
-class TriangleAttention(nn.Module):
-    """See Section 3.4 Algorithm 14 in the AlphaFold3 paper."""
+        """
+        super().__init__()
 
-    def __init__(
+        self.layernorm_in = LayerNorm(channel)
+        self.linear_in = LinearNoBias(channel, 2 * channel, init="default")
+        self.linear_g_in = LinearNoBias(channel, 2 * channel, init="gating")
+
+        self.layernorm_out = LayerNorm(channel)
+        self.linear_out = LinearNoBias(channel, channel, init="final")
+        self.linear_g_out = LinearNoBias(channel, channel, init="gating")
+
+    def forward(
         self,
-        channel: int,
-        num_heads: int,
-        starting: bool,
-        inf: float = 1e9,
-    ) -> None:
+        z: torch.Tensor,
+        mask: torch.Tensor,
+        use_kernels: bool = False,
+    ) -> torch.Tensor:
+        """Perform a forward pass.
+
+        Parameters
+        ----------
+        z: torch.Tensor
+            The input data of shape (*, L, L, C)
+        mask: torch.Tensor
+            The input mask of shape (*, L, L)
+        use_kernels: bool
+            Whether to use the kernel
+
+        Returns
+        -------
+        x: torch.Tensor
+            The output data of shape (*, L, L, C)
+
+        """
+        if use_kernels and _cueq_triangle_multiplicative_update is not None:
+            return cueq_tri_mul_incoming(
+                z,
+                mask=mask,
+                norm_in_weight=self.layernorm_in.weight,
+                norm_in_bias=self.layernorm_in.bias,
+                p_in_weight=self.linear_in.weight,
+                g_in_weight=self.linear_g_in.weight,
+                norm_out_weight=self.layernorm_out.weight,
+                norm_out_bias=self.layernorm_out.bias,
+                p_out_weight=self.linear_out.weight,
+                g_out_weight=self.linear_g_out.weight,
+                eps=1e-5,
+            )
+
+        # Line 1
+        z = self.layernorm_in(z)
+        z = z * mask.unsqueeze(-1)
+
+        # Line 2
+        a, b = torch.chunk(self.linear_g_in(z).sigmoid() * self.linear_in(z), 2, dim=-1)
+
+        # Line 3
+        g = self.linear_g_out(z).sigmoid()
+
+        # Line 4
+        # a, b shape: (*, L, L, C) -> move to (*, C, L, L)
+        a, b = a.movedim(-1, -3), b.movedim(-1, -3)
+        z = a.mT @ b
+        # move back to (*, L, L, C)
+        z = z.movedim(-3, -1)
+        z = g * self.linear_out(self.layernorm_out(z))
+
+        return z
+
+
+class TriangleAttentionStartingNode(nn.Module):
+    """TriangleAttention with starting=True.
+    See Section 3.4 Algorithm 13 in the AlphaFold3 paper.
+    """
+
+    def __init__(self, channel: int, num_heads: int, inf: float = 1e9) -> None:
         super().__init__()
         assert channel % num_heads == 0, (
             f"channel ({channel}) must be divisible by num_heads ({num_heads})"
@@ -216,7 +294,6 @@ class TriangleAttention(nn.Module):
         self.channel: int = channel
         self.num_heads: int = num_heads
         self.channel_hidden: int = channel // num_heads
-        self.starting: bool = starting
         self.inf: float = inf
         self.layernorm = LayerNorm(self.channel)
         self.linear_bias = LinearNoBias(self.channel, self.num_heads)
@@ -249,9 +326,118 @@ class TriangleAttention(nn.Module):
             Output tensor of shape (*, L, L, C)
 
         """
-        if not self.starting:
-            z = z.transpose(-2, -3)
-            mask = mask.transpose(-1, -2)
+        # Line 1: Initial layer norm
+        z = self.layernorm(z)
+
+        # Line 2: Prepare q, k, v
+        # (*, L, H, L, Ch)
+        q, k, v = self.linear_qkv(z).chunk(3, dim=-1)
+        q, k, v = map(
+            lambda t: einops.rearrange(t, "... l (h c) -> ... h l c", h=self.num_heads),
+            (q, k, v),
+        )
+
+        # Line 3: Prepare bias and mask
+        # (*, 1, H, L, L)
+        bias = self.linear_bias(z)
+        bias = einops.rearrange(bias, "... i j h -> ... 1 h i j")
+        # (*, L, 1, 1, L)
+        mask = einops.rearrange(mask, "... i j -> ... i 1 1 j")
+
+        # Line 4: Prepare gating
+        # (*, L, L, H, C_h)
+        g = torch.sigmoid(self.linear_g(z))
+        g = einops.rearrange(g, "... (h c) -> ... h c", h=self.num_heads)
+
+        # Summary:
+        # q,k,v (*, L, H, L, Ch)
+        # bias  (*, 1, H, L, L)
+        # mask  (*, L, 1, 1, L)
+        # g     (*, L, L, C)
+
+        # Line 5-6: Attention
+        # (*, L, H, L, L)
+        if use_kernels and _cueq_triangle_attention is not None:
+            out = cueq_tri_attn(
+                q,
+                k,
+                v,
+                bias=bias,
+                mask=mask,
+                scale=self.scale,
+            )
+        else:
+            q *= self.scale
+            k = k.transpose(-1, -2)
+            a = torch.matmul(q, k)
+            # Apply mask and bias
+            a += (-self.inf) * (~mask.bool()).to(q.dtype)
+            a += bias
+            # Return attention output
+            a = a.softmax(dim=-1)
+            out = torch.matmul(a, v)
+
+        # Re-arrange output
+        # (*, L, H, L, C_h) -> (*, L, L, H, C_h)
+        out = einops.rearrange(out, "... h l c -> ... l h c")
+
+        # Gating
+        out = g * out
+
+        # Line 7: Output projection
+        out = self.linear_out(out.flatten(-2))
+
+        return out
+
+
+class TriangleAttentionEndingNode(nn.Module):
+    """TriangleAttention with starting=False.
+    See Section 3.4 Algorithm 14 in the AlphaFold3 paper.
+    """
+
+    def __init__(self, channel: int, num_heads: int, inf: float = 1e9) -> None:
+        super().__init__()
+        assert channel % num_heads == 0, (
+            f"channel ({channel}) must be divisible by num_heads ({num_heads})"
+        )
+
+        self.channel: int = channel
+        self.num_heads: int = num_heads
+        self.channel_hidden: int = channel // num_heads
+        self.inf: float = inf
+        self.layernorm = LayerNorm(self.channel)
+        self.linear_bias = LinearNoBias(self.channel, self.num_heads)
+
+        self.linear_qkv = LinearNoBias(self.channel, self.channel * 3, init="default")
+        self.linear_out = LinearNoBias(self.channel, self.channel, init="final")
+        self.linear_g = LinearNoBias(self.channel, self.channel, init="gating")
+        self.scale = 1.0 / math.sqrt(self.channel_hidden)
+
+    def forward(
+        self,
+        z: torch.Tensor,
+        mask: torch.Tensor,
+        use_kernels: bool = False,
+    ) -> torch.Tensor:
+        """Compute triangle attention.
+
+        Parameters
+        ----------
+        z : torch.Tensor
+            Input tensor of shape (*, L, L, C)
+        mask : torch.Tensor
+            Attention mask of shape (*, L, L)
+        use_kernels : bool, default=False
+            Whether to use optimized CUDA kernels
+
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape (*, L, L, C)
+
+        """
+        z = z.transpose(-2, -3)
+        mask = mask.transpose(-1, -2)
 
         # Line 1: Initial layer norm
         z = self.layernorm(z)
@@ -314,25 +500,6 @@ class TriangleAttention(nn.Module):
         # Line 7: Output projection
         out = self.linear_out(out.flatten(-2))
 
-        if not self.starting:
-            out = out.transpose(-2, -3)
+        out = out.transpose(-2, -3)
 
         return out
-
-
-class TriangleAttentionStartingNode(TriangleAttention):
-    """TriangleAttention with starting=True.
-    See Section 3.4 Algorithm 13 in the AlphaFold3 paper.
-    """
-
-    def __init__(self, channel: int, num_heads: int, inf: float = 1e9) -> None:
-        super().__init__(channel, num_heads, starting=True, inf=inf)
-
-
-class TriangleAttentionEndingNode(TriangleAttention):
-    """TriangleAttention with starting=False.
-    See Section 3.4 Algorithm 14 in the AlphaFold3 paper.
-    """
-
-    def __init__(self, channel: int, num_heads: int, inf: float = 1e9) -> None:
-        super().__init__(channel, num_heads, starting=False, inf=inf)

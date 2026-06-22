@@ -167,6 +167,7 @@ class ConfidenceHead(nn.Module):
             channel_s=channel_s,
             channel_z=channel_z,
             num_heads_attn=num_heads,
+            num_heads_tri_attn=num_tri_heads,
             dropout_z=dropout_z,
             num_blocks=num_blocks,
             single_to_pair=False,
@@ -268,18 +269,24 @@ class ConfidenceHead(nn.Module):
             return logits
 
         B, N, L, _, _ = x_pred.shape
-        plddt_logits = torch.zeros(B, N, L, self.num_plddt_bins, device=device)
-        experimentally_resolved_logits = torch.zeros(B, N, L, 37, device=device)
-        pae_logits = torch.zeros(B, N, L, L, self.num_pae_bins, device=device)
+        if N == 1:
+            logits = compute_confidences_single(s, z, mask, x_pred[:, 0])
+            plddt_logits = logits["plddt"].unsqueeze(1)
+            exp_resolved_logits = logits["experimentally_resolved"].unsqueeze(1)
+            pae_logits = logits["pae"].unsqueeze(1)
+        else:
+            plddt_logits = torch.zeros(B, N, L, self.num_plddt_bins, device=device)
+            exp_resolved_logits = torch.zeros(B, N, L, 37, device=device)
+            pae_logits = torch.zeros(B, N, L, L, self.num_pae_bins, device=device)
 
-        for i in range(N):
-            logits = compute_confidences_single(s, z, mask, x_pred[:, i])
-            plddt_logits[:, i] = logits["plddt"]
-            experimentally_resolved_logits[:, i] = logits["experimentally_resolved"]
-            pae_logits[:, i] = logits["pae"]
+            for i in range(N):
+                logits = compute_confidences_single(s, z, mask, x_pred[:, i])
+                plddt_logits[:, i] = logits["plddt"]
+                exp_resolved_logits[:, i] = logits["experimentally_resolved"]
+                pae_logits[:, i] = logits["pae"]
 
         out: dict[str, dict[str, torch.Tensor]] = {}
-        out["experimentally_resolved"] = {"logits": experimentally_resolved_logits}
+        out["experimentally_resolved"] = {"logits": exp_resolved_logits}
         plddt_bin_centers = get_bin_centers(0.0, 1.0, self.num_plddt_bins, device=device)
         out["plddt"] = {"logits": plddt_logits, "bin_centers": plddt_bin_centers}
         pae_bin_centers = get_bin_centers(
