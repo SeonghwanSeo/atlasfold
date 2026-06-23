@@ -379,20 +379,23 @@ class AtlasFold(torch.nn.Module):
         num_recycles: int,
         mode: str,
         mlm_prob: float | None = None,
-        train: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the trunk."""
+        # Set default MLM probability to 0.15 for full mode if not specified
+        mlm_prob = mlm_prob if mlm_prob is not None else 0.15
+        if mlm_prob <= 0.0:
+            raise ValueError("mlm_prob must be greater than 0.")
+
         if mode == "stochastic":
-            return self.run_trunk_stochastic(batch, num_recycles, mlm_prob, train)
+            return self.run_trunk_stochastic(batch, num_recycles, mlm_prob)
         else:  # mode == "full"
-            return self.run_trunk_ensemble(batch, num_recycles, mlm_prob, train)
+            return self.run_trunk_ensemble(batch, num_recycles, mlm_prob)
 
     def run_trunk_stochastic(
         self,
         batch: dict[str, torch.Tensor],
         num_recycles: int,
-        mlm_prob: float | None = None,
-        train: bool = False,
+        mlm_prob: float = 0.15,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the trunk with shared LM features."""
         mask = batch["seq_mask"]
@@ -405,39 +408,33 @@ class AtlasFold(torch.nn.Module):
         z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
 
         # Run LM module with shared masking
-        mlm_prob = mlm_prob if mlm_prob is not None else 0.15
         mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
-        s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, train)
+        s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask)
 
-        for i in range(0, num_recycles + 1):
-            enable_grad = train and i == num_recycles
-            with torch.set_grad_enabled(enable_grad):
-                if enable_grad and torch.is_autocast_enabled():
-                    torch.clear_autocast_cache()
-                s = self.s_init(batch["aatype"])
-                a, b = self.z_init(batch["aatype"]).chunk(2, dim=-1)
-                z = a[..., :, None, :] + b[..., None, :, :]
-                z += self.z_rel_pos(batch["seq_rel_pos"])
+        for _ in range(0, num_recycles + 1):
+            s = self.s_init(batch["aatype"])
+            a, b = self.z_init(batch["aatype"]).chunk(2, dim=-1)
+            z = a[..., :, None, :] + b[..., None, :, :]
+            z += self.z_rel_pos(batch["seq_rel_pos"])
 
-                # Recycling embedding
-                s += self.recycle_s(s_prev)
-                z += self.recycle_z(z_prev)
+            # Recycling embedding
+            s += self.recycle_s(s_prev)
+            z += self.recycle_z(z_prev)
 
-                # Add LM features
-                s += self.proj_s_lm(s_lm)
-                z += self.proj_z_lm(z_lm)
+            # Add LM features
+            s += self.proj_s_lm(s_lm)
+            z += self.proj_z_lm(z_lm)
 
-                # Run main trunk
-                s, z = self.main_stack(s, z, mask, self.use_kernel)
-                s_prev, z_prev = s, z
+            # Run main trunk
+            s, z = self.main_stack(s, z, mask, self.use_kernel)
+            s_prev, z_prev = s, z
         return s, z
 
     def run_trunk_ensemble(
         self,
         batch: dict[str, torch.Tensor],
         num_recycles: int,
-        mlm_prob: float | None = None,
-        train: bool = False,
+        mlm_prob: float = 0.15,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the trunk with stochastic recycling."""
         mask = batch["seq_mask"]
@@ -445,39 +442,29 @@ class AtlasFold(torch.nn.Module):
         device = mask.device
         dtype = torch_utils.get_context_dtype(device.type)
 
-        # Set default MLM probability to 0.15 for full mode if not specified
-        mlm_prob = mlm_prob if mlm_prob is not None else 0.15
-        if mlm_prob <= 0.0:
-            raise ValueError("mlm_prob must be greater than 0 for full mode.")
-
         # Recycling iteration with stochastic LM features
         s_prev = torch.zeros(B, L, self.channel_s, device=device, dtype=dtype)
         z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
 
-        for i in range(0, num_recycles + 1):
-            enable_grad = train and i == num_recycles
-            with torch.set_grad_enabled(enable_grad):
-                if enable_grad and torch.is_autocast_enabled():
-                    torch.clear_autocast_cache()
+        for _ in range(0, num_recycles + 1):
+            s = self.s_init(batch["aatype"])
+            a, b = self.z_init(batch["aatype"]).chunk(2, dim=-1)
+            z = a[..., :, None, :] + b[..., None, :, :]
+            z += self.z_rel_pos(batch["seq_rel_pos"])
 
-                s = self.s_init(batch["aatype"])
-                a, b = self.z_init(batch["aatype"]).chunk(2, dim=-1)
-                z = a[..., :, None, :] + b[..., None, :, :]
-                z += self.z_rel_pos(batch["seq_rel_pos"])
+            # Recycling embedding
+            s += self.recycle_s(s_prev)
+            z += self.recycle_z(z_prev)
 
-                # Recycling embedding
-                s += self.recycle_s(s_prev)
-                z += self.recycle_z(z_prev)
+            # Run LM module with stochastic masking
+            mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
+            s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask)
+            s += self.proj_s_lm(s_lm)
+            z += self.proj_z_lm(z_lm)
 
-                # Run LM module with stochastic masking
-                mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
-                s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, enable_grad)
-                s += self.proj_s_lm(s_lm)
-                z += self.proj_z_lm(z_lm)
-
-                # Run main trunk
-                s, z = self.main_stack(s, z, mask, self.use_kernel)
-                s_prev, z_prev = s, z
+            # Run main trunk
+            s, z = self.main_stack(s, z, mask, self.use_kernel)
+            s_prev, z_prev = s, z
         return s, z
 
     def sample_mlm_mask(
