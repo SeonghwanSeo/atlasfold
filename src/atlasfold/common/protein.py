@@ -9,7 +9,7 @@ from typing_extensions import Self
 from atlasfold.common import file_io, residue_constants
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(kw_only=True)
 class Protein:
     """A data structure representing a 3D protein structure"""
 
@@ -54,7 +54,27 @@ class Protein:
         L = len(sequence)
         coordinates = np.full((L, 14, 3), np.nan, dtype=np.float32)
         b_factors = np.full((L, 14), np.nan, dtype=np.float32)
-        return cls(name, sequence, coordinates, b_factors)
+        return cls(
+            name=name, sequence=sequence, coordinates=coordinates, b_factors=b_factors
+        )
+
+    @classmethod
+    def create(
+        cls,
+        name: str,
+        sequence: str,
+        coordinates: np.ndarray,
+        b_factors: np.ndarray,
+        residue_index: np.ndarray | None = None,
+    ) -> Self:
+        """Create a Protein instance with the given data."""
+        return cls(
+            name=name,
+            sequence=sequence,
+            coordinates=coordinates,
+            b_factors=b_factors,
+            residue_index=residue_index,
+        )
 
     @property
     def atom_mask(self) -> np.ndarray:
@@ -112,7 +132,7 @@ class Protein:
         coordinates = np.stack(coords_list, axis=0)  # [L, 14, 3]
         b_factors = np.stack(biso_list, axis=0)  # [L, 14]
         residue_index = np.array(res_idx_list, dtype=np.int32)  # [L,]
-        return cls(name, sequence, coordinates, b_factors, residue_index)
+        return cls.create(name, sequence, coordinates, b_factors, residue_index)
 
 
 @dataclasses.dataclass

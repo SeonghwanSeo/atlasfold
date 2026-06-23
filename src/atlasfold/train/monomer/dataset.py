@@ -69,7 +69,7 @@ class DataPipeline:
                 raise NotImplementedError(
                     "Structure with missing residues is not supported yet."
                 )
-        return protein.Protein(name, sequence, coordinates, b_factors)
+        return protein.Protein.create(name, sequence, coordinates, b_factors)
 
 
 def pad_input(

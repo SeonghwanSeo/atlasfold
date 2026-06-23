@@ -11,41 +11,52 @@ from atlasfold.model import AtlasFold, SamplingConfig
 @contextlib.contextmanager
 def seed_context(seed: int, device: torch.device):
     if device.type == "cuda":
-        device_idx = device.index
-        if device_idx is None:
-            device_idx = torch.cuda.current_device()
-        devices = [device_idx]
+        with torch.random.fork_rng(device_type="cuda"):
+            torch.manual_seed(seed)
+            yield
     else:
-        devices = []
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(seed)
+            yield
 
-    with torch.random.fork_rng(devices=devices):
-        torch.manual_seed(seed)
+
+@contextlib.contextmanager
+def autocast_context(device: torch.device):
+    if device.type == "cuda":
+        with torch.autocast(device.type, torch.bfloat16, enabled=True):
+            yield
+    else:
         yield
 
 
-@dataclasses.dataclass
+def default(value, default_value):
+    """Return the value if it is not None, otherwise return the default value."""
+    return value if value is not None else default_value
+
+
+@dataclasses.dataclass(kw_only=True)
 class ProteinOutput(protein.Protein):
     """A data structure representing a predicted 3D protein structure"""
 
     name: str
     sequence: str
     coordinates: np.ndarray  # [L, 14, 3]
-    b_factors: np.ndarray  # [L, 14]
-    plddt: np.ndarray | None = None  # [L]
-    pae: np.ndarray | None = None  # [L, L]
-    ptm: float | None = None
+    b_factors: np.ndarray  # [L,] or [L, 14]
+    plddt: np.ndarray  # [L]
+    pae: np.ndarray  # [L, L]
+    ptm: float
     residue_index: np.ndarray | None = None  # [L], optional residue index
 
     def __post_init__(self):
         """Validate the input data."""
         super().__post_init__()
         L = len(self.sequence)
-        if self.plddt is not None and self.plddt.shape != (L,):
+        if self.plddt.shape != (L,):
             raise ValueError(
                 f"Invalid pLDDT shape: {self.plddt.shape}. "
                 f"Expected (L,) where L is the sequence length."
             )
-        if self.pae is not None and self.pae.shape != (L, L):
+        if self.pae.shape != (L, L):
             raise ValueError(
                 f"Invalid PAE shape: {self.pae.shape}. "
                 f"Expected (L, L) where L is the sequence length."
@@ -54,9 +65,13 @@ class ProteinOutput(protein.Protein):
 
 
 class FoldingRunner:
+    """A class for running protein folding using the AtlasFold model."""
+
     def __init__(self, model: AtlasFold):
         self.model: AtlasFold = model
         self.device = self.model.device
+
+    # TODO: add pre-trained model loading from HuggingFace Hub
 
     def fold(
         self,
@@ -64,7 +79,7 @@ class FoldingRunner:
         sequence: str,
         num_samples: int = 1,
         *,
-        preset: str = "full",  # 'full', 'stochastic'
+        preset: str = "base",
         seed: int = 1,
         num_recycles: int | None = None,
         mlm_prob: float | None = None,
@@ -72,37 +87,31 @@ class FoldingRunner:
     ) -> list[ProteinOutput]:
         feat: dict[str, np.ndarray] = featurize.featurize(sequence)
 
-        preset_cfg = self.get_preset(preset)
-        mode = preset_cfg["mode"]
-        if num_recycles is None:
-            num_recycles = preset_cfg["num_recycles"]
-        if mlm_prob is None:
-            mlm_prob = preset_cfg["mlm_prob"]
-        if sampling_config is None:
-            sampling_config = preset_cfg["sampling_config"]
+        # Validate the preset
+        if preset not in ["base", "high", "stochastic"]:
+            raise ValueError(f"Invalid preset: {preset}")
+        # Get the preset settings and override with user-specified values
+        settings = self.get_preset_setting(preset)
+        settings["num_recycles"] = default(num_recycles, settings["num_recycles"])
+        settings["mlm_prob"] = default(mlm_prob, settings["mlm_prob"])
+        settings["sampling_config"] = default(
+            sampling_config, settings["sampling_config"]
+        )
 
         # Pad the features to the next multiple of 32
         feat = self.pad(feat, 16)
 
         # Model inference
-        out = self.model_run(
-            feat, seed, mode, num_samples, num_recycles, mlm_prob, sampling_config
-        )
+        out = self.model_run(feat, seed=seed, num_samples=num_samples, **settings)
 
         length = len(sequence)
         samples = []
         for i in range(num_samples):
             coords = out["sample_coords"][i, :length]  # [L, 14, 3]
-            plddt, pae, ptm = None, None, None
-            if "plddt" in out:
-                plddt = out["plddt"][i, :length]  # [L]
-                b_factor = plddt * 100
-            else:
-                b_factor = np.full(length, 100.0, dtype=np.float32)
-            if "pae" in out:
-                pae = out["pae"][i, :length, :length]  # [L, L]
-            if "ptm" in out:
-                ptm = float(out["ptm"][i].item())  # scalar
+            plddt = out["plddt"][i, :length]  # [L]
+            b_factor = plddt * 100
+            pae = out["pae"][i, :length, :length]  # [L, L]
+            ptm = float(out["ptm"][i].item())  # scalar
 
             sample = ProteinOutput(
                 name=name,
@@ -116,56 +125,49 @@ class FoldingRunner:
             samples.append(sample)
         return samples
 
-    def get_preset(self, preset: str) -> dict:
-        if preset == "full":
-            mode = "full"
-            num_recycles = 3
-            mlm_prob = 0.15
-            sampling_cfg = SamplingConfig(num_steps=100)
+    def get_preset_setting(self, preset: str) -> dict:
+        num_recycles = 3
+        mlm_prob = 0.15
+        # TODO: add auto-scaling for num_steps and sigma_max based on sequence length
+        sampling_cfg = SamplingConfig(num_steps=100, sigma_max=128)
+        stochastic = False
+        if preset == "high":
+            num_recycles = 6
         elif preset == "stochastic":
-            mode = "fast"
-            num_recycles = 3
-            mlm_prob = 0.15
-            sampling_cfg = SamplingConfig(num_steps=100)
-        else:
-            raise ValueError(f"Invalid preset: {preset}")
+            stochastic = True
+
         return {
-            "mode": mode,
             "num_recycles": num_recycles,
             "mlm_prob": mlm_prob,
             "sampling_config": sampling_cfg,
+            "stochastic": stochastic,
         }
 
     def model_run(
         self,
         feat: dict[str, np.ndarray],
         seed: int,
-        mode: str,
         num_samples: int,
         num_recycles: int,
         mlm_prob: float,
-        sampling_config: SamplingConfig | None,
+        stochastic: bool,
+        sampling_config: SamplingConfig,
     ) -> dict[str, np.ndarray]:
         device = self.device
         feat: dict[str, torch.Tensor] = {
             k: torch.as_tensor(v, device=device) for k, v in feat.items()
         }
-        is_cuda = device.type == "cuda"
         with (
             torch.inference_mode(),
             seed_context(seed, device),
-            (
-                torch.autocast(device.type, torch.bfloat16, enabled=True)
-                if is_cuda
-                else contextlib.nullcontext()
-            ),
+            autocast_context(device),
         ):
             out = self.model.inference(
                 feat,
-                mode=mode,
                 num_samples=num_samples,
                 num_recycles=num_recycles,
                 mlm_prob=mlm_prob,
+                stochastic=stochastic,
                 sampling_config=sampling_config,
             )
         return {k: v.cpu().float().numpy() for k, v in out.items()}

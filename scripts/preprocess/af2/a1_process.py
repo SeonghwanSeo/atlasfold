@@ -126,7 +126,7 @@ def read_protein_structure(
         b_factors[i, :] = res_b_factors
 
     sequence = "".join(aa_list)
-    return protein.Protein(name, sequence, coordinates, b_factors)
+    return protein.Protein.create(name, sequence, coordinates, b_factors)
 
 
 def worker_fn(path: pathlib.Path, output_dir: pathlib.Path):

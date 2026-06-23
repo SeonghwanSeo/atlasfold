@@ -134,7 +134,7 @@ def read_protein_structure(
             b_factors[i, :] = res_b_factors
 
         sequence = "".join(aa_list)
-        chain = protein.Protein(chain_name, sequence, coordinates, b_factors)
+        chain = protein.Protein.create(chain_name, sequence, coordinates, b_factors)
         proteins.append(chain)
     return protein_complex.ProteinComplex(name, proteins)
 

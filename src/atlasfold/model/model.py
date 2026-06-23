@@ -222,40 +222,16 @@ class AtlasFold(torch.nn.Module):
     # ==================================================
     # Inference
     # ==================================================
-    def fold(
-        self,
-        sequence: str,
-        mode: str = "full",
-        num_recycles: int = 3,
-        num_samples: int = 1,
-        sampling_config: SamplingConfig | None = None,
-    ) -> dict[str, torch.Tensor]:
-        """Fold a single sequence."""
-        batch = featurize(sequence, pad_to_multiple_of=32)
-        batch = {k: torch.as_tensor(v, device=self.device) for k, v in batch.items()}
-        out = self.inference(
-            batch,
-            mode,
-            num_samples,
-            num_recycles=num_recycles,
-            sampling_config=sampling_config,
-        )
-        # Remove padding
-        length = len(sequence)
-        out["sample_coords"] = out["sample_coords"][:length]
-        out["distogram.logits"] = out["distogram.logits"][:length, :length]
-        return out
-
     @torch.inference_mode()
     def inference(
         self,
         batch: dict[str, torch.Tensor],
-        mode: str = "full",
         num_samples: int = 3,
         return_representations: bool = False,
         # Advanced options
         mlm_prob: float | None = None,
         num_recycles: int = 3,
+        stochastic: bool = False,
         sampling_config: SamplingConfig | None = None,
     ) -> dict[str, torch.Tensor]:
         """Perform the forward pass.
@@ -307,20 +283,30 @@ class AtlasFold(torch.nn.Module):
             The output dictionary containing the predicted coordinates and optionally
             the distogram logits and representations.
         """
+        mlm_prob = mlm_prob if mlm_prob is not None else 0.15
+        if mlm_prob < 0.0:
+            raise ValueError("mlm_prob must be non-negative.")
+        if stochastic and mlm_prob <= 0.0:
+            raise ValueError(
+                f"stochastic mode requires mlm_prob > 0.0, but got mlm_prob={mlm_prob}."
+            )
+
         is_batched = batch["aatype"].dim() == 3
         if not is_batched:
             # Add batch dimension if the input is not already batched
             batch = {k: v.unsqueeze(0) for k, v in batch.items()}
 
         out: dict[str, torch.Tensor] = {}
-        if mode not in ["fast", "full"]:
-            raise ValueError(f"Invalid mode: {mode}. Must be one of 'fast' or 'full'.")
 
         # Compute positional encodings
         self.compute_rel_pos_encoding(batch)
 
         # Run trunk
-        s, z = self.run_trunk(batch, num_recycles, mode, mlm_prob)
+        if stochastic or mlm_prob == 0.0:
+            s, z = self.run_trunk_stochastic(batch, num_recycles, mlm_prob)
+        else:  # mode == "full"
+            s, z = self.run_trunk(batch, num_recycles, mlm_prob)
+
         s, z = s.float(), z.float()
         if return_representations:
             out["trunk.s"] = s
@@ -377,19 +363,38 @@ class AtlasFold(torch.nn.Module):
         self,
         batch: dict[str, torch.Tensor],
         num_recycles: int,
-        mode: str,
-        mlm_prob: float | None = None,
+        mlm_prob: float = 0.15,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run the trunk."""
-        # Set default MLM probability to 0.15 for full mode if not specified
-        mlm_prob = mlm_prob if mlm_prob is not None else 0.15
-        if mlm_prob <= 0.0:
-            raise ValueError("mlm_prob must be greater than 0.")
+        """Run the trunk with stochastic recycling."""
+        mask = batch["seq_mask"]
+        B, L = mask.shape
+        device = mask.device
+        dtype = torch_utils.get_context_dtype(device.type)
 
-        if mode == "stochastic":
-            return self.run_trunk_stochastic(batch, num_recycles, mlm_prob)
-        else:  # mode == "full"
-            return self.run_trunk_ensemble(batch, num_recycles, mlm_prob)
+        # Recycling iteration with stochastic LM features
+        s_prev = torch.zeros(B, L, self.channel_s, device=device, dtype=dtype)
+        z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
+
+        for _ in range(0, num_recycles + 1):
+            s = self.s_init(batch["aatype"])
+            a, b = self.z_init(batch["aatype"]).chunk(2, dim=-1)
+            z = a[..., :, None, :] + b[..., None, :, :]
+            z += self.z_rel_pos(batch["seq_rel_pos"])
+
+            # Recycling embedding
+            s += self.recycle_s(s_prev)
+            z += self.recycle_z(z_prev)
+
+            # Run LM module with stochastic masking
+            mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
+            s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask)
+            s += self.proj_s_lm(s_lm)
+            z += self.proj_z_lm(z_lm)
+
+            # Run main trunk
+            s, z = self.main_stack(s, z, mask, self.use_kernel)
+            s_prev, z_prev = s, z
+        return s, z
 
     def run_trunk_stochastic(
         self,
@@ -422,43 +427,6 @@ class AtlasFold(torch.nn.Module):
             z += self.recycle_z(z_prev)
 
             # Add LM features
-            s += self.proj_s_lm(s_lm)
-            z += self.proj_z_lm(z_lm)
-
-            # Run main trunk
-            s, z = self.main_stack(s, z, mask, self.use_kernel)
-            s_prev, z_prev = s, z
-        return s, z
-
-    def run_trunk_ensemble(
-        self,
-        batch: dict[str, torch.Tensor],
-        num_recycles: int,
-        mlm_prob: float = 0.15,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run the trunk with stochastic recycling."""
-        mask = batch["seq_mask"]
-        B, L = mask.shape
-        device = mask.device
-        dtype = torch_utils.get_context_dtype(device.type)
-
-        # Recycling iteration with stochastic LM features
-        s_prev = torch.zeros(B, L, self.channel_s, device=device, dtype=dtype)
-        z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
-
-        for _ in range(0, num_recycles + 1):
-            s = self.s_init(batch["aatype"])
-            a, b = self.z_init(batch["aatype"]).chunk(2, dim=-1)
-            z = a[..., :, None, :] + b[..., None, :, :]
-            z += self.z_rel_pos(batch["seq_rel_pos"])
-
-            # Recycling embedding
-            s += self.recycle_s(s_prev)
-            z += self.recycle_z(z_prev)
-
-            # Run LM module with stochastic masking
-            mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
-            s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask)
             s += self.proj_s_lm(s_lm)
             z += self.proj_z_lm(z_lm)
 
@@ -549,10 +517,7 @@ class AtlasFold(torch.nn.Module):
 
         # Run LM stack
         mask = batch["seq_mask"]  # [B, L]
-        pair_mask = mask[:, None, :] & mask[:, :, None]
         s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
-        s_lm = s_lm * mask[:, :, None]
-        z_lm = z_lm * pair_mask[:, :, :, None]
         return s_lm, z_lm
 
     # TODO: current implementation is for development.

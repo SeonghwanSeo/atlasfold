@@ -67,4 +67,4 @@ def read_pdb(
     coordinates = np.stack(coords_list, axis=0)  # [L, 14, 3]
     b_factors = np.stack(biso_list, axis=0)  # [L, 14]
     residue_index = np.array(res_idx_list, dtype=np.int32)
-    return protein.Protein(name, sequence, coordinates, b_factors, residue_index)
+    return protein.Protein.create(name, sequence, coordinates, b_factors, residue_index)
