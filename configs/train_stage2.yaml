@@ -41,6 +41,7 @@ train:
     train_trunk: true
     train_diffusion_head: true
     train_confidence_head: true
+    train_pae_head: false
     diffusion_batch_size: 32
 
   loss:
@@ -48,6 +49,5 @@ train:
       smooth_lddt: 1.0
 
     diffusion_loss:
-      mse_loss: {}
       smooth_lddt_loss:
         chunk_size: 4

@@ -15,7 +15,7 @@ train:
 
   data:
     max_length: 640
-    max_seq_length: 1024
+    max_seq_length: 1280
     batch_size: 1
     global_batch_size: 256
 
@@ -30,17 +30,18 @@ train:
         sampling_strategy: ['length', 'cluster']
       - name: long_monomers
         is_distillation: true
-        weight: 0.745
+        weight: 0.740
         sampling_strategy: ['length', 'plddt']
       - name: short_monomers
         is_distillation: true
-        weight: 0.005
+        weight: 0.010
         sampling_strategy: ['length', 'plddt']
 
   training:
     train_trunk: true
     train_diffusion_head: true
     train_confidence_head: true
+    train_pae_head: false
     diffusion_batch_size: 24
 
   optimizer:

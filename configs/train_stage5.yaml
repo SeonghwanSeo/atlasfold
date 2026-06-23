@@ -10,25 +10,40 @@ model:
     blocks_per_ckpt: null
 
 train:
-  _yaml_: train/stage0.yaml
+  _yaml_: train/full.yaml
   name: stage5
 
   data:
-    max_length: 768
-    max_seq_length: 1024
+    max_length: 640
+    max_seq_length: 1280
     batch_size: 1
     global_batch_size: 256
 
+    train_datasets:
+      - name: rcsb
+        is_distillation: false
+        weight: 0.490
+        sampling_strategy: ['length', 'cluster']
+      - name: disordered_pdb
+        is_distillation: true
+        weight: 0.010
+        sampling_strategy: ['length', 'cluster']
+      - name: long_monomers
+        is_distillation: true
+        weight: 0.495
+        sampling_strategy: ['length', 'plddt']
+      - name: short_monomers
+        is_distillation: true
+        weight: 0.005
+        sampling_strategy: ['length', 'plddt']
+
   training:
     train_trunk: false
-    train_diffusion_head: false
+    train_diffusion_head: true
     train_confidence_head: true
-
-  loss:
-    weights:
-      pae: 1.0
+    train_pae_head: true
 
   optimizer:
     peak_lr: 1e-3
     decay_start_step: 100000000 # No decay
-    ema_update_params: ['confidence_head.']
+    ema_update_params: ['diffusion_head.', 'confidence_head.']
