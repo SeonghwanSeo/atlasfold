@@ -35,5 +35,7 @@ confidence_head:
   max_dist: 50.75
   max_pae_error: 32.0
   num_pae_bins: 64
+  max_pde_error: 32.0
+  num_pde_bins: 64
   num_plddt_bins: 50
   blocks_per_ckpt: null

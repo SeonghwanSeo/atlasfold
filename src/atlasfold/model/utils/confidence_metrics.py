@@ -28,6 +28,19 @@ def compute_pae(
     return pae  # [*, L, L]
 
 
+def compute_pde(
+    logits: torch.Tensor,
+    bin_centers: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    """Compute the predicted distance error (PDE) from the PDE logits."""
+    probs = torch.softmax(logits, dim=-1)  # [*, L, L, num_bins]
+    pde = (probs * bin_centers).sum(dim=-1)  # [*, L, L]
+    pair_mask = mask[..., :, None] & mask[..., None, :]
+    pde = pde * pair_mask.float()  # [*, L, L]
+    return pde  # [*, L, L]
+
+
 def compute_ptm(
     logits: torch.Tensor,  # [*, L, L, num_bins]
     bin_centers: torch.Tensor,  # [num_bins]

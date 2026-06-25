@@ -5,7 +5,6 @@ from functools import partial
 
 import torch
 
-from atlasfold.common.featurize import featurize
 from atlasfold.model.network import confidence_head, diffusion_head, distogram_head, trunk
 from atlasfold.model.network.diffusion_head import SamplingConfig
 from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
@@ -60,6 +59,8 @@ class ConfidenceHeadConfig:
     max_dist: float = 50.75
     max_pae_error: float = 32.0
     num_pae_bins: int = 64
+    max_pde_error: float = 32.0
+    num_pde_bins: int = 64
     num_plddt_bins: int = 50
     blocks_per_ckpt: int | None = None
 
@@ -336,6 +337,9 @@ class AtlasFold(torch.nn.Module):
             )
             out["pae"] = confidence_metrics.compute_pae(
                 **confidence_out["pae"], mask=mask
+            )
+            out["pde"] = confidence_metrics.compute_pde(
+                **confidence_out["pde"], mask=mask
             )
             out["ptm"] = confidence_metrics.compute_ptm(
                 **confidence_out["pae"], mask=mask

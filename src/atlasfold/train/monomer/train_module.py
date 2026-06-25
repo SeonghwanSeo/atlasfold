@@ -228,6 +228,8 @@ class TrainingModule(pl.LightningModule):
         )
         # PAE loss
         self.pae_loss = losses.confidence.PAELoss(**confidence_loss_config["pae_loss"])
+        # PDE loss
+        self.pde_loss = losses.confidence.PDELoss(**confidence_loss_config["pde_loss"])
 
     def setup_metrics(self):
         """Setup metrics for validation"""
@@ -555,6 +557,17 @@ class TrainingModule(pl.LightningModule):
         L_resolved = (L_resolved * w).sum() / n_valid_samples
         metrics["resolved_loss"] = L_resolved.detach()
 
+        L_pde = self.pde_loss(
+            logits=pred["pde"]["logits"],
+            bin_centers=pred["pde"]["bin_centers"],
+            x_pred=x_pred,
+            x_gt=x_gt,
+            mask=resolved_mask,
+            cbeta_idx=batch["pseudo_beta"],
+        )
+        L_pde = (L_pde * w).sum() / n_valid_samples
+        metrics["pde_loss"] = L_pde.detach()
+
         if self.train_pae_head:
             L_pae = self.pae_loss(
                 logits=pred["pae"]["logits"],
@@ -568,7 +581,7 @@ class TrainingModule(pl.LightningModule):
         else:
             L_pae = 0.0
 
-        L_confidence = L_plddt + L_resolved + L_pae
+        L_confidence = L_plddt + L_resolved + L_pde + L_pae
         metrics["loss"] = L_confidence.detach()
         return L_confidence, metrics
 
@@ -652,7 +665,10 @@ class TrainingModule(pl.LightningModule):
             provided_keys = set(state_dict.keys())
             missing_keys = model_keys - provided_keys
             unexpected_keys = provided_keys - model_keys
-            actual_missing_keys = [k for k in missing_keys if not k.startswith("lm.")]
+            allowed_missing_prefixes = ("lm.",)
+            actual_missing_keys = [
+                k for k in missing_keys if not k.startswith(allowed_missing_prefixes)
+            ]
 
             if actual_missing_keys or unexpected_keys:
                 error_msg = []

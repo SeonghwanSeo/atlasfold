@@ -1,7 +1,6 @@
 """Folding Trunk."""
 
 import dataclasses
-import math
 from functools import partial
 
 import torch
@@ -16,17 +15,22 @@ from atlasfold.model.network.rel_pos_encoding import (
 )
 from atlasfold.model.utils import confidence_metrics
 from atlasfold.utils import torch_utils
-from atlaslm.model import AtlasLM
-from atlaslm.pretrained import load_model
+from atlaslm.model import Alphabet, AtlasLM
+from atlaslm.pretrained import get_model, load_model
 
 
 class AtlasFold_Multimer(torch.nn.Module):
-    def __init__(self, cfg: AtlasFoldConfig):
+    def __init__(
+        self,
+        cfg: AtlasFoldConfig,
+        load_lm: bool = True,
+    ) -> None:
         """Initialize the AtlasFold model."""
         super().__init__()
-        self.cfg = cfg
+        self.cfg: AtlasFoldConfig = cfg
         # Trunk dimensions
         self.channel_s: int = cfg.channel_s
+        self.channel_s_lm: int = cfg.channel_s_lm
         self.channel_z: int = cfg.channel_z
 
         # Diffusion head dimensions
@@ -38,55 +42,77 @@ class AtlasFold_Multimer(torch.nn.Module):
         self.atom_rel_pos_encoding = AtomRelativePositionEncoding(max_r=4)
 
         # === Language model === #
-        self.lm: AtlasLM = load_model(cfg.lm_name, path=cfg.lm_path, dtype=torch.bfloat16)
+        if load_lm:
+            lm = load_model(cfg.lm_name, path=cfg.lm_path, dtype=torch.bfloat16)
+        else:
+            lm = get_model(cfg.lm_name)
+        self.lm: AtlasLM = lm
         # Freeze LM parameters
         self.lm.requires_grad_(False)
-        self.alphabet = self.lm.alphabet
+        self.alphabet: Alphabet = self.lm.alphabet
 
         # === Representation initialization === #
-        self.w_lm_emb = torch.nn.Parameter(torch.zeros(self.lm.n_layers + 1))
-        self.layernorm_lm_emb = LayerNorm(self.lm.d_model, precision=torch.float32)
-        self.s_init = torch.nn.Sequential(
-            LinearNoBias(self.lm.d_model, self.channel_s, init="relu"),
-            torch.nn.ReLU(),
-            LinearNoBias(self.channel_s, self.channel_s, init="default"),
-        )
-        self.embed_aa = LinearNoBias(21, self.channel_s)
+        self.s_init = LinearNoBias(21, self.channel_s)
+        self.z_init = LinearNoBias(21, 2 * self.channel_z)
+        self.z_rel_pos = LinearNoBias(self.seq_rel_pos_encoding.dim, self.channel_z)
 
-        self.proj_lm_attn = torch.nn.ModuleList(
-            [
-                torch.nn.Sequential(
-                    LayerNorm(self.lm.n_heads),
-                    LinearNoBias(self.lm.n_heads, self.channel_z),
-                )
-                for _ in range(self.lm.n_layers)
-            ]
+        # === Recycling embedding === #
+        self.recycle_s = torch.nn.Sequential(
+            LayerNorm(self.channel_s),
+            LinearNoBias(self.channel_s, self.channel_s, init="final"),
         )
-        self.z_init = torch.nn.Sequential(
-            torch.nn.ReLU(),
-            LinearNoBias(self.channel_z, self.channel_z, init="default"),
-        )
-        self.linear_rel_pos = LinearNoBias(
-            self.seq_rel_pos_encoding.dim, self.channel_z, init="default"
-        )
-
-        # === Trunk body === #
         self.recycle_z = torch.nn.Sequential(
             LayerNorm(self.channel_z),
             LinearNoBias(self.channel_z, self.channel_z, init="final"),
         )
+
+        # === LM Stack === #
+        self.lm_layer_weights = torch.nn.Parameter(torch.zeros(self.lm.n_layers + 1))
+        self.layernorm_lm_emb = LayerNorm(self.lm.d_model)
+        self.lm_emb_to_s_lm = torch.nn.Sequential(
+            LinearNoBias(self.lm.d_model, self.channel_s_lm, init="relu"),
+            torch.nn.ReLU(),
+            LinearNoBias(self.channel_s_lm, self.channel_s_lm, init="default"),
+        )
+        self.proj_lm_attn = torch.nn.ModuleList(
+            [
+                LinearNoBias(self.lm.n_heads, self.channel_z)
+                for _ in range(self.lm.n_layers)
+            ]
+        )
+        self.lm_attn_to_z_lm = torch.nn.Sequential(
+            LayerNorm(self.channel_z),
+            LinearNoBias(self.channel_z, self.channel_z, init="relu"),
+            torch.nn.ReLU(),
+            LinearNoBias(self.channel_z, self.channel_z, init="default"),
+        )
         self.lm_stack = trunk.LMStack(
-            channel_s=self.channel_s,
+            channel_s=self.channel_s_lm,
             channel_z=self.channel_z,
             num_heads=cfg.trunk.num_heads,
+            num_tri_heads=cfg.trunk.num_tri_heads,
             dropout_z=cfg.trunk.dropout_z,
             num_blocks=cfg.trunk.num_lm_blocks,
             blocks_per_ckpt=cfg.trunk.blocks_per_ckpt,
         )
-        self.main_stack = trunk.TriangularUpdateStack(
+        self.proj_s_lm = torch.nn.Sequential(
+            LayerNorm(self.channel_s_lm),
+            LinearNoBias(self.channel_s_lm, self.channel_s),
+        )
+        self.proj_z_lm = torch.nn.Sequential(
+            LayerNorm(self.channel_z),
+            LinearNoBias(self.channel_z, self.channel_z),
+        )
+
+        # === Trunk body === #
+        self.main_stack = trunk.PairformerStack(
+            channel_s=self.channel_s,
             channel_z=self.channel_z,
+            num_heads=cfg.trunk.num_heads,
+            num_tri_heads=cfg.trunk.num_tri_heads,
             dropout_z=cfg.trunk.dropout_z,
             num_blocks=cfg.trunk.num_blocks,
+            num_pair_to_single_blocks=cfg.trunk.num_pair_to_single_blocks,
             blocks_per_ckpt=cfg.trunk.blocks_per_ckpt,
         )
 
@@ -214,20 +240,26 @@ class AtlasFold_Multimer(torch.nn.Module):
             The output dictionary containing the predicted coordinates and optionally
             the distogram logits and representations.
         """
+        if mode not in ["base", "full"]:
+            raise ValueError(f"Invalid mode: {mode}. Must be one of 'base' or 'full'.")
+
+        # Set default MLM probability to 0.15 for full mode if not specified
+        mlm_prob = mlm_prob if mlm_prob is not None else 0.15
+        if mlm_prob <= 0.0:
+            raise ValueError("mlm_prob must be greater than 0 for full mode.")
+
         is_batched = batch["aatype"].dim() == 3
         if not is_batched:
             # Add batch dimension if the input is not already batched
             batch = {k: v.unsqueeze(0) for k, v in batch.items()}
 
         out: dict[str, torch.Tensor] = {}
-        if mode not in ["base", "full"]:
-            raise ValueError(f"Invalid mode: {mode}. Must be one of 'base' or 'full'.")
 
         # Compute positional encodings
         self.compute_rel_pos_encoding(batch)
 
         # Run trunk
-        s, z = self.run_trunk(batch, num_recycles, mode, mlm_prob)
+        s, z = self.run_trunk(batch, num_recycles, mlm_prob)
         s, z = s.float(), z.float()
         if return_representations:
             out["trunk.s"] = s
@@ -288,89 +320,39 @@ class AtlasFold_Multimer(torch.nn.Module):
         self,
         batch: dict[str, torch.Tensor],
         num_recycles: int,
-        mode: str,
-        mlm_prob: float | None = None,
-        train: bool = False,
+        mlm_prob: float,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the trunk."""
-        if mode == "base":
-            if num_recycles < 0:
-                raise ValueError("num_recycles must be non-negative for base mode.")
-            return self.run_trunk_base(batch, num_recycles, mlm_prob, train)
-        else:  # mode == "full"
-            if num_recycles <= 0:
-                raise ValueError("num_recycles must be positive for full mode.")
-            return self.run_trunk_full(batch, num_recycles, mlm_prob, train)
-
-    def run_trunk_base(
-        self,
-        batch: dict[str, torch.Tensor],
-        num_recycles: int,
-        mlm_prob: float | None = None,
-        train: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run the trunk with shared LM features."""
-        # Sample a single MLM mask for all recycling steps
-        mlm_prob = mlm_prob if mlm_prob is not None else 0.0
-        mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
-
-        # Extract LM features
-        s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, train)
-
-        # Run LM module once and reuse the features for all recycling steps
-        mask = batch["seq_mask"]
-        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
-
-        # Recycling iteration with shared LM features
-        z_prev = torch.zeros_like(z_lm)  # [B, L, L, c_z]
-        for i in range(0, num_recycles + 1):
-            enable_grad = train and i == num_recycles
-            with torch.set_grad_enabled(enable_grad):
-                if enable_grad and torch.is_autocast_enabled():
-                    torch.clear_autocast_cache()
-                # Recycling embedding
-                z = z_lm + self.recycle_z(z_prev)
-                # Run main stack
-                z = self.main_stack(z, mask, self.use_kernel)
-                z_prev = z
-        return s_lm, z
-
-    def run_trunk_full(
-        self,
-        batch: dict[str, torch.Tensor],
-        num_recycles: int,
-        mlm_prob: float | None = None,
-        train: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run the trunk with stochastic recycling."""
         mask = batch["seq_mask"]
         B, L = mask.shape
         device = mask.device
         dtype = torch_utils.get_context_dtype(device.type)
 
-        # Set default MLM probability to 0.15 for full mode if not specified
-        mlm_prob = mlm_prob if mlm_prob is not None else 0.15
-        if mlm_prob <= 0.0:
-            raise ValueError("mlm_prob must be greater than 0 for full mode.")
-
         # Recycling iteration with stochastic LM features
+        s_prev = torch.zeros(B, L, self.channel_s, device=device, dtype=dtype)
         z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
-        for i in range(0, num_recycles + 1):
-            enable_grad = train and i == num_recycles
-            with torch.set_grad_enabled(enable_grad):
-                if enable_grad and torch.is_autocast_enabled():
-                    torch.clear_autocast_cache()
-                # For each recycle step, sample a MLM mask to extract new LM features.
-                mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
-                # Extract LM features with different MLM masks for each recycle step
-                s, z = self.run_lm_embedder(batch, mlm_mask, enable_grad)
-                # Run LM module
-                s, z = self.lm_stack(s, z, mask, self.use_kernel)
-                # Recycling
-                z += self.recycle_z(z_prev)
-                # Run main trunk
-                z = self.main_stack(z, mask, self.use_kernel)
-                z_prev = z
+
+        for _ in range(0, num_recycles + 1):
+            s = self.s_init(batch["aatype"])
+            a, b = self.z_init(batch["aatype"]).chunk(2, dim=-1)
+            z = a[..., :, None, :] + b[..., None, :, :]
+            z += self.z_rel_pos(batch["seq_rel_pos"])
+
+            # Recycling embedding
+            s += self.recycle_s(s_prev)
+            z += self.recycle_z(z_prev)
+
+            # Run LM module with stochastic masking
+            mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
+            s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask)
+            s += self.proj_s_lm(s_lm)
+            z += self.proj_z_lm(z_lm)
+
+            # TODO: add Template module here
+
+            # Run main trunk
+            s, z = self.main_stack(s, z, mask, self.use_kernel)
+            s_prev, z_prev = s, z
         return s, z
 
     def sample_mlm_mask(
@@ -420,23 +402,25 @@ class AtlasFold_Multimer(torch.nn.Module):
         # === Accumulate LM features === #
         B, S = input_ids.shape
         device = input_ids.device
-        s = torch.zeros((B, S, self.lm.d_model), device=device, dtype=torch.float32)
-        z = torch.zeros((B, S, S, self.channel_z), device=device, dtype=torch.float32)
-        w = self.w_lm_emb.softmax(dim=0)  # [n_layers+1,]
+        lm_emb = torch.zeros((B, S, self.lm.d_model), device=device, dtype=torch.float32)
+        lm_attn = torch.zeros(
+            (B, S, S, self.channel_z), device=device, dtype=torch.float32
+        )
+        w_layers = self.lm_layer_weights.softmax(dim=0)  # [n_layers+1,]
 
         with torch.no_grad():
             x = self.lm.embed(input_ids)
-        s = _add(s, w[0] * self.layernorm_lm_emb(x))
+        lm_emb = _add(lm_emb, w_layers[0] * self.layernorm_lm_emb(x))
 
         for i, block in enumerate(self.lm.transformer.blocks):
             with torch.no_grad():
                 x, attn = block(x, seq_id, pos_id, return_attn_logits=True)
                 # neginf will be set to 0 at the end of this function.
                 attn = attn.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
-                attn = attn.clamp_(-100.0, 100.0)
+                attn = attn.clamp_(-100.0, 100.0).div_(100)
                 attn = attn.moveaxis(1, -1)  # [B, S, S, n_heads]
-            s = _add(s, w[i + 1] * self.layernorm_lm_emb(x))
-            z = _add(z, self.proj_lm_attn[i](attn))
+            lm_emb = _add(lm_emb, w_layers[i + 1] * self.layernorm_lm_emb(x))
+            lm_attn = _add(lm_attn, self.proj_lm_attn[i](attn))
 
         # Extract the single and pair representations for the valid sequence positions
         # [B, S, c_s], [B, S, S, c_z] -> [B, L, c_s], [B, L, L, c_z]
@@ -444,26 +428,24 @@ class AtlasFold_Multimer(torch.nn.Module):
         b_i_s, b_i_z = b_i[:, None], b_i[:, None, None]
         row_s = batch["seq_tok_idx"]  # [B, L]
         row_z, col_z = row_s[:, :, None], row_s[:, None, :]
-        s = s[b_i_s, row_s]  # [B, L, c_s]
-        z = z[b_i_z, row_z, col_z]  # [B, L, L, c_z]
+        lm_emb = lm_emb[b_i_s, row_s]  # [B, L, c_s]
+        lm_attn = lm_attn[b_i_z, row_z, col_z]  # [B, L, L, c_z]
 
-        # === Initialize representations === #
-        # Initialize single representation with amino acid embedding
-        s = self.s_init(s)
-        s = _add(s, self.embed_aa(batch["aatype"]))  # [B, L, c_s]
+        s_lm = self.lm_emb_to_s_lm(lm_emb)
+        z_lm = self.lm_attn_to_z_lm(lm_attn)
+        del lm_emb, lm_attn, row_s, row_z, col_z, b_i_s, b_i_z
 
-        # Initialize pair representation with relative positional encoding
-        z = self.z_init(z / math.sqrt(self.lm.n_layers))
-        z = _add(z, self.linear_rel_pos(batch["seq_rel_pos"]))  # [B, L, L, c_z]
-
-        # Mask the padded positions in the single and pair representations
+        # Mask the LM features for invalid sequence positions
         mask = batch["seq_mask"]  # [B, L]
-        s = s * mask[:, :, None]
-        asym_id = batch["asym_id"]  # [B, L]
-        pair_mask = mask[:, :, None] & mask[:, None, :]  # [B, L, L]
-        pair_mask &= asym_id[:, :, None] == asym_id[:, None, :]
-        z = z * pair_mask[:, :, :, None]
-        return s, z
+        pair_mask = mask[:, None, :] & mask[:, :, None]
+        intra_mask = batch["asym_id"][:, None, :] == batch["asym_id"][:, :, None]
+        intra_mask &= pair_mask
+        s_lm = s_lm * mask[:, :, None]
+        z_lm = z_lm * intra_mask[:, :, :, None]  # [B, L, L, c_z]
+
+        # Run LM stack
+        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
+        return s_lm, z_lm
 
     # TODO: current implementation is for development.
     # I may want to remove this method in the future.
@@ -480,21 +462,19 @@ class AtlasFold_Multimer(torch.nn.Module):
 
         # Create the model on meta device
         with torch.device("meta"):
-            model = cls(config)
+            model = cls(config, load_lm=False)
             # Remove the LM, which will be loaded separately
             del model.lm
 
             if dtype is torch.bfloat16:
-                model.recycle_z = model.recycle_z.to(dtype)
                 model.lm_stack = model.lm_stack.to(dtype)
                 model.main_stack = model.main_stack.to(dtype)
-                model.confidence_head = model.confidence_head.to(dtype)
 
         # Load the state dict onto the target device
         model = model.to_empty(device=device)
 
         # Load the state dict with the specified strictness
-        model.load_state_dict(state_dict, strict=True, assign=True)
+        model.load_state_dict(state_dict, strict=True)
 
         # Finally, load the LM
         model.lm = load_model(
