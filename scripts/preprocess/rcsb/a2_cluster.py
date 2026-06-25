@@ -31,7 +31,7 @@ def parse_args():
 def main():
     """Main function to construct RCSB training set."""
     args = parse_args()
-    data_dir: pathlib.Path = args.data_dir
+    data_dir: pathlib.Path = args.data_dir / "rcsb/"
 
     # Step 1. Extract sequences from npz files
     fasta_path = data_dir / "rcsb_sequences.fasta"

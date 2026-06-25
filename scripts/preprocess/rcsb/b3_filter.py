@@ -37,7 +37,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    data_dir: pathlib.Path = args.data_dir
+    data_dir: pathlib.Path = args.data_dir / "rcsb/"
 
     print("Loading metadata...")
     manifest_path: pathlib.Path = data_dir / "manifest.msgpack"

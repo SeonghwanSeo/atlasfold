@@ -2,10 +2,6 @@ seed: 5
 
 model:
   _yaml_: model/atlasfold.yaml
-  trunk:
-    blocks_per_ckpt: null
-  diffusion_head:
-    blocks_per_ckpt: null
   confidence_head:
     blocks_per_ckpt: null
 
@@ -14,36 +10,32 @@ train:
   name: stage5
 
   data:
-    max_length: 640
+    max_length: 768
     max_seq_length: 1280
-    batch_size: 1
+    batch_size: 2
     global_batch_size: 256
 
     train_datasets:
       - name: rcsb
         is_distillation: false
-        weight: 0.490
-        sampling_strategy: ['length', 'cluster']
+        weight: 0.480
+        sampling_strategy: ["length", "cluster"]
       - name: disordered_pdb
         is_distillation: true
-        weight: 0.010
-        sampling_strategy: ['length', 'cluster']
+        weight: 0.020
+        sampling_strategy: ["length", "cluster"]
       - name: long_monomers
         is_distillation: true
-        weight: 0.495
-        sampling_strategy: ['length', 'plddt']
+        weight: 0.480
+        sampling_strategy: ["length", "plddt"]
       - name: short_monomers
         is_distillation: true
-        weight: 0.005
-        sampling_strategy: ['length', 'plddt']
+        weight: 0.020
+        sampling_strategy: ["length", "plddt"]
 
   training:
     train_trunk: false
     train_diffusion_head: true
     train_confidence_head: true
     train_pae_head: true
-
-  optimizer:
-    peak_lr: 1e-3
-    decay_start_step: 100000000 # No decay
-    ema_update_params: ['diffusion_head.', 'confidence_head.']
+    diffusion_batch_size: 32

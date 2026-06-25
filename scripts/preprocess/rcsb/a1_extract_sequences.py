@@ -113,7 +113,7 @@ def main():
     """Main function to process RCSB mmCIF files"""
     args = parse_args()
     cif_dir: pathlib.Path = args.cif_dir
-    data_dir: pathlib.Path = args.data_dir
+    data_dir: pathlib.Path = args.data_dir / "rcsb/"
 
     cif_paths = sorted(cif_dir.rglob("*.cif.gz"))
     print(f"Found {len(cif_paths)} mmCIF files to process.")

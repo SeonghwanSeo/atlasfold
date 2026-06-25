@@ -207,7 +207,7 @@ def main():
     """Main function to process RCSB mmCIF files"""
     args = parse_args()
     cif_dir: pathlib.Path = args.cif_dir
-    data_dir: pathlib.Path = args.data_dir
+    data_dir: pathlib.Path = args.data_dir / "rcsb/"
 
     # Read cluster mapping
     cluster_mapping_path = data_dir / "rcsb_clusters.csv"
