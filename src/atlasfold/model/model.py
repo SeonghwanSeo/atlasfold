@@ -57,6 +57,9 @@ class ConfidenceHeadConfig:
     num_bins: int = 39
     min_dist: float = 3.25
     max_dist: float = 50.75
+    # heads
+    has_pae_head: bool = True
+    has_pde_head: bool = True
     max_pae_error: float = 32.0
     num_pae_bins: int = 64
     max_pde_error: float = 32.0
@@ -335,15 +338,17 @@ class AtlasFold(torch.nn.Module):
             out["plddt"] = confidence_metrics.compute_plddt(
                 **confidence_out["plddt"], mask=mask
             )
-            out["pae"] = confidence_metrics.compute_pae(
-                **confidence_out["pae"], mask=mask
-            )
-            out["pde"] = confidence_metrics.compute_pde(
-                **confidence_out["pde"], mask=mask
-            )
-            out["ptm"] = confidence_metrics.compute_ptm(
-                **confidence_out["pae"], mask=mask
-            )
+            if "pde" in confidence_out:
+                out["pde"] = confidence_metrics.compute_pde(
+                    **confidence_out["pde"], mask=mask
+                )
+            if "pae" in confidence_out:
+                out["pae"] = confidence_metrics.compute_pae(
+                    **confidence_out["pae"], mask=mask
+                )
+                out["ptm"] = confidence_metrics.compute_ptm(
+                    **confidence_out["pae"], mask=mask
+                )
         del mask
 
         # Remove batch dimension if the input was not originally batched

@@ -6,8 +6,6 @@ model:
     blocks_per_ckpt: null
   diffusion_head:
     blocks_per_ckpt: null
-  confidence_head:
-    blocks_per_ckpt: null
 
 train:
   _yaml_: train/full.yaml
@@ -40,15 +38,8 @@ train:
   training:
     train_trunk: true
     train_diffusion_head: true
-    train_confidence_head: true
-    train_pde_head: false
-    train_pae_head: false
     diffusion_batch_size: 32
 
   loss:
     weights:
       smooth_lddt: 1.0
-
-    diffusion_loss:
-      smooth_lddt_loss:
-        chunk_size: 4

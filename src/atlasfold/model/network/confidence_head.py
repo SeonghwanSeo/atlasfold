@@ -99,7 +99,7 @@ class PredictedAlignedErrorHead(nn.Module):
 
     def __init__(
         self,
-        channel_z: int = 192,
+        channel_z: int = 128,
         num_bins: int = 64,
     ):
         super().__init__()
@@ -134,7 +134,7 @@ class PredictedDistanceErrorHead(nn.Module):
 
     def __init__(
         self,
-        channel_z: int = 192,
+        channel_z: int = 128,
         num_bins: int = 64,
     ):
         super().__init__()
@@ -170,6 +170,9 @@ class ConfidenceHead(nn.Module):
         num_tri_heads: int = 4,
         num_blocks: int = 4,
         dropout_z: float = 0.25,
+        # heads
+        has_pae_head: bool = True,
+        has_pde_head: bool = True,
         # distogram bins
         num_bins: int = 39,
         min_dist: float = 3.25,
@@ -210,17 +213,21 @@ class ConfidenceHead(nn.Module):
             blocks_per_ckpt=blocks_per_ckpt,
         )
 
+        self.has_pae_head: bool = has_pae_head
+        self.has_pde_head: bool = has_pde_head
+
+        self.num_plddt_bins: int = num_plddt_bins
         self.plddt_head = PredictedLDDTHead(channel_s, num_plddt_bins)
         self.experimentally_resolved_head = ExperimentallyResolvedHead(channel_s)
-        self.pae_head = PredictedAlignedErrorHead(channel_z, num_pae_bins)
-        self.pde_head = PredictedDistanceErrorHead(channel_z, num_pde_bins)
 
-        # Store confidence binning parameters
-        self.num_pae_bins: int = num_pae_bins
-        self.num_pde_bins: int = num_pde_bins
-        self.num_plddt_bins: int = num_plddt_bins
-        self.max_pae_error: float = max_pae_error
-        self.max_pde_error: float = max_pde_error
+        if self.has_pae_head:
+            self.num_pae_bins: int = num_pae_bins
+            self.max_pae_error: float = max_pae_error
+            self.pae_head = PredictedAlignedErrorHead(channel_z, num_pae_bins)
+        if self.has_pde_head:
+            self.num_pde_bins: int = num_pde_bins
+            self.max_pde_error: float = max_pde_error
+            self.pde_head = PredictedDistanceErrorHead(channel_z, num_pde_bins)
 
     def forward(
         self,
@@ -304,8 +311,10 @@ class ConfidenceHead(nn.Module):
                 s = s.float()
                 logits["plddt"] = self.plddt_head(s)
                 logits["experimentally_resolved"] = self.experimentally_resolved_head(s)
-                logits["pae"] = self.pae_head(z)
-                logits["pde"] = self.pde_head(z)
+                if self.has_pae_head:
+                    logits["pae"] = self.pae_head(z)
+                if self.has_pde_head:
+                    logits["pde"] = self.pde_head(z)
             return logits
 
         B, N, L, _, _ = x_pred.shape
@@ -313,32 +322,40 @@ class ConfidenceHead(nn.Module):
             logits = compute_confidences_single(s, z, mask, x_pred[:, 0])
             plddt_logits = logits["plddt"].unsqueeze(1)
             exp_resolved_logits = logits["experimentally_resolved"].unsqueeze(1)
-            pae_logits = logits["pae"].unsqueeze(1)
-            pde_logits = logits["pde"].unsqueeze(1)
+            if self.has_pae_head:
+                pae_logits = logits["pae"].unsqueeze(1)
+            if self.has_pde_head:
+                pde_logits = logits["pde"].unsqueeze(1)
         else:
             plddt_logits = torch.zeros(B, N, L, self.num_plddt_bins, device=device)
             exp_resolved_logits = torch.zeros(B, N, L, 37, device=device)
-            pae_logits = torch.zeros(B, N, L, L, self.num_pae_bins, device=device)
-            pde_logits = torch.zeros(B, N, L, L, self.num_pde_bins, device=device)
+            if self.has_pae_head:
+                pae_logits = torch.zeros(B, N, L, L, self.num_pae_bins, device=device)
+            if self.has_pde_head:
+                pde_logits = torch.zeros(B, N, L, L, self.num_pde_bins, device=device)
 
             for i in range(N):
                 logits = compute_confidences_single(s, z, mask, x_pred[:, i])
                 plddt_logits[:, i] = logits["plddt"]
                 exp_resolved_logits[:, i] = logits["experimentally_resolved"]
-                pae_logits[:, i] = logits["pae"]
-                pde_logits[:, i] = logits["pde"]
+                if self.has_pae_head:
+                    pae_logits[:, i] = logits["pae"]
+                if self.has_pde_head:
+                    pde_logits[:, i] = logits["pde"]
 
         out: dict[str, dict[str, torch.Tensor]] = {}
         out["experimentally_resolved"] = {"logits": exp_resolved_logits}
         plddt_bin_centers = get_bin_centers(0.0, 1.0, self.num_plddt_bins, device=device)
         out["plddt"] = {"logits": plddt_logits, "bin_centers": plddt_bin_centers}
-        pae_bin_centers = get_bin_centers(
-            0.0, self.max_pae_error, self.num_pae_bins, device=device
-        )
-        out["pae"] = {"logits": pae_logits, "bin_centers": pae_bin_centers}
-        pde_bin_centers = get_bin_centers(
-            0.0, self.max_pde_error, self.num_pde_bins, device=device
-        )
-        out["pde"] = {"logits": pde_logits, "bin_centers": pde_bin_centers}
+        if self.has_pae_head:
+            pae_bin_centers = get_bin_centers(
+                0.0, self.max_pae_error, self.num_pae_bins, device=device
+            )
+            out["pae"] = {"logits": pae_logits, "bin_centers": pae_bin_centers}
+        if self.has_pde_head:
+            pde_bin_centers = get_bin_centers(
+                0.0, self.max_pde_error, self.num_pde_bins, device=device
+            )
+            out["pde"] = {"logits": pde_logits, "bin_centers": pde_bin_centers}
 
         return out

@@ -672,11 +672,7 @@ class TrainingModule(pl.LightningModule):
             provided_keys = set(state_dict.keys())
             missing_keys = model_keys - provided_keys
             unexpected_keys = provided_keys - model_keys
-            allowed_missing_prefixes = (
-                "lm.",
-                "confidence_head.pde_head.",
-                "confidence_head.pae_head.",
-            )
+            allowed_missing_prefixes = "lm."
             actual_missing_keys = [
                 k for k in missing_keys if not k.startswith(allowed_missing_prefixes)
             ]

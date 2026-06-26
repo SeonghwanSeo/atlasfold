@@ -6,12 +6,10 @@ model:
     blocks_per_ckpt: 8
   diffusion_head:
     blocks_per_ckpt: null
-  confidence_head:
-    blocks_per_ckpt: null
 
 train:
   _yaml_: train/full.yaml
-  name: stage3-2
+  name: stage3
 
   data:
     max_length: 512
@@ -22,11 +20,11 @@ train:
     train_datasets:
       - name: rcsb
         is_distillation: false
-        weight: 0.248
+        weight: 0.240
         sampling_strategy: ["length", "cluster"]
       - name: disordered_pdb
         is_distillation: true
-        weight: 0.002
+        weight: 0.010
         sampling_strategy: ["length", "cluster"]
       - name: long_monomers
         is_distillation: true
@@ -40,7 +38,4 @@ train:
   training:
     train_trunk: true
     train_diffusion_head: true
-    train_confidence_head: true
-    train_pde_head: false
-    train_pae_head: false
     diffusion_batch_size: 32

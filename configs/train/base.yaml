@@ -50,11 +50,11 @@ trainer:
 # Exponential Moving Average (EMA)
 training:
   # Training step hyperparameters
-  train_trunk: true
-  train_diffusion_head: true
-  train_confidence_head: true
+  train_trunk: false
+  train_diffusion_head: false
+  train_confidence_head: false
   train_pde_head: false
-  train_pae_head: true
+  train_pae_head: false
 
   num_recycles: 3
 
@@ -89,7 +89,7 @@ loss:
     # Global loss weights
     distogram: 0.4
     diffusion: 2.0
-    confidence: 0.0001
+    confidence: 0.001
     # Diffusion loss weights
     smooth_lddt: 0.0
 

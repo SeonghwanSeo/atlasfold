@@ -1,0 +1,29 @@
+seed: 5
+
+model:
+  _yaml_: model/atlasfold.yaml
+  confidence_head:
+    blocks_per_ckpt: null
+
+train:
+  _yaml_: train/full.yaml
+  name: stage-confidence-2
+
+  data:
+    max_length: 768
+    max_seq_length: 1024
+    batch_size: 2
+    global_batch_size: 256
+
+    train_datasets:
+      - name: rcsb
+        is_distillation: false
+        weight: 1.000
+        sampling_strategy: ["length", "cluster"]
+
+  training:
+    train_confidence_head: true
+    train_pae_head: true
+
+    optimizer:
+      ema_update_params: ["confidence_head."]

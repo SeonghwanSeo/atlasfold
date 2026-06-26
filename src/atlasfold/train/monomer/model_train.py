@@ -45,8 +45,12 @@ class AtlasFoldForTrain(AtlasFold):
             "distogram_head": [self.distogram_head],
             "diffusion_head": [self.diffusion_head],
             "confidence_head": [self.confidence_head],
-            "pde_head": [self.confidence_head.pde_head],
-            "pae_head": [self.confidence_head.pae_head],
+            "pde_head": [self.confidence_head.pde_head]
+            if hasattr(self.confidence_head, "pde_head")
+            else [],
+            "pae_head": [self.confidence_head.pae_head]
+            if hasattr(self.confidence_head, "pae_head")
+            else [],
         }
 
     # ==================================================
