@@ -93,6 +93,7 @@ class Metadata(JsonSerializable):
     sym_id: int | None = None  # starts from 1
     cluster_id: str | None = None
     cluster_size: int | None = None
+    is_low_homology: bool = False
     exp: ExperimentRecord | None = None
     pred: PredictionRecord | None = None
 
@@ -113,6 +114,8 @@ class Metadata(JsonSerializable):
         ]:
             if getattr(self, field) is not None:
                 data[field] = getattr(self, field)
+        if self.is_low_homology:
+            data["is_low_homology"] = self.is_low_homology
         # Add nested records if they are not None
         for field in ["exp", "pred"]:
             if getattr(self, field) is not None:
@@ -141,6 +144,7 @@ class Metadata(JsonSerializable):
             sym_id=data.get("sym_id", None),
             cluster_id=data.get("cluster_id", None),
             cluster_size=data.get("cluster_size", None),
+            is_low_homology=data.get("is_low_homology", False),
             exp=exp,
             pred=pred,
         )
@@ -150,11 +154,17 @@ class Metadata(JsonSerializable):
 class InterfaceMetadata(JsonSerializable):
     chain_ids: tuple[int, int]  # (chain id of chain A, chain id of chain B)
     cluster_id: str | None = None
+    cluster_size: int | None = None
+    is_low_homology: bool = False
 
     def to_dict(self) -> dict:
         data: dict = {"chain_ids": self.chain_ids}
         if self.cluster_id is not None:
             data["cluster_id"] = self.cluster_id
+        if self.cluster_size is not None:
+            data["cluster_size"] = self.cluster_size
+        if self.is_low_homology:
+            data["is_low_homology"] = self.is_low_homology
         return data
 
     @classmethod
@@ -162,6 +172,8 @@ class InterfaceMetadata(JsonSerializable):
         return cls(
             chain_ids=tuple(data["chain_ids"]),
             cluster_id=data.get("cluster_id", None),
+            cluster_size=data.get("cluster_size", None),
+            is_low_homology=data.get("is_low_homology", False),
         )
 
 
@@ -177,9 +189,15 @@ class MultimerMetadata(JsonSerializable):
     def num_chains(self) -> int:
         return len(self.chains)
 
+    @property
+    def num_residues(self) -> int:
+        return sum(chain.num_residues for chain in self.chains)
+
     def to_dict(self) -> dict:
         data = {
             "id": self.id,
+            "num_chains": self.num_chains,
+            "num_residues": self.num_residues,
             "chains": [chain.to_dict() for chain in self.chains],
             "interfaces": [iface.to_dict() for iface in self.interfaces],
         }

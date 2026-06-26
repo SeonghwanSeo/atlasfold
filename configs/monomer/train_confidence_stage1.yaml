@@ -1,12 +1,12 @@
-seed: 5
+seed: 1
 
 model:
-  _yaml_: model/atlasfold.yaml
+  _yaml_: _model.yaml
   confidence_head:
     blocks_per_ckpt: null
 
 train:
-  _yaml_: train/full.yaml
+  _yaml_: _train_base.yaml
   name: stage-confidence-1
 
   data:
@@ -15,11 +15,15 @@ train:
     batch_size: 2
     global_batch_size: 256
 
+    data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
     train_datasets:
       - name: rcsb
         is_distillation: false
         weight: 1.000
         sampling_strategy: ["length", "cluster"]
+        metadata: /cache/wykim_lab/icl_shwan/atlasfold_data/rcsb/manifest_confidence.msgpack
+    val_dataset:
+      name: cameo_val
 
   training:
     train_confidence_head: true

@@ -6,7 +6,13 @@ from functools import partial
 import torch
 
 from atlasfold.model.model import AtlasFoldConfig
-from atlasfold.model.network import confidence_head, diffusion_head, distogram_head, trunk
+from atlasfold.model.network import (
+    confidence_head,
+    diffusion_head,
+    distogram_head,
+    template,
+    trunk,
+)
 from atlasfold.model.network.diffusion_head import SamplingConfig
 from atlasfold.model.network.primitives import LayerNorm, LinearNoBias
 from atlasfold.model.network.rel_pos_encoding import (
@@ -19,15 +25,35 @@ from atlaslm.model import Alphabet, AtlasLM
 from atlaslm.pretrained import get_model, load_model
 
 
+@dataclasses.dataclass(kw_only=True)
+class TemplateModuleConfig:
+    channel_template: int = 64
+    num_blocks: int = 2
+    num_tri_heads: int = 4
+    dropout_z: float = 0.25
+    num_distogram_bins: int = 39
+    min_dist: float = 3.25
+    max_dist: float = 50.75
+    blocks_per_ckpt: int | None = None
+
+
+@dataclasses.dataclass(kw_only=True)
+class AtlasFoldMultimerConfig(AtlasFoldConfig):
+    name: str = "atlasfold-multimer-base"
+    template_module: TemplateModuleConfig = dataclasses.field(
+        default_factory=TemplateModuleConfig
+    )
+
+
 class AtlasFold_Multimer(torch.nn.Module):
     def __init__(
         self,
-        cfg: AtlasFoldConfig,
+        cfg: AtlasFoldMultimerConfig,
         load_lm: bool = True,
     ) -> None:
         """Initialize the AtlasFold model."""
         super().__init__()
-        self.cfg: AtlasFoldConfig = cfg
+        self.cfg: AtlasFoldMultimerConfig = cfg
         # Trunk dimensions
         self.channel_s: int = cfg.channel_s
         self.channel_s_lm: int = cfg.channel_s_lm
@@ -114,6 +140,12 @@ class AtlasFold_Multimer(torch.nn.Module):
             num_blocks=cfg.trunk.num_blocks,
             num_pair_to_single_blocks=cfg.trunk.num_pair_to_single_blocks,
             blocks_per_ckpt=cfg.trunk.blocks_per_ckpt,
+        )
+
+        # === Template module === #
+        template_cfg = dataclasses.asdict(cfg.template_module)
+        self.template_module = template.TemplateModule(
+            channel_z=self.channel_z, **template_cfg
         )
 
         # === Distogram head === #
@@ -219,6 +251,20 @@ class AtlasFold_Multimer(torch.nn.Module):
                 Sequence IDs for attention masking. 1 for valid tokens, 0 for padding.
             - "lm.mlm_mask"     : [B, S] bool
                 Optional boolean mask for stochastic LM feature extraction.
+            # Optional template inputs, indexed by residues rather than LM tokens
+            - "template.mask" : [B, T] bool
+                Boolean mask for valid per-chain template slots.
+            - "template.aatype" : [B, T, L, 21] float
+                One-hot encoded template amino acid types.
+            - "template.pseudo_beta_mask" : [B, T, L] bool
+                Pseudo-beta coordinate mask (C-beta, or C-alpha for glycine).
+            - "template.backbone_frame_mask" : [B, T, L] bool
+                Mask indicating residues with valid N, CA, and C coordinates.
+            - "template.pseudo_beta" : [B, T, L, 3] float
+                Raw pseudo-beta coordinates.
+            - "template.backbone_coords" : [B, T, L, 3, 3] float
+                Raw backbone coordinates ordered as N, CA, C. Used for
+                local-frame unit-vector features inside the template module.
         num_recycles : int
             The number of recycling steps.
         sampling_config : SamplingConfig
@@ -278,9 +324,7 @@ class AtlasFold_Multimer(torch.nn.Module):
         out["sample_coords"] = sample_coords
 
         # Run confidence head
-        confidence_out = self.confidence_head(
-            batch, s, z, sample_coords, compute_pae, self.use_kernel
-        )
+        confidence_out = self.confidence_head(batch, s, z, sample_coords, self.use_kernel)
         del s, z
 
         # Compute confidence metrics
@@ -289,7 +333,7 @@ class AtlasFold_Multimer(torch.nn.Module):
             out["plddt"] = confidence_metrics.compute_plddt(
                 **confidence_out["plddt"], mask=mask
             )
-            if compute_pae:
+            if compute_pae and "pae" in confidence_out:
                 out["pae"] = confidence_metrics.compute_pae(
                     **confidence_out["pae"], mask=mask
                 )
@@ -348,7 +392,8 @@ class AtlasFold_Multimer(torch.nn.Module):
             s += self.proj_s_lm(s_lm)
             z += self.proj_z_lm(z_lm)
 
-            # TODO: add Template module here
+            if self.template_module is not None:
+                z += self.template_module(batch, z, mask, self.use_kernel)
 
             # Run main trunk
             s, z = self.main_stack(s, z, mask, self.use_kernel)
@@ -453,12 +498,12 @@ class AtlasFold_Multimer(torch.nn.Module):
     def from_pretrained(
         cls,
         state_dict: dict,
-        config: AtlasFoldConfig | None = None,
+        config: AtlasFoldMultimerConfig | None = None,
         dtype: torch.dtype = torch.bfloat16,
         device: str | torch.device = "cuda",
     ) -> "AtlasFold_Multimer":
         """Create an AtlasFold model from a pretrained state dict."""
-        config = config if config is not None else AtlasFoldConfig()
+        config = config if config is not None else AtlasFoldMultimerConfig()
 
         # Create the model on meta device
         with torch.device("meta"):
@@ -474,7 +519,7 @@ class AtlasFold_Multimer(torch.nn.Module):
         model = model.to_empty(device=device)
 
         # Load the state dict with the specified strictness
-        model.load_state_dict(state_dict, strict=True)
+        model.load_state_dict(state_dict, strict=False)
 
         # Finally, load the LM
         model.lm = load_model(

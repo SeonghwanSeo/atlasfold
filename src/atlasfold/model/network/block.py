@@ -67,6 +67,8 @@ class PairStack(torch.nn.Module):
         num_heads_attn: int = 12,
         num_heads_tri_attn: int = 4,
         dropout_z: float = 0.25,
+        single_transition_factor: int = 4,
+        pair_transition_factor: int = 4,
         single_to_pair: bool = True,
         pair_to_pair: bool = True,
         pair_to_single: bool = True,
@@ -84,6 +86,8 @@ class PairStack(torch.nn.Module):
                     num_heads_attn,
                     num_heads_tri_attn,
                     dropout_z,
+                    single_transition_factor,
+                    pair_transition_factor,
                     single_to_pair,
                     pair_to_pair,
                     pair_to_single,
@@ -152,6 +156,8 @@ class PairBlock(torch.nn.Module):
         num_heads_attn: int = 12,
         num_heads_tri_attn: int = 4,
         dropout_z: float = 0.25,
+        single_transition_factor: int = 4,
+        pair_transition_factor: int = 4,
         single_to_pair: bool = True,
         pair_to_pair: bool = True,
         pair_to_single: bool = True,
@@ -183,7 +189,7 @@ class PairBlock(torch.nn.Module):
                 self.tri_attn_end = TriangleAttentionEndingNode(
                     channel_z, num_heads_tri_attn
                 )
-            self.transition_z = Transition(channel_z, 4)
+            self.transition_z = Transition(channel_z, pair_transition_factor)
             self.dropout_rowwise_z = DropoutRowwise(dropout_z)
             self.dropout_columnwise_z = DropoutColumnwise(dropout_z)
 
@@ -199,7 +205,7 @@ class PairBlock(torch.nn.Module):
                 num_heads=num_heads_attn,
                 use_pair_bias=True,
             )
-            self.transition_s = Transition(channel_s, 4)
+            self.transition_s = Transition(channel_s, single_transition_factor)
 
     def forward(
         self,

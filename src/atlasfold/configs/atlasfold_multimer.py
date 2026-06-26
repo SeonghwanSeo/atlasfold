@@ -1,7 +1,7 @@
-from atlasfold.model import model
+from atlasfold.model import model, model_multimer
 
-monomer_config = model.AtlasFoldConfig(
-    name="atlasfold-3b-base",
+multimer_config = model_multimer.AtlasFoldMultimerConfig(
+    name="atlasfold-3b-multimer",
     lm_name="SeonghwanSeo/atlaslm-3b-base",
     channel_s=384,
     channel_s_lm=768,
@@ -13,6 +13,15 @@ monomer_config = model.AtlasFoldConfig(
         num_lm_blocks=4,
         num_blocks=48,
         num_pair_to_single_blocks=12,
+    ),
+    template_module=model_multimer.TemplateModuleConfig(
+        channel_template=64,
+        num_blocks=2,
+        num_tri_heads=4,
+        dropout_z=0.25,
+        num_distogram_bins=39,
+        min_dist=3.25,
+        max_dist=50.75,
     ),
     diffusion_head=model.DiffusionHeadConfig(
         channel_a=768,
@@ -32,12 +41,16 @@ monomer_config = model.AtlasFoldConfig(
         num_heads=16,
         num_tri_heads=4,
         dropout_z=0.25,
-        num_blocks=2,
+        num_blocks=4,
         num_bins=39,
         min_dist=3.25,
         max_dist=50.75,
+        has_pae_head=True,
+        has_pde_head=True,
         max_pae_error=32.0,
         num_pae_bins=64,
+        max_pde_error=32.0,
+        num_pde_bins=64,
         num_plddt_bins=50,
     ),
 )

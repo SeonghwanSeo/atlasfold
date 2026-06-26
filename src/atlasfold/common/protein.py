@@ -151,7 +151,7 @@ class ProteinMultimer:
             raise ValueError("ProteinMultimer must contain at least one chain.")
 
         def check_length(ids, name):
-            if ids is not None and len(ids) != num_chains:
+            if ids is not None and len(ids) not in (0, num_chains):
                 raise ValueError(
                     f"Length of {name} ({len(ids)}) must match "
                     f"the number of sequences ({num_chains})."

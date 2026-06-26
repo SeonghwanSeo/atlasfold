@@ -1,26 +1,27 @@
-seed: 2
+seed: 4
 
 model:
-  _yaml_: model/atlasfold.yaml
+  _yaml_: _model.yaml
   trunk:
-    blocks_per_ckpt: null
+    blocks_per_ckpt: 8
   diffusion_head:
     blocks_per_ckpt: null
 
 train:
-  _yaml_: train/full.yaml
-  name: stage2
+  _yaml_: _train_base.yaml
+  name: stage4
 
   data:
-    max_length: 384
-    max_seq_length: 768
-    batch_size: 1
+    max_length: 640
+    max_seq_length: 1024
+    batch_size: 2
     global_batch_size: 256
 
+    data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
     train_datasets:
       - name: rcsb
         is_distillation: false
-        weight: 0.123
+        weight: 0.248
         sampling_strategy: ["length", "cluster"]
       - name: disordered_pdb
         is_distillation: true
@@ -28,18 +29,16 @@ train:
         sampling_strategy: ["length", "cluster"]
       - name: long_monomers
         is_distillation: true
-        weight: 0.865
+        weight: 0.740
         sampling_strategy: ["length", "plddt"]
       - name: short_monomers
         is_distillation: true
         weight: 0.010
         sampling_strategy: ["length", "plddt"]
+    val_dataset:
+      name: cameo_val
 
   training:
     train_trunk: true
     train_diffusion_head: true
     diffusion_batch_size: 32
-
-  loss:
-    weights:
-      smooth_lddt: 1.0
