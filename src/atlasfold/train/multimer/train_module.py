@@ -11,10 +11,13 @@ from atlasfold.model.model_multimer import AtlasFoldMultimerConfig
 from atlasfold.model.network.diffusion_head import SamplingConfig
 from atlasfold.train.monomer.train_module import (
     TrainingModule as MonomerTrainingModule,
+)
+from atlasfold.train.monomer.train_module import (
     to_dict,
 )
 from atlasfold.train.multimer import validation_metrics
 from atlasfold.train.multimer.model_train import AtlasFoldForTrain
+from atlasfold.train.utils import structure_metrics
 from atlasfold.train.utils.ema import ExponentialMovingAverage
 
 
@@ -84,6 +87,109 @@ class TrainingModule(MonomerTrainingModule):
                 val_metrics[f"{prefix}/{name}"] = MeanMetric()
         self.val_metrics = MetricCollection(val_metrics, prefix="val/")
 
+    def training_step(
+        self,
+        batch: dict[str, Any],
+        batch_idx: int,
+    ) -> torch.Tensor:
+        idx = self.global_step % len(self.recycles_per_step)
+        num_recycles = int(self.recycles_per_step[idx])
+
+        model_out: dict[str, Any] = self(
+            batch=batch["feat"],
+            label=batch["label"],
+            num_recycles=num_recycles,
+            mode="train",
+        )
+
+        device_type = batch["feat"]["aatype"].device.type
+        with torch.autocast(
+            device_type, dtype=torch.float32, enabled=(device_type == "cuda")
+        ):
+            loss, metrics = self.compute_losses(
+                model_out=model_out,
+                batch=batch["feat"],
+                label=batch["label"],
+                loss_mask=batch["loss_mask"],
+                full_label=batch.get("full_label"),
+            )
+
+        for k, v in metrics.items():
+            self.log(f"train/{k}", v, prog_bar=(k == "loss"), sync_dist=False)
+
+        return loss
+
+    def compute_losses(
+        self,
+        model_out: dict[str, Any],
+        batch: dict[str, torch.Tensor],
+        label: dict[str, torch.Tensor],
+        loss_mask: dict[str, torch.Tensor],
+        full_label: list[dict[str, torch.Tensor]] | None = None,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Compute multimer losses with full-label confidence alignment."""
+        loss = torch.zeros(1, device=batch["aatype"].device, dtype=torch.float32)
+        loss_weights = self.loss_weights
+
+        metrics: dict[str, torch.Tensor] = {}
+        if self.train_trunk:
+            distogram_loss, distogram_metrics = self.compute_distogram_loss(
+                model_out["distogram"], batch, label
+            )
+            loss += loss_weights["distogram"] * distogram_loss
+            metrics |= {f"distogram/{k}": v for k, v in distogram_metrics.items()}
+
+        if self.train_diffusion_head:
+            diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
+                model_out["diffusion"], batch, label
+            )
+            loss += loss_weights["diffusion"] * diffusion_loss
+            metrics |= {f"diffusion/{k}": v for k, v in diffusion_metrics.items()}
+
+        if self.train_confidence_head:
+            confidence_out = model_out["confidence"]
+            x_pred = confidence_out["mini_rollout"]["sample_coords"]
+
+            aligned_coords_list = []
+            aligned_mask_list = []
+            for b_i in range(x_pred.shape[0]):
+                feat_i = {k: v[b_i] for k, v in batch.items()}
+                label_i = {k: v[b_i] for k, v in label.items()}
+                if full_label is None:
+                    x_gt, mask = validation_metrics.get_aligned_gt_structure(
+                        x_pred[b_i], feat_i, label_i
+                    )
+                else:
+                    x_gt, mask = (
+                        validation_metrics.get_aligned_gt_structure_from_full_label(
+                            x_pred=x_pred[b_i],
+                            batch=feat_i,
+                            label=label_i,
+                            full_label=full_label[b_i],
+                        )
+                    )
+                aligned_coords_list.append(x_gt)
+                aligned_mask_list.append(mask)
+
+            x_gt = torch.stack(aligned_coords_list, dim=0)
+            mask = torch.stack(aligned_mask_list, dim=0)
+            aligned_label = {"coordinates": x_gt, "resolved_mask": mask}
+
+            confidence_loss, confidence_metrics = self.compute_confidence_loss(
+                confidence_out, batch, aligned_label, loss_mask["confidence"]
+            )
+            loss += loss_weights["confidence"] * confidence_loss
+            metrics |= {f"confidence/{k}": v for k, v in confidence_metrics.items()}
+
+            with torch.no_grad():
+                rmsd = structure_metrics.compute_rmsd_atom14(x_pred, x_gt, mask)
+                lddt_ca = structure_metrics.compute_lddt_ca(x_pred, x_gt, mask)
+                metrics |= {"mini_rollout/rmsd": rmsd.mean()}
+                metrics |= {"mini_rollout/lddt-ca": lddt_ca.mean()}
+
+        metrics["loss"] = loss.detach()
+        return loss, metrics
+
     def validation_step(
         self,
         batch: dict[str, dict[str, torch.Tensor]],
@@ -112,10 +218,20 @@ class TrainingModule(MonomerTrainingModule):
             raise e
 
         x_pred = sample_out["sample_coords"]  # [N, L, 14, 3]
-        plddt = sample_out["plddt"]  # [N, L]
-        mask = feat["seq_mask"].float()
-        avg_plddt = (plddt * mask).sum(-1) / mask.sum(-1).clamp(min=1)
-        rank_idx = int(torch.argmax(avg_plddt))
+        sanity_error = self._validation_rollout_sanity_error(sample_out, feat)
+        failed = sanity_error is not None
+        self.log(
+            "val/rollout_sanity_failed",
+            torch.tensor(float(failed), device=feat["seq_mask"].device),
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
+        if sanity_error is not None:
+            print(f"**WARNING**: validation rollout sanity failed: {sanity_error}")
+            return
+
+        rank_idx = self._select_validation_rank_idx(sample_out, feat)
 
         metrics: dict[str, float] = validation_metrics.compute_validation_metric(
             x_pred, feat, label, rank_idx
@@ -125,6 +241,91 @@ class TrainingModule(MonomerTrainingModule):
         for k, v in metrics.items():
             if k in val_metrics:
                 val_metrics[k].update(v)
+
+    def _validation_rollout_sanity_error(
+        self,
+        sample_out: dict[str, torch.Tensor],
+        feat: dict[str, torch.Tensor],
+    ) -> str | None:
+        if "sample_coords" not in sample_out:
+            return "missing sample_coords"
+        if "plddt" not in sample_out:
+            return "missing plddt"
+
+        x_pred = sample_out["sample_coords"]
+        plddt = sample_out["plddt"]
+        seq_mask = feat["seq_mask"].bool()
+        num_samples = int(self.validation_config.num_diffusion_samples)
+        length = int(seq_mask.shape[0])
+
+        if x_pred.ndim != 4 or x_pred.shape[-2:] != (14, 3):
+            return f"bad sample_coords shape {tuple(x_pred.shape)}"
+        if plddt.ndim != 2:
+            return f"bad plddt shape {tuple(plddt.shape)}"
+        if x_pred.shape[:2] != plddt.shape:
+            return (
+                "sample_coords and plddt shape mismatch: "
+                f"{tuple(x_pred.shape[:2])} != {tuple(plddt.shape)}"
+            )
+        if x_pred.shape[0] != num_samples:
+            return f"expected {num_samples} samples, got {x_pred.shape[0]}"
+        if x_pred.shape[1] != length:
+            return f"expected length {length}, got {x_pred.shape[1]}"
+        if seq_mask.sum() < 4:
+            return "fewer than 4 valid residues"
+        if not torch.isfinite(x_pred[:, seq_mask]).all():
+            return "non-finite coordinates in valid residues"
+        if not torch.isfinite(plddt[:, seq_mask]).all():
+            return "non-finite plddt in valid residues"
+        if torch.allclose(x_pred[:, seq_mask], torch.zeros_like(x_pred[:, seq_mask])):
+            return "all valid coordinates are zero"
+        if "pde" in sample_out:
+            pde = sample_out["pde"]
+            if pde.shape != (x_pred.shape[0], x_pred.shape[1], x_pred.shape[1]):
+                return f"bad pde shape {tuple(pde.shape)}"
+            if not torch.isfinite(pde[:, seq_mask][:, :, seq_mask]).all():
+                return "non-finite pde in valid residues"
+        return None
+
+    def _select_validation_rank_idx(
+        self,
+        sample_out: dict[str, torch.Tensor],
+        feat: dict[str, torch.Tensor],
+    ) -> int:
+        seq_mask = feat["seq_mask"].bool()
+        if (
+            "pde" in sample_out
+            and "distogram.logits" in sample_out
+            and "distogram.boundaries" in sample_out
+        ):
+            prob_contact = validation_metrics.compute_distogram_contact_probability(
+                sample_out["distogram.logits"], sample_out["distogram.boundaries"]
+            )
+            global_pde = validation_metrics.compute_global_pde(
+                sample_out["pde"], prob_contact, seq_mask
+            )
+            if torch.isfinite(global_pde).all():
+                rank_idx = int(torch.argmin(global_pde))
+                self.log(
+                    "val/rank_global_pde",
+                    global_pde[rank_idx],
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
+                return rank_idx
+
+        plddt = sample_out["plddt"]
+        mask = seq_mask.float()
+        avg_plddt = (plddt * mask).sum(-1) / mask.sum(-1).clamp(min=1)
+        self.log(
+            "val/rank_fallback_plddt",
+            torch.tensor(1.0, device=plddt.device),
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
+        return int(torch.argmax(avg_plddt))
 
     def on_validation_epoch_end(self):
         torch.backends.cudnn.benchmark = True

@@ -333,6 +333,10 @@ class AtlasFold_Multimer(torch.nn.Module):
             out["plddt"] = confidence_metrics.compute_plddt(
                 **confidence_out["plddt"], mask=mask
             )
+            if "pde" in confidence_out:
+                out["pde"] = confidence_metrics.compute_pde(
+                    **confidence_out["pde"], mask=mask
+                )
             if compute_pae and "pae" in confidence_out:
                 out["pae"] = confidence_metrics.compute_pae(
                     **confidence_out["pae"], mask=mask

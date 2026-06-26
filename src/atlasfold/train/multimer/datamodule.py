@@ -4,6 +4,7 @@ import logging
 
 import lightning.pytorch as pl
 from omegaconf import OmegaConf
+from torch.utils.data import default_collate
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
@@ -14,6 +15,16 @@ from atlasfold.train.multimer.dataset import (
     ValidationDatasetConfig,
 )
 from atlasfold.train.utils.dl_sampler import DistributedWeightedSampler
+
+
+def multimer_train_collate(samples: list[dict]) -> dict:
+    """Collate train samples while preserving variable-length full labels."""
+    return {
+        "feat": default_collate([sample["feat"] for sample in samples]),
+        "label": default_collate([sample["label"] for sample in samples]),
+        "loss_mask": default_collate([sample["loss_mask"] for sample in samples]),
+        "full_label": [sample["full_label"] for sample in samples],
+    }
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -124,6 +135,7 @@ class TrainingDataModule(pl.LightningDataModule):
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
             persistent_workers=persistent_workers,
+            collate_fn=multimer_train_collate,
         )
 
     def val_dataloader(self) -> DataLoader:

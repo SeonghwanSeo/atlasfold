@@ -4,6 +4,7 @@ import logging
 import pathlib
 import pickle
 from collections import defaultdict
+from typing import Any
 
 import lmdb
 import msgpack
@@ -17,6 +18,8 @@ from atlasfold.train.monomer.dataset import DataPipeline as MonomerDataPipeline
 from atlasfold.train.multimer.cropper import MultimerCropper
 from atlasfold.utils.geometry.random_augment import do_centering_atom14
 from atlaslm.alphabet import Alphabet
+
+DEFAULT_MAX_TEMPLATES = 0
 
 
 class MultimerDataPipeline:
@@ -365,7 +368,7 @@ class TrainingDataset(LMDBDataset):
     def __getitem__(
         self,
         index: int,
-    ) -> dict[str, dict[str, torch.Tensor]]:
+    ) -> dict[str, Any]:
         while True:
             try:
                 feat = self.sample_item(index)
@@ -380,7 +383,7 @@ class TrainingDataset(LMDBDataset):
                 break
         return feat
 
-    def sample_item(self, index: int) -> dict[str, dict[str, torch.Tensor]] | None:
+    def sample_item(self, index: int) -> dict[str, Any] | None:
         # Create a random number generator without a fixed seed.
         rng = np.random.default_rng()
         metadata_dict = self.metadatas[index]
@@ -394,7 +397,7 @@ class TrainingDataset(LMDBDataset):
         m: metadata.MultimerMetadata,
         bias_chain_id: int | tuple[int, int] | None,
         rng: np.random.Generator,
-    ) -> dict[str, dict[str, torch.Tensor]] | None:
+    ) -> dict[str, Any] | None:
         # Crop the input complex
         chain_crops: list[np.ndarray] = self.cropper.crop(
             compl, m, self.max_length, bias_chain_id, rng
@@ -414,6 +417,7 @@ class TrainingDataset(LMDBDataset):
         fold_input, lm_input = self.featurize(compl, chain_crops, chain_lm_crops)
         template_input = self.prepare_template_inputs(compl, m, chain_crops, rng)
         label = self.prepare_labels(compl, chain_crops)
+        full_label = self.prepare_full_labels(compl, chain_crops)
         loss_mask = self.prepare_loss_masks(m)
 
         # Pad the input and label to the maximum length.
@@ -427,6 +431,7 @@ class TrainingDataset(LMDBDataset):
         lm_input = {k: torch.from_numpy(v) for k, v in lm_input.items()}
         template_input = {k: torch.from_numpy(v) for k, v in template_input.items()}
         label = {k: torch.from_numpy(v) for k, v in label.items()}
+        full_label = {k: torch.from_numpy(v) for k, v in full_label.items()}
         loss_mask = {k: torch.tensor(v) for k, v in loss_mask.items()}
 
         fold_input = pad_input(fold_input, max_length=self.max_length)
@@ -442,6 +447,7 @@ class TrainingDataset(LMDBDataset):
         return {
             "feat": {**fold_input, **lm_input, **template_input},
             "label": label,
+            "full_label": full_label,
             "loss_mask": loss_mask,
         }
 
@@ -505,6 +511,44 @@ class TrainingDataset(LMDBDataset):
         coords = np.nan_to_num(coords, nan=0.0)
         coords = do_centering_atom14(coords, resolved_mask, mask_to_zero=True)
         return {"coordinates": coords, "resolved_mask": resolved_mask}
+
+    def prepare_full_labels(
+        self, compl: protein.ProteinMultimer, chain_crops: list[np.ndarray]
+    ) -> dict[str, np.ndarray]:
+        """Prepare unpadded full-complex labels for permutation alignment."""
+        coords = np.concatenate(
+            [chain.coordinates for chain in compl.chains], axis=0
+        ).astype(np.float32)
+        resolved_mask = np.isfinite(coords).all(axis=-1)
+        coords = np.nan_to_num(coords, nan=0.0)
+
+        full_feat = featurize.featurize_complex(
+            compl.sequences,
+            compl.entity_ids,
+            compl.asym_ids,
+            compl.sym_ids,
+        )
+
+        crop_to_full_idx = []
+        chain_start = 0
+        for chain, crop in zip(compl.chains, chain_crops, strict=True):
+            if len(crop) > 0:
+                crop_to_full_idx.append(crop + chain_start)
+            chain_start += chain.num_residues
+        if crop_to_full_idx:
+            crop_to_full_idx = np.concatenate(crop_to_full_idx, axis=0)
+        else:
+            crop_to_full_idx = np.empty((0,), dtype=np.int64)
+
+        return {
+            "coordinates": coords,
+            "resolved_mask": resolved_mask,
+            "aatype_int": full_feat["aatype_int"],
+            "asym_id": full_feat["asym_id"],
+            "entity_id": full_feat["entity_id"],
+            "res_idx": full_feat["res_idx"],
+            "crop_to_full_idx": crop_to_full_idx.astype(np.int64),
+        }
 
     def prepare_template_inputs(
         self,
