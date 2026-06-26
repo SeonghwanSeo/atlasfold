@@ -136,7 +136,7 @@ class Protein:
 
 
 @dataclasses.dataclass
-class ProteinComplex:
+class ProteinMultimer:
     """A data structure representing a protein complex"""
 
     name: str
@@ -148,7 +148,7 @@ class ProteinComplex:
     def __post_init__(self):
         num_chains = len(self.chains)
         if num_chains == 0:
-            raise ValueError("ProteinComplex must contain at least one chain.")
+            raise ValueError("ProteinMultimer must contain at least one chain.")
 
         def check_length(ids, name):
             if ids is not None and len(ids) != num_chains:
@@ -218,6 +218,18 @@ class ProteinComplex:
                     if n == 0:
                         break
                 chain_ids.append(chain_id)
+
+        chains = [
+            Protein.get_empty(f"{name}_{chain_id}", seq)
+            for chain_id, seq in zip(chain_ids, sequence, strict=True)
+        ]
+        return cls(
+            name=name,
+            chains=chains,
+            entity_ids=entity_ids or [],
+            asym_ids=asym_ids or [],
+            sym_ids=sym_ids or [],
+        )
 
     def __len__(self):
         """Return the number of chains in the complex."""

@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from atlasfold.common import metadata, protein
 from atlasfold.data import cif_factory
-from atlasfold.train.multimer.dataset import ComplexDataPipeline
+from atlasfold.train.multimer.dataset import MultimerDataPipeline
 
 # Error handling
 SUCCESS = 0
@@ -447,21 +447,21 @@ def parse_cif(
     reindex_chain_metadata(chain_metadatas)
     interfaces = detect_interfaces(chains, chain_metadatas)
 
-    compl = protein.ProteinComplex(
+    compl = protein.ProteinMultimer(
         name=name,
         chains=chains,
         entity_ids=[m.entity_id for m in chain_metadatas if m.entity_id is not None],
         asym_ids=[m.asym_id for m in chain_metadatas if m.asym_id is not None],
         sym_ids=[m.sym_id for m in chain_metadatas if m.sym_id is not None],
     )
-    complex_metadata = metadata.ComplexMetadata(
+    complex_metadata = metadata.MultimerMetadata(
         id=name,
         chains=chain_metadatas,
         interfaces=interfaces,
         exp=exp_record,
     )
 
-    ComplexDataPipeline.save(compl, npz_path)
+    MultimerDataPipeline.save(compl, npz_path)
     with open(json_path, "w") as f:
         json.dump(complex_metadata.to_dict(), f)
 
@@ -531,7 +531,7 @@ def main():
             n_complexes += n_success
             n_chains += n_success_chains
             flags.append(flag)
-            pbar.set_postfix({"Complexes": n_complexes, "Chains": n_chains})
+            pbar.set_postfix({"Multimeres": n_complexes, "Chains": n_chains})
     print("Processing completed.")
 
     print("Processing statistics:")

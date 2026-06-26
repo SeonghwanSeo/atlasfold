@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from atlasfold.common import featurize, metadata, protein, residue_constants
-from atlasfold.train.utils.cropper import ProteinCropper
+from atlasfold.train.monomer.cropper import ProteinCropper
 from atlasfold.utils.geometry.random_augment import do_centering_atom14
 from atlaslm.alphabet import Alphabet
 

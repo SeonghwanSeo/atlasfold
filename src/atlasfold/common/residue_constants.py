@@ -1,5 +1,7 @@
 import numpy as np
 
+from atlasfold.common import ccd
+
 # one-letter codes for standard amino acids and nucleic acid bases
 amino_acids: tuple[str, ...] = (
     "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
@@ -37,6 +39,31 @@ restype_3to1: dict[str, str] = {
     "UNK": "X",
 }
 restype_1to3: dict[str, str] = {v: k for k, v in restype_3to1.items()}
+
+ambiguous_restype_mapping: dict[str, str] = {
+    "B": "D",  # Aspartic acid or Asparagine
+    "U": "C",  # Selenocysteine (treated as Cysteine)
+    "Z": "E",  # Glutamic acid or Glutamine
+}
+
+
+def convert_full_sequence_to_sequence(
+    full_sequence: list[str],
+    standardize_ambiguous: bool = False,
+) -> str:
+    """Convert a full sequence (with ambiguous residues) to a standard sequence."""
+
+    def three_to_one(aa3: str) -> str:
+        aa3 = str(aa3).upper().strip()
+        aa = ccd.CCD_NAME_TO_ONE_LETTER.get(aa3, "X")
+        if standardize_ambiguous:
+            aa = ambiguous_restype_mapping.get(aa, aa)
+        if aa not in restype_orders:
+            aa = "X"
+        return aa
+
+    return "".join(map(three_to_one, full_sequence))
+
 
 atom_names: tuple[str, ...] = (
     "N",   "CA",  "C",   "CB",  "O",   "CG",  "CG1", "CG2", "OG",  "OG1",

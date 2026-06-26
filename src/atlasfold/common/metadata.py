@@ -166,7 +166,7 @@ class InterfaceMetadata(JsonSerializable):
 
 
 @dataclasses.dataclass(slots=True)
-class ComplexMetadata(JsonSerializable):
+class MultimerMetadata(JsonSerializable):
     id: str  # User/Author-defined name
     chains: list[Metadata]  # List of metadata for each chain
     interfaces: list[InterfaceMetadata]  # List of metadata for each interface
