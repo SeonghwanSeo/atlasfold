@@ -28,6 +28,7 @@ class DataModuleConfig:
     # === Training hyperparameters === #
     max_length: int = 256
     max_seq_length: int = 384
+    max_templates: int = 2
 
     # === Dataset configs === #
     data_root: str
@@ -74,6 +75,7 @@ class TrainingDataModule(pl.LightningDataModule):
             configs=self.config.train_datasets,
             max_length=self.config.max_length,
             max_seq_length=self.config.max_seq_length,
+            max_templates=self.config.max_templates,
         )
         # Print dataset info
         for d in multi_ds.datasets:
@@ -90,7 +92,10 @@ class TrainingDataModule(pl.LightningDataModule):
         if hasattr(self, "_val_ds"):
             return self._val_ds
 
-        ds = ValidationDataset(config=self.config.val_dataset)
+        ds = ValidationDataset(
+            config=self.config.val_dataset,
+            max_templates=0,
+        )
         self.print_rank_zero(
             f"Constructed validation dataset '{ds.name}':\n"
             f"  Num complexes: {len(ds.metadatas)}\n"

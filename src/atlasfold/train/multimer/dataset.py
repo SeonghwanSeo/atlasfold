@@ -103,7 +103,6 @@ class DatasetConfig:
     use_templates: bool = True
     template_lmdb_path: str | None = None
     template_mapping_path: str | None = None
-    max_templates: int = template_utils.MAX_TEMPLATES
 
 
 @dataclasses.dataclass(slots=True, kw_only=True)
@@ -119,6 +118,7 @@ class TrainingDatasetConfig(DatasetConfig):
 
     weight: float
     is_distillation: bool = True
+    template_prob: float = 0.2
     filters: list[dict] = dataclasses.field(default_factory=list)
 
 
@@ -128,7 +128,11 @@ class ValidationDatasetConfig(DatasetConfig):
 
 
 class LMDBDataset(torch.utils.data.Dataset):
-    def __init__(self, config: DatasetConfig):
+    def __init__(
+        self,
+        config: DatasetConfig,
+        max_templates: int = 0,
+    ):
         super().__init__()
         self.name: str = config.name
         self.lm_alphabet: Alphabet = Alphabet()
@@ -151,15 +155,16 @@ class LMDBDataset(torch.utils.data.Dataset):
         self.logger = logging.getLogger(f"[Dataset:{self.name}]")
 
         # Optional AlphaFold-Multimer-style per-chain template resources.
-        self.max_templates = int(config.max_templates)
+        self.max_templates = int(max_templates)
+        if self.max_templates < 0:
+            raise ValueError("max_templates must be non-negative.")
         self.use_templates = False
         if config.use_templates and self.is_multimer and self.max_templates > 0:
             template_lmdb_path = pathlib.Path(
                 config.template_lmdb_path or data_dir / "template.lmdb"
             )
             template_mapping_path = pathlib.Path(
-                config.template_mapping_path
-                or data_dir / "template_mapping.lmdb"
+                config.template_mapping_path or data_dir / "template_mapping.lmdb"
             )
             if template_lmdb_path.exists() and template_mapping_path.exists():
                 self.template_lmdb_path = str(template_lmdb_path)
@@ -261,6 +266,22 @@ class LMDBDataset(torch.utils.data.Dataset):
             chain_template_features.append(chain_feat)
         return template_utils.concat_chain_template_features(chain_template_features)
 
+    def prepare_empty_template_inputs(
+        self,
+        compl: protein.ProteinMultimer,
+        chain_crops: list[np.ndarray],
+    ) -> dict[str, np.ndarray]:
+        """Prepare fixed-size zero template features for a cropped complex."""
+        chain_template_features = []
+        for chain, crop in zip(compl.chains, chain_crops, strict=True):
+            chain_feat = template_utils.make_empty_template_features(
+                num_templates=self.max_templates,
+                num_residues=len(chain),
+            )
+            chain_feat = template_utils.crop_template_features(chain_feat, crop)
+            chain_template_features.append(chain_feat)
+        return template_utils.concat_chain_template_features(chain_template_features)
+
     def prepare_chain_template_inputs(
         self,
         chain: protein.Protein,
@@ -316,8 +337,9 @@ class TrainingDataset(LMDBDataset):
         config: TrainingDatasetConfig,
         max_length: int = 384,
         max_seq_length: int = 768,
+        max_templates: int = 2,
     ):
-        super().__init__(config)
+        super().__init__(config, max_templates=max_templates)
         self.config: TrainingDatasetConfig = config
         if config.is_multimer:
             self.cropper = MultimerCropper(
@@ -329,6 +351,9 @@ class TrainingDataset(LMDBDataset):
             )
         self.max_length: int = max_length  # Folding input length limit
         self.max_seq_length: int = max_seq_length  # LM input length limit
+        self.template_prob = float(config.template_prob)
+        if not 0.0 <= self.template_prob <= 1.0:
+            raise ValueError("template_prob must be between 0 and 1.")
 
         self.logger = logging.getLogger(f"[Training Dataset:{self.name}]")
 
@@ -387,7 +412,7 @@ class TrainingDataset(LMDBDataset):
         )
 
         fold_input, lm_input = self.featurize(compl, chain_crops, chain_lm_crops)
-        template_input = self.prepare_template_inputs(compl, m, chain_crops)
+        template_input = self.prepare_template_inputs(compl, m, chain_crops, rng)
         label = self.prepare_labels(compl, chain_crops)
         loss_mask = self.prepare_loss_masks(m)
 
@@ -486,20 +511,21 @@ class TrainingDataset(LMDBDataset):
         compl: protein.ProteinMultimer,
         m: metadata.MultimerMetadata,
         chain_crops: list[np.ndarray],
+        rng: np.random.Generator,
     ) -> dict[str, np.ndarray]:
         """Prepare AF-Multimer/AF3-style per-chain template features.
 
         Template tensors are indexed by cropped residues, not LM tokens.
         """
         if not self.use_templates:
-            return {}
+            return self.prepare_empty_template_inputs(compl, chain_crops)
 
         chain_template_features: list[dict[str, np.ndarray]] = []
         for chain, chain_metadata, crop in zip(
             compl.chains, m.chains, chain_crops, strict=True
         ):
             mapping_key = self.get_template_mapping_key(m.id, chain_metadata)
-            chain_feat = self.prepare_chain_template_inputs(chain, mapping_key)
+            chain_feat = self.prepare_chain_template_inputs(chain, mapping_key, rng)
             chain_feat = template_utils.crop_template_features(chain_feat, crop)
             chain_template_features.append(chain_feat)
         return template_utils.concat_chain_template_features(chain_template_features)
@@ -508,13 +534,19 @@ class TrainingDataset(LMDBDataset):
         self,
         chain: protein.Protein,
         mapping_key: str | None,
+        rng: np.random.Generator,
     ) -> dict[str, np.ndarray]:
         """Prepare fixed-size template slots for one query chain."""
-        hits = (
-            []
-            if mapping_key is None
-            else self.fetch_template_hits(mapping_key)[: self.max_templates]
-        )
+        hits = [] if mapping_key is None else self.fetch_template_hits(mapping_key)
+        if hits and rng.random() < self.template_prob:
+            max_selected = min(len(hits), self.max_templates)
+            num_selected = int(rng.integers(1, max_selected + 1))
+            selected_indices = np.sort(
+                rng.choice(len(hits), size=num_selected, replace=False)
+            )
+            hits = [hits[i] for i in selected_indices]
+        else:
+            hits = []
         template_features: list[dict[str, np.ndarray]] = []
         for hit_dict in hits:
             hit = template_utils.TemplateHit.from_dict(hit_dict)
@@ -734,8 +766,9 @@ class RCSBTrainingDataset(TrainingDataset):
         config: TrainingDatasetConfig,
         max_length: int = 384,
         max_seq_length: int = 768,
+        max_templates: int = 2,
     ):
-        super().__init__(config, max_length, max_seq_length)
+        super().__init__(config, max_length, max_seq_length, max_templates)
         assert config.is_multimer, (
             "RCSBTrainingDataset should be used for multimer datasets."
         )
@@ -777,8 +810,9 @@ class MonomerTrainingDataset(TrainingDataset):
         config: TrainingDatasetConfig,
         max_length: int = 384,
         max_seq_length: int = 768,
+        max_templates: int = 2,
     ):
-        super().__init__(config, max_length, max_seq_length)
+        super().__init__(config, max_length, max_seq_length, max_templates)
 
     def sample_item(self, index: int) -> dict[str, dict[str, torch.Tensor]] | None:
         rng = np.random.default_rng()
@@ -795,6 +829,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         configs: list[TrainingDatasetConfig],
         max_length: int = 384,
         max_seq_length: int = 768,
+        max_templates: int = 2,
     ) -> None:
         """
         Parameters
@@ -807,11 +842,11 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
             Maximum sequence length for the language model input (default: 384).
         """
         self.datasets: list[TrainingDataset] = [
-            RCSBTrainingDataset(config, max_length, max_seq_length)
+            RCSBTrainingDataset(config, max_length, max_seq_length, max_templates)
             if config.is_multimer and config.name in {"rcsb", "rcsb_multimer"}
-            else MonomerTrainingDataset(config, max_length, max_seq_length)
+            else MonomerTrainingDataset(config, max_length, max_seq_length, max_templates)
             if not config.is_multimer
-            else TrainingDataset(config, max_length, max_seq_length)
+            else TrainingDataset(config, max_length, max_seq_length, max_templates)
             for config in configs
         ]
         ds_weights: list[np.ndarray] = [ds.get_sampling_weights() for ds in self.datasets]
@@ -837,8 +872,12 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
 class ValidationDataset(LMDBDataset):
     """RCSB PDB validation dataset for multimeric structures."""
 
-    def __init__(self, config: ValidationDatasetConfig):
-        super().__init__(config)
+    def __init__(
+        self,
+        config: ValidationDatasetConfig,
+        max_templates: int = DEFAULT_MAX_TEMPLATES,
+    ):
+        super().__init__(config, max_templates=max_templates)
         if not config.is_multimer:
             raise ValueError("ValidationDataset should be used for multimer datasets.")
         self.config = config
@@ -865,8 +904,7 @@ class ValidationDataset(LMDBDataset):
             compl.sequences, compl.entity_ids, compl.asym_ids, compl.sym_ids
         )
         label = self.prepare_labels(compl)
-        chain_crops = [np.arange(len(chain)) for chain in compl.chains]
-        template_input = self.prepare_template_inputs(compl, m, chain_crops)
+        template_input = {}
 
         padded_length = len(feat["aatype"]) + (-len(feat["aatype"]) % 32)
         if template_input:
