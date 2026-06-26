@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from atlasfold.common import residue_constants
 from atlasfold.train.utils.structure_metrics import cdist
-from atlasfold.utils.torch_utils import get_one_hot_from_bins
+from atlasfold.utils.torch_utils import get_one_hot_from_bins, index_select_dim
 
 
 # Compute restype_atom_swap based on restype_ambiguous_atoms
@@ -193,6 +193,70 @@ class PLDDTLoss(torch.nn.Module):
         # Aggregate score
         lddt_score = score.sum(dim=-1) / pair_mask.sum(dim=-1).clamp(min=1)
         return lddt_score  # [B, L]
+
+
+class PDELoss(torch.nn.Module):
+    """Loss on Predicted Distance Error (PDE)."""
+
+    def forward(
+        self,
+        logits: torch.Tensor,
+        bin_centers: torch.Tensor,
+        x_pred: torch.Tensor,
+        x_gt: torch.Tensor,
+        mask: torch.Tensor,
+        cbeta_idx: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute the PDE loss.
+
+        Parameters
+        ----------
+        logits : torch.Tensor
+            Tensor of shape (B, L, L, num_bins) containing PDE logits.
+        bin_centers : torch.Tensor
+            Tensor of shape (num_bins,) containing the centers of the bins for PDE.
+        x_pred : torch.Tensor
+            Tensor of shape (B, L, 14, 3) containing predicted coordinates.
+        x_gt : torch.Tensor
+            Tensor of shape (B, L, 14, 3) containing ground truth coordinates.
+        mask : torch.Tensor
+            Tensor of shape (B, L, 14) containing boolean masks for valid atoms
+            in the GT structure.
+        cbeta_idx : torch.Tensor
+            Tensor of shape (B, L) containing the index of the C-beta atom
+            for each residue (or C-alpha for glycine).
+
+        Returns
+        -------
+        pde_loss : torch.Tensor
+            The computed PDE loss of shape (B,).
+        """
+        with torch.no_grad():
+            e = self.get_distance_error(x_pred, x_gt, cbeta_idx)  # [B, L, L]
+
+        e_bins = get_one_hot_from_bins(e, bin_centers)
+        loss = -(e_bins.float() * logits.log_softmax(-1)).sum(-1)  # [B, L, L]
+
+        mask_beta = index_select_dim(mask, dim=-1, index=cbeta_idx)  # [B, L]
+        pair_mask = mask_beta[..., :, None] & mask_beta[..., None, :]
+        pair_mask.diagonal(dim1=-2, dim2=-1).fill_(False)
+
+        n_valid = pair_mask.sum(dim=(-1, -2)).clamp(min=1)
+        loss_mean = (loss * pair_mask).sum(dim=(-1, -2)) / n_valid
+        return loss_mean
+
+    @staticmethod
+    def get_distance_error(
+        x_pred: torch.Tensor,
+        x_gt: torch.Tensor,
+        cbeta_idx: torch.Tensor,
+    ) -> torch.Tensor:
+        x_pred_beta = index_select_dim(x_pred, dim=-2, index=cbeta_idx)
+        x_gt_beta = index_select_dim(x_gt, dim=-2, index=cbeta_idx)
+
+        d_pred = cdist(x_pred_beta, x_pred_beta)
+        d_gt = cdist(x_gt_beta, x_gt_beta)
+        return torch.abs(d_pred - d_gt)
 
 
 class PAELoss(torch.nn.Module):
