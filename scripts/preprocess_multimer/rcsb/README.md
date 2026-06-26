@@ -38,12 +38,13 @@ python a2_cluster.py \
 ```
 
 ### 3. Process Structures
-Perform detailed processing of mmCIF files, including biological assembly expansion, geometry validation, all-atom clash filtering, interface detection, and filtering (resolution ≤ 9.0Å). Assemblies with more than 20 valid protein chains are reduced to the closest 20 chains around a sampled interface/contact seed, following the AF3 SI 2.5.4 subcomplex extraction idea. This step uses the cluster information and saves one complex-level `.npz` and `.json` metadata file per PDB entry.
+Perform detailed processing of mmCIF files, including biological assembly expansion, geometry validation, all-atom clash filtering, interface detection, and filtering (resolution ≤ 9.0Å for train). Assemblies with more than 20 valid protein chains are reduced to the closest 20 chains around a sampled interface/contact seed, following the AF3 SI 2.5.4 subcomplex extraction idea. This step uses the cluster information for train and saves one complex-level `.npz` and `.json` metadata file per PDB entry.
 
 ```bash
 python b1_process.py \
     --cif_dir /raw_data/RCSB/mmCIF \
     --data_dir /path/to/data/root/ \
+    --split train \
     --num_workers 16
 ```
 
@@ -95,6 +96,29 @@ python c3_create_template_mapping.py \
     --data_dir /path/to/data/root/
 ```
 
+### 9. Construct Validation Set
+Create the protein-multimer validation set in `rcsb_multimer_val`. Validation follows the AF3 validation date split (2021-10-01 through 2023-01-12), uses at most 20 chains, and keeps complexes up to 1536 protein residues, matching the AF2-multimer crop length. Templates and cluster-size recomputation are not required for validation.
+
+```bash
+# Step 9-1: Process AF3 validation-window structures.
+python b1_process.py \
+    --cif_dir /raw_data/RCSB/mmCIF \
+    --data_dir /path/to/data/root/ \
+    --split val \
+    --num_workers 16
+
+# Step 9-2: Select validation IDs and write manifest.{msgpack,json}.
+python d1_get_val_ids.py \
+    --data_dir /path/to/data/root/ \
+    --mmseqs $(which mmseqs) \
+    --num_workers 16
+
+# Step 9-3: Pack selected validation structures into LMDB.
+python d2_construct_val_lmdb.py \
+    --data_dir /path/to/data/root/ \
+    --size_gb 64
+```
+
 ## Dataset Structure
 After preprocessing, your data directory will look like this:
 ```
@@ -117,6 +141,12 @@ rcsb_multimer/
     ├── template_manifest.msgpack
     ├── template_mapping.jsonl
     └── template_mapping.msgpack
+rcsb_multimer_val/
+├── validation_ids.txt      # Selected validation PDB IDs
+├── npz/                    # Validation candidate processed files
+├── structure.lmdb          # Selected validation structures
+├── manifest.msgpack        # Selected validation metadata
+└── manifest.json
 ```
 
 > [!TIP]

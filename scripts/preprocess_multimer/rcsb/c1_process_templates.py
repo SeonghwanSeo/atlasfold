@@ -102,6 +102,7 @@ def load_template_as_protein(path: pathlib.Path) -> protein.Protein | None:
             continue
         atom_i = atom14_order[atom]
         prot.coordinates[residue_i, atom_i, :] = xyz
+        prot.b_factors[residue_i, atom_i] = 0.0
 
     return prot
 

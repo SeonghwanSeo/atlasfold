@@ -1,6 +1,7 @@
 """Preprocess RCSB mmCIF files into multimer complexes."""
 
 import argparse
+import dataclasses
 import functools
 import hashlib
 import json
@@ -28,13 +29,9 @@ RESOLUTION_FILTERED = 3
 NO_PROTEIN_FILTERED = 4
 CHAIN_COUNT_FILTERED = 5
 NO_VALID_CHAINS_FILTERED = 6
+TOKEN_COUNT_FILTERED = 7
 
-# Data filtering criteria. Match the AF3/RCSB training cutoff used by a1.
-DATE_END: datetime = datetime.fromisoformat("2021-09-30 23:59:59")
-MAX_RESOLUTION: float = 9.0
 MIN_LENGTH: int = 4
-MIN_CHAINS: int = 1
-MAX_CHAINS: int = 300
 MAX_EXTRACTED_CHAINS: int = 20
 INTERFACE_CA_DISTANCE: float = 15.0
 CONTACT_DISTANCE: float = 5.0
@@ -44,6 +41,45 @@ MAX_CLASH_RATIO: float = 0.3
 logger = logging.getLogger(__name__)
 
 GLOBAL_CLUSTER_MAPPING: dict[str, str] = {}
+
+
+@dataclasses.dataclass(frozen=True)
+class DataFilter:
+    """RCSB multimer split filters."""
+
+    output_name: str
+    date_start: datetime
+    date_end: datetime
+    max_resolution: float
+    min_chains: int
+    max_input_chains: int
+    max_output_chains: int = MAX_EXTRACTED_CHAINS
+    max_residues: int | None = None
+    require_cluster_mapping: bool = True
+
+
+AF3_SPLITS: dict[str, DataFilter] = {
+    "train": DataFilter(
+        output_name="rcsb_multimer",
+        date_start=datetime.min,
+        date_end=datetime.fromisoformat("2021-09-30 23:59:59"),
+        max_resolution=9.0,
+        min_chains=1,
+        max_input_chains=300,
+        require_cluster_mapping=True,
+    ),
+    "val": DataFilter(
+        output_name="rcsb_multimer_val",
+        date_start=datetime.fromisoformat("2021-10-01 00:00:00"),
+        date_end=datetime.fromisoformat("2023-01-12 23:59:59"),
+        max_resolution=4.5,
+        min_chains=2,
+        max_input_chains=1000,
+        max_output_chains=20,
+        max_residues=1536,
+        require_cluster_mapping=False,
+    ),
+}
 
 
 def parse_args():
@@ -60,6 +96,13 @@ def parse_args():
         type=pathlib.Path,
         required=True,
         help="Path to output directory for processed .npz files.",
+    )
+    parser.add_argument(
+        "--split",
+        type=str,
+        default="train",
+        choices=sorted(AF3_SPLITS),
+        help="AF3 split to process. Validation outputs go to rcsb_multimer_val.",
     )
     parser.add_argument(
         "--num_workers",
@@ -354,10 +397,12 @@ def parse_cif(
     name: str,
     cif_path: pathlib.Path,
     out_dir: pathlib.Path,
+    data_filter: DataFilter,
 ) -> tuple[int, int, int]:
     """Parse one CIF file and save the processed complex."""
     global GLOBAL_CLUSTER_MAPPING
-    assert GLOBAL_CLUSTER_MAPPING, "Cluster mapping is not initialized in worker."
+    if data_filter.require_cluster_mapping:
+        assert GLOBAL_CLUSTER_MAPPING, "Cluster mapping is not initialized in worker."
 
     npz_path = out_dir / f"{name}.npz"
     json_path = out_dir / f"{name}.json"
@@ -370,12 +415,12 @@ def parse_cif(
 
     # Filter by date.
     release_date = datetime.fromisoformat(exp_record.release_date)
-    if not release_date <= DATE_END:
+    if not data_filter.date_start <= release_date <= data_filter.date_end:
         return DATE_FILTERED, 0, 0
 
     # Filter by resolution.
     resolution = exp_record.resolution
-    if resolution is not None and resolution > MAX_RESOLUTION:
+    if resolution is not None and resolution > data_filter.max_resolution:
         return RESOLUTION_FILTERED, 0, 0
 
     # Prepare gemmi structure.
@@ -394,11 +439,15 @@ def parse_cif(
         entity_id = ids["entity_id"]
         c.name = f"{name}_{label_id}"
 
-        key = f"{name}_{entity_id}".upper()
-        cluster_id = GLOBAL_CLUSTER_MAPPING.get(key)
-        if cluster_id is None:
-            logger.warning(f"Cluster ID not found for entity_id {entity_id} in {name}.")
-            continue
+        cluster_id = None
+        if data_filter.require_cluster_mapping:
+            key = f"{name}_{entity_id}".upper()
+            cluster_id = GLOBAL_CLUSTER_MAPPING.get(key)
+            if cluster_id is None:
+                logger.warning(
+                    f"Cluster ID not found for entity_id {entity_id} in {name}."
+                )
+                continue
 
         sym_id_by_entity[entity_id] = sym_id_by_entity.get(entity_id, 0) + 1
         m = metadata.Metadata(
@@ -413,7 +462,7 @@ def parse_cif(
         )
         parsed_chains.append((c, m))
 
-    if not (MIN_CHAINS <= len(parsed_chains) <= MAX_CHAINS):
+    if not (data_filter.min_chains <= len(parsed_chains) <= data_filter.max_input_chains):
         return CHAIN_COUNT_FILTERED, 0, 0
 
     # Check sequence and geometry.
@@ -424,7 +473,7 @@ def parse_cif(
     ]
     if not valid_chains:
         return NO_VALID_CHAINS_FILTERED, 0, 0
-    if not (MIN_CHAINS <= len(valid_chains) <= MAX_CHAINS):
+    if not (data_filter.min_chains <= len(valid_chains) <= data_filter.max_input_chains):
         return CHAIN_COUNT_FILTERED, 0, 0
 
     chains = [c for c, _ in valid_chains]
@@ -433,7 +482,7 @@ def parse_cif(
     chains, chain_metadatas = filter_clashing_chains(chains, chain_metadatas)
     if not chains:
         return NO_VALID_CHAINS_FILTERED, 0, 0
-    if not (MIN_CHAINS <= len(chains) <= MAX_CHAINS):
+    if not (data_filter.min_chains <= len(chains) <= data_filter.max_input_chains):
         return CHAIN_COUNT_FILTERED, 0, 0
     reindex_chain_metadata(chain_metadatas)
     interfaces = detect_interfaces(chains, chain_metadatas)
@@ -442,10 +491,17 @@ def parse_cif(
         chains,
         chain_metadatas,
         interfaces,
-        max_chains=MAX_EXTRACTED_CHAINS,
+        max_chains=data_filter.max_output_chains,
     )
     reindex_chain_metadata(chain_metadatas)
     interfaces = detect_interfaces(chains, chain_metadatas)
+    if not (data_filter.min_chains <= len(chains) <= data_filter.max_output_chains):
+        return CHAIN_COUNT_FILTERED, 0, 0
+    if (
+        data_filter.max_residues is not None
+        and sum(len(c) for c in chains) > data_filter.max_residues
+    ):
+        return TOKEN_COUNT_FILTERED, 0, 0
 
     compl = protein.ProteinMultimer(
         name=name,
@@ -471,21 +527,26 @@ def parse_cif(
 def worker_fn(
     cif_path: pathlib.Path,
     output_dir: pathlib.Path,
+    data_filter: DataFilter,
 ):
     """Worker function to process a single CIF file."""
     pdb_id = cif_path.name.split(".")[0].lower()
     out_dir = output_dir / pdb_id[1:3] / pdb_id
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
-        return parse_cif(pdb_id, cif_path, out_dir)
+        return parse_cif(pdb_id, cif_path, out_dir, data_filter)
     except Exception as e:
         logger.error(f"Failed to process ({pdb_id}): {e}")
         return FAILED, 0, 0
 
 
-def worker_init(cluster_path: pathlib.Path):
+def worker_init(cluster_path: pathlib.Path | None):
     """Initialize worker process with global entity-to-cluster mapping."""
     global GLOBAL_CLUSTER_MAPPING
+    if cluster_path is None:
+        GLOBAL_CLUSTER_MAPPING = {}
+        return
+
     cluster_mapping = {}
     with open(cluster_path) as f:
         next(f)  # skip header
@@ -499,17 +560,27 @@ def main():
     """Main function to process RCSB mmCIF files."""
     args = parse_args()
     cif_dir: pathlib.Path = args.cif_dir
-    data_dir: pathlib.Path = args.data_dir / "rcsb_multimer/"
+    data_filter = AF3_SPLITS[args.split]
+    data_dir: pathlib.Path = args.data_dir / data_filter.output_name
 
-    cluster_mapping_path = data_dir / "rcsb_clusters.csv"
-    assert cluster_mapping_path.exists(), (
-        f"Cluster mapping file not found: {cluster_mapping_path}"
-    )
+    cluster_mapping_path: pathlib.Path | None = None
+    if data_filter.require_cluster_mapping:
+        cluster_mapping_path = data_dir / "rcsb_clusters.csv"
+        assert cluster_mapping_path.exists(), (
+            f"Cluster mapping file not found: {cluster_mapping_path}"
+        )
+
+    print(f"Applying AF3 {args.split} split parameters:")
+    print(data_filter)
 
     out_dir: pathlib.Path = data_dir / "npz"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    worker_wrapped = functools.partial(worker_fn, output_dir=out_dir)
+    worker_wrapped = functools.partial(
+        worker_fn,
+        output_dir=out_dir,
+        data_filter=data_filter,
+    )
 
     cif_paths = sorted(cif_dir.rglob("*.cif.gz"))
     print(f"Found {len(cif_paths)} mmCIF files to process.")
@@ -543,6 +614,7 @@ def main():
     print(f"  No protein filtered: {flags.count(NO_PROTEIN_FILTERED)}")
     print(f"  Chain count filtered: {flags.count(CHAIN_COUNT_FILTERED)}")
     print(f"  No valid chains filtered: {flags.count(NO_VALID_CHAINS_FILTERED)}")
+    print(f"  Token count filtered: {flags.count(TOKEN_COUNT_FILTERED)}")
 
 
 if __name__ == "__main__":

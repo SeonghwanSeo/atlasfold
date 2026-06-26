@@ -23,20 +23,8 @@ def parse_args():
         required=True,
         help="Path to data root or rcsb_multimer directory.",
     )
-    parser.add_argument(
-        "--out_prefix",
-        type=str,
-        default="template_mapping",
-        help="Output prefix under rcsb_multimer/templates.",
-    )
     args = parser.parse_args()
     return args
-
-
-def resolve_data_dir(data_dir: pathlib.Path) -> pathlib.Path:
-    if data_dir.name == "rcsb_multimer":
-        return data_dir
-    return data_dir / "rcsb_multimer"
 
 
 def load_entry_mapping(path: pathlib.Path) -> dict:
@@ -77,15 +65,15 @@ def load_entry_mapping(path: pathlib.Path) -> dict:
 
 def main():
     args = parse_args()
-    data_dir = resolve_data_dir(args.data_dir)
+    data_dir = args.data_dir / "rcsb_multimer/"
     template_dir = data_dir / "templates"
     template_dir.mkdir(parents=True, exist_ok=True)
 
     metadata_paths = sorted(args.metadata_dir.glob("*.npz"))
     print(f"Found {len(metadata_paths)} template metadata NPZ files.")
 
-    jsonl_path = template_dir / f"{args.out_prefix}.jsonl"
-    msgpack_path = template_dir / f"{args.out_prefix}.msgpack"
+    jsonl_path = template_dir / "template_mapping.json"
+    msgpack_path = template_dir / "template_mapping.msgpack"
 
     packer = msgpack.Packer(use_bin_type=True)
     with open(jsonl_path, "w") as jsonl_f, open(msgpack_path, "wb") as msgpack_f:
