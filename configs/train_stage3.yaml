@@ -11,7 +11,7 @@ model:
 
 train:
   _yaml_: train/full.yaml
-  name: stage3
+  name: stage3-2
 
   data:
     max_length: 512
@@ -22,11 +22,11 @@ train:
     train_datasets:
       - name: rcsb
         is_distillation: false
-        weight: 0.240
+        weight: 0.248
         sampling_strategy: ["length", "cluster"]
       - name: disordered_pdb
         is_distillation: true
-        weight: 0.010
+        weight: 0.002
         sampling_strategy: ["length", "cluster"]
       - name: long_monomers
         is_distillation: true
@@ -41,5 +41,6 @@ train:
     train_trunk: true
     train_diffusion_head: true
     train_confidence_head: true
+    train_pde_head: false
     train_pae_head: false
     diffusion_batch_size: 32

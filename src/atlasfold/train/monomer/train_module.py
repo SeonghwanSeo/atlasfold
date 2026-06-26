@@ -72,6 +72,7 @@ class TrainingConfig:
     train_trunk: bool = True
     train_diffusion_head: bool = True
     train_confidence_head: bool = True
+    train_pde_head: bool = False
     train_pae_head: bool = False
 
     # trunk recycling
@@ -131,6 +132,7 @@ class TrainingModule(pl.LightningModule):
         self.train_trunk: bool = self.training_config.train_trunk
         self.train_diffusion_head: bool = self.training_config.train_diffusion_head
         self.train_confidence_head: bool = self.training_config.train_confidence_head
+        self.train_pde_head: bool = self.training_config.train_pde_head
         self.train_pae_head: bool = self.training_config.train_pae_head
 
         # Initialize model here
@@ -182,6 +184,8 @@ class TrainingModule(pl.LightningModule):
             modules_to_freeze.append("diffusion_head")
         if self.train_confidence_head is False:
             modules_to_freeze.append("confidence_head")
+        if self.train_pde_head is False:
+            modules_to_freeze.append("pde_head")
         if self.train_pae_head is False:
             modules_to_freeze.append("pae_head")
         print(f"Freezing modules: {modules_to_freeze}")
@@ -557,16 +561,19 @@ class TrainingModule(pl.LightningModule):
         L_resolved = (L_resolved * w).sum() / n_valid_samples
         metrics["resolved_loss"] = L_resolved.detach()
 
-        L_pde = self.pde_loss(
-            logits=pred["pde"]["logits"],
-            bin_centers=pred["pde"]["bin_centers"],
-            x_pred=x_pred,
-            x_gt=x_gt,
-            mask=resolved_mask,
-            cbeta_idx=batch["pseudo_beta"],
-        )
-        L_pde = (L_pde * w).sum() / n_valid_samples
-        metrics["pde_loss"] = L_pde.detach()
+        if self.train_pde_head:
+            L_pde = self.pde_loss(
+                logits=pred["pde"]["logits"],
+                bin_centers=pred["pde"]["bin_centers"],
+                x_pred=x_pred,
+                x_gt=x_gt,
+                mask=resolved_mask,
+                cbeta_idx=batch["pseudo_beta"],
+            )
+            L_pde = (L_pde * w).sum() / n_valid_samples
+            metrics["pde_loss"] = L_pde.detach()
+        else:
+            L_pde = 0.0
 
         if self.train_pae_head:
             L_pae = self.pae_loss(
@@ -665,7 +672,11 @@ class TrainingModule(pl.LightningModule):
             provided_keys = set(state_dict.keys())
             missing_keys = model_keys - provided_keys
             unexpected_keys = provided_keys - model_keys
-            allowed_missing_prefixes = ("lm.",)
+            allowed_missing_prefixes = (
+                "lm.",
+                "confidence_head.pde_head.",
+                "confidence_head.pae_head.",
+            )
             actual_missing_keys = [
                 k for k in missing_keys if not k.startswith(allowed_missing_prefixes)
             ]

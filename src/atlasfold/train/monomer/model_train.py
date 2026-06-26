@@ -45,6 +45,7 @@ class AtlasFoldForTrain(AtlasFold):
             "distogram_head": [self.distogram_head],
             "diffusion_head": [self.diffusion_head],
             "confidence_head": [self.confidence_head],
+            "pde_head": [self.confidence_head.pde_head],
             "pae_head": [self.confidence_head.pae_head],
         }
 

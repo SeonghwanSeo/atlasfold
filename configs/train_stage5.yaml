@@ -37,5 +37,6 @@ train:
     train_trunk: false
     train_diffusion_head: true
     train_confidence_head: true
+    train_pde_head: false
     train_pae_head: true
     diffusion_batch_size: 32

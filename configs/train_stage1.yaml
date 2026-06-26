@@ -23,24 +23,25 @@ train:
       - name: rcsb
         is_distillation: false
         weight: 0.120
-        sampling_strategy: ['length', 'cluster']
+        sampling_strategy: ["length", "cluster"]
       - name: disordered_pdb
         is_distillation: true
         weight: 0.005
-        sampling_strategy: ['length', 'cluster']
+        sampling_strategy: ["length", "cluster"]
       - name: long_monomers
         is_distillation: true
         weight: 0.865
-        sampling_strategy: ['length', 'plddt']
+        sampling_strategy: ["length", "plddt"]
       - name: short_monomers
         is_distillation: true
         weight: 0.010
-        sampling_strategy: ['length', 'plddt']
+        sampling_strategy: ["length", "plddt"]
 
   training:
     train_trunk: true
     train_diffusion_head: true
     train_confidence_head: false
+    train_pde_head: false
     train_pae_head: false
     diffusion_batch_size: 32
 
