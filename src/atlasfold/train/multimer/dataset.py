@@ -2,6 +2,7 @@ import dataclasses
 import io
 import logging
 import pathlib
+import pickle
 from collections import defaultdict
 
 import lmdb
@@ -114,14 +115,11 @@ class TrainingDatasetConfig(DatasetConfig):
     is_distillation: bool
         Whether the dataset is for distillation,
         i.e., using predicted structures as labels.
-    sampling_strategy: str
-        Strategy for sampling training examples.
     """
 
     weight: float
     is_distillation: bool = True
     filters: list[dict] = dataclasses.field(default_factory=list)
-    sampling_strategy: tuple[str, ...] = tuple()
 
 
 @dataclasses.dataclass(slots=True, kw_only=True)
@@ -155,19 +153,17 @@ class LMDBDataset(torch.utils.data.Dataset):
         # Optional AlphaFold-Multimer-style per-chain template resources.
         self.max_templates = int(config.max_templates)
         self.use_templates = False
-        self.template_mapping: dict[str, list[dict]] = {}
         if config.use_templates and self.is_multimer and self.max_templates > 0:
             template_lmdb_path = pathlib.Path(
                 config.template_lmdb_path or data_dir / "template.lmdb"
             )
             template_mapping_path = pathlib.Path(
                 config.template_mapping_path
-                or data_dir / "templates" / "template_mapping.msgpack"
+                or data_dir / "template_mapping.lmdb"
             )
             if template_lmdb_path.exists() and template_mapping_path.exists():
                 self.template_lmdb_path = str(template_lmdb_path)
                 self.template_mapping_path = str(template_mapping_path)
-                self.template_mapping = self.load_template_mapping(template_mapping_path)
                 self.use_templates = True
             else:
                 logging.getLogger(__name__).info(
@@ -194,25 +190,18 @@ class LMDBDataset(torch.utils.data.Dataset):
             )
         return self._template_lmdb_env
 
-    @staticmethod
-    def load_template_mapping(path: str | pathlib.Path) -> dict[str, list[dict]]:
-        """Load entry_id -> template-hit metadata into memory."""
-        mapping: dict[str, list[dict]] = {}
-        logger = logging.getLogger(__name__)
-        with open(path, "rb") as f:
-            unpacker = msgpack.Unpacker(f, raw=False)
-            num_entries = unpacker.read_array_header()
-            for i in range(num_entries):
-                try:
-                    record = unpacker.unpack()
-                except msgpack.OutOfData:
-                    logger.warning(
-                        f"Template mapping {path} ended after {i} of "
-                        f"{num_entries} records."
-                    )
-                    break
-                mapping[record["entry_id"]] = record["templates"]
-        return mapping
+    @property
+    def template_mapping_lmdb_env(self) -> lmdb.Environment:
+        if not self.use_templates:
+            raise RuntimeError("Template mapping LMDB is not enabled for this dataset.")
+        if not hasattr(self, "_template_mapping_lmdb_env"):
+            self._template_mapping_lmdb_env = lmdb.open(
+                self.template_mapping_path,
+                readonly=True,
+                lock=False,
+                readahead=False,
+            )
+        return self._template_mapping_lmdb_env
 
     def fetch_complex(self, key: str) -> protein.ProteinMultimer:
         with self.lmdb_env.begin() as txn:
@@ -236,6 +225,22 @@ class LMDBDataset(torch.utils.data.Dataset):
         with io.BytesIO(npz_bytes) as f:
             return MonomerDataPipeline.load(f)
 
+    def fetch_template_hits(self, chain_id: str) -> list[dict]:
+        with self.template_mapping_lmdb_env.begin() as txn:
+            value = txn.get(chain_id.encode())
+        if value is None:
+            return []
+        return pickle.loads(value)
+
+    @staticmethod
+    def get_template_mapping_key(
+        complex_id: str,
+        chain_metadata: metadata.Metadata,
+    ) -> str | None:
+        if chain_metadata.entity_id is None:
+            return None
+        return f"{complex_id.lower()}_{int(chain_metadata.entity_id)}"
+
     def prepare_template_inputs(
         self,
         compl: protein.ProteinMultimer,
@@ -250,7 +255,8 @@ class LMDBDataset(torch.utils.data.Dataset):
         for chain, chain_metadata, crop in zip(
             compl.chains, m.chains, chain_crops, strict=True
         ):
-            chain_feat = self.prepare_chain_template_inputs(chain, chain_metadata.id)
+            mapping_key = self.get_template_mapping_key(m.id, chain_metadata)
+            chain_feat = self.prepare_chain_template_inputs(chain, mapping_key)
             chain_feat = template_utils.crop_template_features(chain_feat, crop)
             chain_template_features.append(chain_feat)
         return template_utils.concat_chain_template_features(chain_template_features)
@@ -258,10 +264,14 @@ class LMDBDataset(torch.utils.data.Dataset):
     def prepare_chain_template_inputs(
         self,
         chain: protein.Protein,
-        chain_id: str,
+        mapping_key: str | None,
     ) -> dict[str, np.ndarray]:
         """Prepare fixed-size template slots for one query chain."""
-        hits = self.template_mapping.get(chain_id, [])[: self.max_templates]
+        hits = (
+            []
+            if mapping_key is None
+            else self.fetch_template_hits(mapping_key)[: self.max_templates]
+        )
         template_features: list[dict[str, np.ndarray]] = []
         for hit_dict in hits:
             hit = template_utils.TemplateHit.from_dict(hit_dict)
@@ -269,7 +279,7 @@ class LMDBDataset(torch.utils.data.Dataset):
                 template = self.fetch_template(hit.template_id)
             except KeyError:
                 self.logger.warning(
-                    f"Template {hit.template_id} for {chain_id} not found; skipping."
+                    f"Template {hit.template_id} for {mapping_key} not found; skipping."
                 )
                 continue
             template_features.append(
@@ -322,36 +332,10 @@ class TrainingDataset(LMDBDataset):
 
         self.logger = logging.getLogger(f"[Training Dataset:{self.name}]")
 
-        self.sampling_strategy = config.sampling_strategy
-        for strategy in config.sampling_strategy:
-            if strategy not in ("length", "cluster"):
-                raise ValueError(f"Invalid sampling strategy: {strategy}")
-
     def get_sampling_weights(self) -> np.ndarray:
         """Get sampling weights for the dataset."""
-        weights = []
-        for m in self.metadatas:
-            w = 1.0
-            for strategy in self.sampling_strategy:
-                if strategy == "length":
-                    if self.is_multimer:
-                        length = sum(c["num_residues"] for c in m["chains"])
-                    else:
-                        length = m["num_residues"]
-                    w *= min(max(length, 256), 512)
-                elif strategy == "cluster":
-                    if self.is_multimer:
-                        chain_cluster_sizes = [
-                            c.get("cluster_size", 1) or 1 for c in m["chains"]
-                        ]
-                        w *= sum(1.0 / size for size in chain_cluster_sizes)
-                    else:
-                        cluster_size = m.get("cluster_size", 1) or 1
-                        w *= 1.0 / cluster_size
-            weights.append(w)
-        weights = np.array(weights, dtype=np.float32)
-        weights /= weights.sum()
-        return weights
+        w = 1 / len(self.metadatas)
+        return np.full(len(self.metadatas), w, dtype=np.float32)
 
     def __getitem__(
         self,
@@ -514,7 +498,8 @@ class TrainingDataset(LMDBDataset):
         for chain, chain_metadata, crop in zip(
             compl.chains, m.chains, chain_crops, strict=True
         ):
-            chain_feat = self.prepare_chain_template_inputs(chain, chain_metadata.id)
+            mapping_key = self.get_template_mapping_key(m.id, chain_metadata)
+            chain_feat = self.prepare_chain_template_inputs(chain, mapping_key)
             chain_feat = template_utils.crop_template_features(chain_feat, crop)
             chain_template_features.append(chain_feat)
         return template_utils.concat_chain_template_features(chain_template_features)
@@ -522,10 +507,14 @@ class TrainingDataset(LMDBDataset):
     def prepare_chain_template_inputs(
         self,
         chain: protein.Protein,
-        chain_id: str,
+        mapping_key: str | None,
     ) -> dict[str, np.ndarray]:
         """Prepare fixed-size template slots for one query chain."""
-        hits = self.template_mapping.get(chain_id, [])[: self.max_templates]
+        hits = (
+            []
+            if mapping_key is None
+            else self.fetch_template_hits(mapping_key)[: self.max_templates]
+        )
         template_features: list[dict[str, np.ndarray]] = []
         for hit_dict in hits:
             hit = template_utils.TemplateHit.from_dict(hit_dict)
@@ -533,7 +522,7 @@ class TrainingDataset(LMDBDataset):
                 template = self.fetch_template(hit.template_id)
             except KeyError:
                 self.logger.warning(
-                    f"Template {hit.template_id} for {chain_id} not found; skipping."
+                    f"Template {hit.template_id} for {mapping_key} not found; skipping."
                 )
                 continue
             template_features.append(
@@ -762,9 +751,7 @@ class RCSBTrainingDataset(TrainingDataset):
                 weights.append(1.0 / (cm.get("cluster_size", 1) or 1) * chain_weights)
             for im in m_dict["interfaces"]:
                 samples.append((m_dict, tuple(im["chain_ids"])))
-                weights.append(
-                    1.0 / (im.get("cluster_size", 1) or 1) * interface_weights
-                )
+                weights.append(1.0 / (im.get("cluster_size", 1) or 1) * interface_weights)
         self.samples = samples
         self.weights = np.array(weights, dtype=np.float32)
 

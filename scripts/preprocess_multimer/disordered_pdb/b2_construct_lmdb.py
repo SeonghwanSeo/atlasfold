@@ -30,7 +30,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    data_dir: pathlib.Path = args.data_dir / "rcsb_multimer"
+    data_dir: pathlib.Path = args.data_dir / "disordered_pdb_multimer"
     npz_dir: pathlib.Path = data_dir / "npz"
 
     print("Creating LMDB database...")
@@ -41,24 +41,21 @@ def main():
         map_size=args.size_gb * 1024 * 1024 * 1024,  # size in GB
     )
     with env.begin(write=True) as txn:
-        # Get npz files
-        for subdir in tqdm(sorted(npz_dir.iterdir()), desc="Processing entries"):
-            for pdb_dir in subdir.iterdir():
-                # Get chain ids
-                npz_paths = sorted(pdb_dir.glob("*.npz"))
-                chain_ids = [npz_path.stem for npz_path in npz_paths]
-                for chain_id in chain_ids:  # {pdb_id}_{asym_id}
-                    npz_path = pdb_dir / f"{chain_id}.npz"
-                    metadata_path = pdb_dir / f"{chain_id}.json"
-                    # Read the npz file as bytes
-                    with open(npz_path, "rb") as f:
-                        value_bytes = f.read()
-                    # Put (key, value) pair into the transaction
-                    txn.put(chain_id.encode(), value_bytes)
-                    # Load metadata and append to list
-                    with open(metadata_path) as f:
-                        m = json.load(f)
-                    metadatas.append(m)
+        # Get chain ids
+        npz_paths = sorted(npz_dir.glob("*.npz"))
+        chain_ids = [npz_path.stem for npz_path in npz_paths]
+        for chain_id in chain_ids:  # {pdb_id}_{asym_id}
+            npz_path = npz_dir / f"{chain_id}.npz"
+            metadata_path = npz_dir / f"{chain_id}.json"
+            # Read the npz file as bytes
+            with open(npz_path, "rb") as f:
+                value_bytes = f.read()
+            # Put (key, value) pair into the transaction
+            txn.put(chain_id.encode(), value_bytes)
+            # Load metadata and append to list
+            with open(metadata_path) as f:
+                m = json.load(f)
+            metadatas.append(m)
     env.close()
 
     print(f"Successfully created LMDB at {lmdb_path}")

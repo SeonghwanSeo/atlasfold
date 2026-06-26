@@ -9,13 +9,6 @@ from typing import Any
 import msgpack
 
 
-def resolve_data_dir(data_dir: pathlib.Path) -> pathlib.Path:
-    """Resolve either a data root or the rcsb_multimer directory itself."""
-    if data_dir.name == "rcsb_multimer":
-        return data_dir
-    return data_dir / "rcsb_multimer"
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Filter the multimer RCSB manifest.")
     parser.add_argument(
@@ -96,8 +89,7 @@ def has_allowed_resolution(
     exp = entry.get("exp", {})
     resolution = exp.get("resolution")
     return (
-        resolution is not None
-        and min_resolution <= float(resolution) <= max_resolution
+        resolution is not None and min_resolution <= float(resolution) <= max_resolution
     )
 
 
@@ -186,7 +178,7 @@ def recompute_cluster_sizes(manifest: list[dict[str, Any]]) -> None:
 
 def main():
     args = parse_args()
-    data_dir = resolve_data_dir(args.data_dir)
+    data_dir = args.data_dir / "rcsb_multimer"
     max_release_date = parse_max_release_date(args.max_release_date)
 
     print("Loading metadata...")

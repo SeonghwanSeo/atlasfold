@@ -7,13 +7,13 @@ from omegaconf import OmegaConf
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from .dataset import (
+from atlasfold.train.multimer.dataset import (
     MultiTrainingDataset,
     TrainingDatasetConfig,
     ValidationDataset,
     ValidationDatasetConfig,
 )
-from .utils.dl_sampler import DistributedWeightedSampler
+from atlasfold.train.utils.dl_sampler import DistributedWeightedSampler
 
 
 @dataclasses.dataclass(kw_only=True)

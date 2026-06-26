@@ -82,12 +82,20 @@ class Protein:
         return np.isfinite(self.coordinates).all(axis=-1)
 
     def to_pdb(self) -> str:
-        return file_io.to_pdb(self.name, self.sequence, self.coordinates, self.b_factors)
+        return file_io.to_pdb(self.to_gemmi_structure())
 
     def to_mmcif(self) -> str:
-        return file_io.to_mmcif(
-            self.name, self.sequence, self.coordinates, self.b_factors
+        return file_io.to_mmcif(self.to_gemmi_structure())
+
+    def to_gemmi_structure(self) -> gemmi.Structure:
+        cinfo = file_io.ChainInfo(
+            chain_id="A",
+            entity_id=1,
+            sequence=self.sequence,
+            coordinates=self.coordinates,
+            b_factors=self.b_factors,
         )
+        return file_io.to_gemmi_structure(self.name, [cinfo])
 
     @classmethod
     def from_pdb(
@@ -220,7 +228,7 @@ class ProteinMultimer:
                 chain_ids.append(chain_id)
 
         chains = [
-            Protein.get_empty(f"{name}_{chain_id}", seq)
+            Protein.get_empty(chain_id, seq)
             for chain_id, seq in zip(chain_ids, sequence, strict=True)
         ]
         return cls(
@@ -259,3 +267,22 @@ class ProteinMultimer:
     def num_residues(self) -> int:
         """Return the number of residues in the structure."""
         return sum(c.num_residues for c in self.chains)
+
+    def to_pdb(self) -> str:
+        return file_io.to_pdb(self.to_gemmi_structure())
+
+    def to_mmcif(self) -> str:
+        return file_io.to_mmcif(self.to_gemmi_structure())
+
+    def to_gemmi_structure(self) -> gemmi.Structure:
+        cinfos = [
+            file_io.ChainInfo(
+                chain_id=c.name,
+                entity_id=eid,
+                sequence=c.sequence,
+                coordinates=c.coordinates,
+                b_factors=c.b_factors,
+            )
+            for eid, c in zip(self.entity_ids, self.chains, strict=True)
+        ]
+        return file_io.to_gemmi_structure(self.name, cinfos)

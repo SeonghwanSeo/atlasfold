@@ -1,4 +1,5 @@
 import copy
+import dataclasses
 import functools
 
 import gemmi
@@ -21,13 +22,22 @@ def get_residue_template(restype: str) -> gemmi.Residue:
     return residue
 
 
-def to_gemmi_structure(
-    name: str,
-    sequence: str,
-    coordinates: np.ndarray,
-    b_factors: np.ndarray | None = None,
-) -> gemmi.Structure:
-    length = len(sequence)
+@dataclasses.dataclass
+class ChainInfo:
+    chain_id: str  # A B C
+    entity_id: int  # 1 2 3
+    sequence: str
+    coordinates: np.ndarray  # [L, 14, 3]
+    b_factors: np.ndarray | None  # [L, 14] or [L,] or None
+
+
+def to_gemmi_chain(cinfo: ChainInfo) -> gemmi.Chain:
+    chain_id = cinfo.chain_id
+    entity_id = cinfo.entity_id
+    sequence = cinfo.sequence
+    coordinates = cinfo.coordinates
+    b_factors = cinfo.b_factors
+    length = len(cinfo.sequence)
     if coordinates.shape != (length, 14, 3):
         raise ValueError(
             f"Invalid coordinates shape: {coordinates.shape}. "
@@ -43,35 +53,17 @@ def to_gemmi_structure(
         # Broadcast the per-residue B-factors to all atoms in the residue
         b_factors = np.broadcast_to(b_factors[:, np.newaxis], (length, 14))
 
+    chain = gemmi.Chain(chain_id)
+
     full_sequence = [residue_constants.restype_1to3[aa] for aa in sequence]
-
-    # Create a new structure
-    struct = gemmi.Structure()
-    struct.name = name
-
-    entity = gemmi.Entity("1")
-    entity.entity_type = gemmi.EntityType.Polymer
-    entity.polymer_type = gemmi.PolymerType.PeptideL
-    entity.full_sequence = full_sequence
-    entity.subchains = ["A"]
-    struct.entities = gemmi.EntityList([entity])
-
-    # Create a model
-    try:
-        model = gemmi.Model(1)
-    except Exception:
-        model = gemmi.Model("1")  # Fallback for older Gemmi versions
-
-    chain = gemmi.Chain("A")
-
     residues: list[gemmi.Residue] = [
         copy.deepcopy(get_residue_template(restype)) for restype in full_sequence
     ]
     for res_i, residue in enumerate(residues):
         # Set residue index
         res_idx = res_i + 1
-        residue.entity_id = "1"
-        residue.subchain = "A"
+        residue.entity_id = str(entity_id)
+        residue.subchain = chain_id
         residue.seqid.num = res_idx
         residue.label_seq = res_idx
 
@@ -83,7 +75,42 @@ def to_gemmi_structure(
             atom.pos = gemmi.Position(x, y, z)
             atom.b_iso = biso[atom_i] if b_factors is not None else 100.0
     chain.append_residues(residues)
-    model.add_chain(chain)
+    return chain
+
+
+def to_gemmi_structure(name: str, chains: list[ChainInfo]) -> gemmi.Structure:
+    """Convert a list of Chains into a gemmi.Structure."""
+    struct = gemmi.Structure()
+    struct.name = name
+
+    # Set up entities
+    entities: dict[int, gemmi.Entity] = {}
+    for cinfo in chains:
+        if cinfo.entity_id in entities:
+            entities[cinfo.entity_id].subchains.append(cinfo.chain_id)
+            continue
+        full_sequence = [residue_constants.restype_1to3[aa] for aa in cinfo.sequence]
+        entity = gemmi.Entity(str(cinfo.entity_id))
+        entity.entity_type = gemmi.EntityType.Polymer
+        entity.polymer_type = gemmi.PolymerType.PeptideL
+        entity.full_sequence = full_sequence
+        entities[cinfo.entity_id] = entity
+
+    for cinfo in chains:
+        entity = entities[cinfo.entity_id]
+        entity.subchains.append(cinfo.chain_id)
+
+    struct.entities = gemmi.EntityList([entities[eid] for eid in sorted(entities.keys())])
+
+    # Create a model
+    try:
+        model = gemmi.Model(1)
+    except Exception:
+        model = gemmi.Model("1")  # Fallback for older Gemmi versions
+
+    for cinfo in chains:
+        chain = to_gemmi_chain(cinfo)
+        model.add_chain(chain)
 
     # Add model to structure
     struct.add_model(model)
@@ -106,28 +133,17 @@ REMARK   1  REF    TO BE PUBLISHED
 """
 
 
-def to_pdb(
-    name: str,
-    sequence: str,
-    coordinates: np.ndarray,
-    b_factors: np.ndarray | None = None,
-) -> str:
-    struct = to_gemmi_structure(name, sequence, coordinates, b_factors)
-    header = RAW_PDB_HEADER % name
+def to_pdb(struct: gemmi.Structure) -> str:
+    header = RAW_PDB_HEADER % struct.name
     struct.raw_remarks = header.strip().splitlines()
     return struct.make_pdb_string()
 
 
-def to_mmcif(
-    name: str,
-    sequence: str,
-    coordinates: np.ndarray,
-    b_factors: np.ndarray | None = None,
-) -> str:
-    cif_block = gemmi.cif.Block(name)
+def to_mmcif(struct: gemmi.Structure) -> str:
+    cif_block = gemmi.cif.Block(struct.name)
 
     # Add metadata
-    cif_block.set_pair("_entry.id", name)
+    cif_block.set_pair("_entry.id", struct.name)
 
     author_loop: gemmi.cif.Loop = cif_block.init_loop(
         "_citation_author.", ["citation_id", "ordinal", "name"]
@@ -145,7 +161,6 @@ def to_mmcif(
     )
 
     # Add structure data
-    struct = to_gemmi_structure(name, sequence, coordinates, b_factors)
     struct.update_mmcif_block(cif_block)
 
     # Round coordinates and B-factors

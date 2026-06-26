@@ -8,13 +8,6 @@ import msgpack
 from tqdm import tqdm
 
 
-def resolve_val_dir(data_dir: pathlib.Path) -> pathlib.Path:
-    """Resolve either a data root or the rcsb_multimer_val directory itself."""
-    if data_dir.name == "rcsb_multimer_val":
-        return data_dir
-    return data_dir / "rcsb_multimer_val"
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Construct the RCSB protein-multimer validation LMDB."
@@ -36,7 +29,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    val_dir = resolve_val_dir(args.data_dir)
+    val_dir = args.data_dir / "rcsb_multimer_val"
     npz_dir = val_dir / "npz"
 
     val_ids_path = val_dir / "validation_ids.txt"

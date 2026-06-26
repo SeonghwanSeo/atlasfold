@@ -88,14 +88,12 @@ python c2_construct_template_lmdb.py \
 ```
 
 ### 8. Create Entry-Template Mapping
-Convert per-entry template-hit metadata into an LMDB mapping keyed by `{pdb_id}_{entity_id}` from `manifest.msgpack`. Only templates released at least 60 days before the entry release date are kept. The source `idx_map` is treated as 1-based and exposed as explicit `entry_indices` and `template_indices` fields.
+Convert per-entry template-hit metadata into JSONL and msgpack mapping files. The source `idx_map` is treated as 1-based and exposed as explicit `entry_indices` and `template_indices` fields.
 
 ```bash
 python c3_create_template_mapping.py \
     --metadata_dir /cache/wykim_lab/icl_shwan/templates/train_template_metadata \
-    --data_dir /path/to/data/root/ \
-    --num_workers 16 \
-    --size_gb 64
+    --data_dir /path/to/data/root/
 ```
 
 ### 9. Construct Validation Set
@@ -137,11 +135,12 @@ rcsb_multimer/
 ├── structure.lmdb          # Combined structure database
 ├── manifest.msgpack        # Metadata for all entries
 ├── manifest_confidence.msgpack # Filtered manifest for confidence training
-├── template.lmdb           # Combined template structure database
-├── template_manifest.msgpack
-├── template_mapping.lmdb   # Entry-to-template hit metadata database
 └── templates/
-    └── npz/                # Processed template atom14 NPZ files
+    ├── npz/                # Processed template atom14 NPZ files
+    ├── template.lmdb       # Combined template structure database
+    ├── template_manifest.msgpack
+    ├── template_mapping.jsonl
+    └── template_mapping.msgpack
 rcsb_multimer_val/
 ├── validation_ids.txt      # Selected validation PDB IDs
 ├── npz/                    # Validation candidate processed files
