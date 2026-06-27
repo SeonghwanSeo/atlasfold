@@ -484,6 +484,27 @@ class TrainingDataset(LMDBDataset):
             {k: v[crop] for k, v in f.items()}
             for f, crop in zip(chain_lm_input, chain_lm_crops, strict=True)
         ]
+        lm_offset = 0
+        for fold_feat, lm_feat in zip(chain_fold_input, chain_lm_input, strict=True):
+            if len(fold_feat["res_idx"]) == 0:
+                fold_feat["seq_tok_idx"] = np.empty((0,), dtype=np.int64)
+            else:
+                tok_idx_by_pos = {
+                    int(pos_id): tok_idx
+                    for tok_idx, pos_id in enumerate(lm_feat["lm.pos_id"])
+                }
+                try:
+                    seq_tok_idx = np.asarray(
+                        [tok_idx_by_pos[int(pos_id)] for pos_id in fold_feat["res_idx"]],
+                        dtype=np.int64,
+                    )
+                except KeyError as e:
+                    raise ValueError(
+                        "LM crop does not cover all folded residues. "
+                        f"Missing residue position: {e.args[0]}"
+                    ) from e
+                fold_feat["seq_tok_idx"] = seq_tok_idx + lm_offset
+            lm_offset += len(lm_feat["lm.input_ids"])
         # Concatenate chains
         fold_input = {
             k: np.concatenate([f[k] for f in chain_fold_input], axis=0)
@@ -493,6 +514,13 @@ class TrainingDataset(LMDBDataset):
             k: np.concatenate([f[k] for f in chain_lm_input], axis=0)
             for k in chain_lm_input[0].keys()
         }
+        if len(fold_input["seq_tok_idx"]) > 0:
+            max_seq_tok_idx = int(fold_input["seq_tok_idx"].max())
+            if max_seq_tok_idx >= len(lm_input["lm.input_ids"]):
+                raise ValueError(
+                    f"seq_tok_idx contains {max_seq_tok_idx}, but LM input length is "
+                    f"{len(lm_input['lm.input_ids'])}."
+                )
         return fold_input, lm_input
 
     def prepare_labels(
@@ -947,7 +975,7 @@ class ValidationDataset(LMDBDataset):
         feat = featurize.featurize_complex(
             compl.sequences, compl.entity_ids, compl.asym_ids, compl.sym_ids
         )
-        label = self.prepare_labels(compl)
+        label = self.prepare_labels(compl, m)
         template_input = {}
 
         padded_length = len(feat["aatype"]) + (-len(feat["aatype"]) % 32)
@@ -971,7 +999,11 @@ class ValidationDataset(LMDBDataset):
             "label": label,
         }
 
-    def prepare_labels(self, compl: protein.ProteinMultimer) -> dict[str, np.ndarray]:
+    def prepare_labels(
+        self,
+        compl: protein.ProteinMultimer,
+        m: metadata.MultimerMetadata,
+    ) -> dict[str, np.ndarray]:
         """Prepare the label tensors for training."""
         # Extract the coordinates and the mask for resolved residues.
         coords = np.concatenate(
@@ -980,4 +1012,46 @@ class ValidationDataset(LMDBDataset):
         resolved_mask = np.isfinite(coords).all(axis=-1)  # [L, 14]
         coords = np.nan_to_num(coords, nan=0.0)
         coords = do_centering_atom14(coords, resolved_mask, mask_to_zero=True)
-        return {"coordinates": coords, "resolved_mask": resolved_mask}
+
+        if len(m.chains) != len(compl.chains):
+            raise ValueError(
+                f"Validation metadata/structure chain count mismatch for {m.id}: "
+                f"{len(m.chains)} metadata chains != {len(compl.chains)} chains."
+            )
+        if len(compl.asym_ids) != len(compl.chains):
+            raise ValueError(
+                f"Validation structure asym_id count mismatch for {m.id}: "
+                f"{len(compl.asym_ids)} asym_ids != {len(compl.chains)} chains."
+            )
+
+        low_homology_chain_asym_ids = [
+            int(compl.asym_ids[i])
+            for i, chain in enumerate(m.chains)
+            if chain.is_low_homology
+        ]
+        low_homology_interface_asym_ids = []
+        for interface in m.interfaces:
+            if not interface.is_low_homology:
+                continue
+            chain_i, chain_j = interface.chain_ids
+            if chain_i == chain_j:
+                raise ValueError(
+                    f"Validation metadata contains intra-chain interface for {m.id}: "
+                    f"{interface.chain_ids}."
+                )
+            asym_i = compl.asym_ids[chain_i]
+            asym_j = compl.asym_ids[chain_j]
+            low_homology_interface_asym_ids.append((int(asym_i), int(asym_j)))
+
+        return {
+            "coordinates": coords,
+            "resolved_mask": resolved_mask,
+            "low_homology_chain_asym_ids": np.asarray(
+                low_homology_chain_asym_ids,
+                dtype=np.int64,
+            ),
+            "low_homology_interface_asym_ids": np.asarray(
+                low_homology_interface_asym_ids,
+                dtype=np.int64,
+            ).reshape(-1, 2),
+        }

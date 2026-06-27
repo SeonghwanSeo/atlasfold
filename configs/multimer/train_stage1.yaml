@@ -25,17 +25,17 @@ train:
       - name: rcsb_multimer
         is_multimer: true
         is_distillation: false
-        weight: 0.73
+        weight: 0.68
         template_prob: 0.20
       - name: disordered_pdb_multimer
         is_multimer: true
-        is_distillation: false
+        is_distillation: true
         use_templates: false
         weight: 0.02
       - name: long_monomers
         is_multimer: false
         is_distillation: true
-        weight: 0.25
+        weight: 0.30
         use_templates: false
     val_dataset:
       name: rcsb_multimer_val

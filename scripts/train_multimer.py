@@ -46,6 +46,9 @@ def parse_args() -> argparse.Namespace:
         help="Number of workers to use for dataloader.",
     )
     parser.add_argument(
+        "--init_weight", type=str, help="Path to a weight file to initialize model."
+    )
+    parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
         help="Path to a checkpoint file to resume training from.",
@@ -199,6 +202,33 @@ def build_trainer(cfg: DictConfig, debug: bool = False) -> pl.Trainer:
     )
 
 
+def _initialize_from_weight(
+    model_module: TrainingModule,
+    weight_path: str,
+    *,
+    debug: bool = False,
+) -> None:
+    state_dict = torch.load(weight_path, map_location="cpu")
+    incompatible = model_module.model.load_state_dict(state_dict, strict=False)
+
+    model_params = dict(model_module.model.named_parameters())
+    model_module.ema.params = {
+        k: model_params[k].detach().clone()
+        for k in model_module.ema.params
+        if k in model_params
+    }
+    model_module.ema.device = next(iter(model_module.ema.params.values())).device
+
+    print(f"Initialized model and EMA from {weight_path}.")
+    if debug:
+        missing_keys = sorted(
+            k for k in incompatible.missing_keys if not k.startswith("lm.")
+        )
+        additional_keys = sorted(incompatible.unexpected_keys)
+        print(f"init_weight missing keys ({len(missing_keys)}): {missing_keys}")
+        print(f"init_weight additional keys ({len(additional_keys)}): {additional_keys}")
+
+
 def train(args: argparse.Namespace) -> None:
     torch.set_float32_matmul_precision("high")
 
@@ -212,6 +242,9 @@ def train(args: argparse.Namespace) -> None:
 
     if trainer.is_global_zero:
         print_config(cfg)
+
+    if args.init_weight is not None:
+        _initialize_from_weight(model_module, args.init_weight, debug=args.debug)
 
     if cfg.train.load_opt_state:
         trainer.fit(

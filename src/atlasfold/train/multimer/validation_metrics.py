@@ -12,6 +12,8 @@ import torch
 
 from atlasfold.train.utils.structure_metrics import (
     compute_lddt,
+    compute_lddt_ca,
+    compute_lddt_fullatom,
     compute_rmsd,
     compute_rmsd_atom14,
 )
@@ -102,6 +104,44 @@ def _iter_chain_indices(
             }
         )
     return chains
+
+
+def _get_low_homology_chain_asym_ids(label: dict[str, torch.Tensor]) -> set[int]:
+    if "low_homology_chain_asym_ids" not in label:
+        return set()
+    return {
+        int(asym_id)
+        for asym_id in label["low_homology_chain_asym_ids"].detach().cpu().tolist()
+        if int(asym_id) > 0
+    }
+
+
+def _get_low_homology_interface_asym_ids(
+    label: dict[str, torch.Tensor],
+) -> set[tuple[int, int]]:
+    if "low_homology_interface_asym_ids" not in label:
+        return set()
+
+    interface_pairs = label["low_homology_interface_asym_ids"].detach().cpu().tolist()
+    low_homology_interfaces = set()
+    for asym_i, asym_j in interface_pairs:
+        asym_i, asym_j = int(asym_i), int(asym_j)
+        if asym_i <= 0 or asym_j <= 0:
+            continue
+        low_homology_interfaces.add(
+            (asym_i, asym_j) if asym_i <= asym_j else (asym_j, asym_i)
+        )
+    return low_homology_interfaces
+
+
+def _compute_pair_lddt(
+    pdist_pred: torch.Tensor,
+    pdist_gt: torch.Tensor,
+) -> torch.Tensor:
+    score = torch.zeros_like(pdist_gt)
+    for cutoff in (0.5, 1.0, 2.0, 4.0):
+        score += (torch.abs(pdist_gt - pdist_pred) < cutoff).float()
+    return score * 0.25
 
 
 def _generate_chain_permutations(
@@ -256,71 +296,109 @@ def _compute_single_sample_metrics(
 ) -> dict[str, float]:
     x_gt, mask = get_aligned_gt_structure(x_pred, batch, label)
     seq_mask = batch["seq_mask"].bool()
-    ca_mask = mask[:, CA_IDX] & seq_mask
+    atom_mask = mask & seq_mask[:, None]
+    ca_mask = atom_mask[:, CA_IDX]
 
     metrics: dict[str, float] = {}
-    metrics["complex/rmsd"] = compute_rmsd_atom14(x_pred, x_gt, mask).item()
-    complex_lddt = compute_lddt(
-        x_pred[:, CA_IDX],
-        x_gt[:, CA_IDX],
-        ca_mask,
+    metrics["complex/rmsd"] = compute_rmsd_atom14(x_pred, x_gt, atom_mask).item()
+    metrics["complex/lddt"] = compute_lddt_fullatom(
+        x_pred,
+        x_gt,
+        atom_mask,
         cutoff=15.0,
     ).item()
-    metrics["complex/lddt"] = complex_lddt
-    metrics["complex/lddt-ca"] = complex_lddt
+    metrics["complex/lddt-ca"] = compute_lddt_ca(
+        x_pred,
+        x_gt,
+        atom_mask,
+        cutoff=15.0,
+    ).item()
 
     chains = _iter_chain_indices(batch)
+    low_homology_chains = _get_low_homology_chain_asym_ids(label)
     chain_rmsds = []
     chain_lddts = []
+    chain_lddt_cas = []
     for chain in chains:
+        if int(chain["asym_id"]) not in low_homology_chains:
+            continue
         idx = chain["indices"]
-        chain_mask = ca_mask[idx]
-        if chain_mask.sum() < 2:
+        chain_atom_mask = atom_mask[idx]
+        chain_ca_mask = ca_mask[idx]
+        if chain_ca_mask.sum() < 2:
             continue
         chain_rmsds.append(
             compute_rmsd(
                 x_pred[idx, CA_IDX],
                 x_gt[idx, CA_IDX],
-                chain_mask,
+                chain_ca_mask,
                 align=True,
             ).item()
         )
-        chain_lddts.append(
+        if chain_atom_mask.sum() > 1:
+            chain_lddts.append(
+                compute_lddt_fullatom(
+                    x_pred[idx],
+                    x_gt[idx],
+                    chain_atom_mask,
+                    cutoff=15.0,
+                ).item()
+            )
+        chain_lddt_cas.append(
             compute_lddt(
                 x_pred[idx, CA_IDX],
                 x_gt[idx, CA_IDX],
-                chain_mask,
+                chain_ca_mask,
                 cutoff=15.0,
             ).item()
         )
     if chain_rmsds:
         metrics["chain/rmsd"] = float(np.mean(chain_rmsds))
     if chain_lddts:
-        chain_lddt = float(np.mean(chain_lddts))
-        metrics["chain/lddt"] = chain_lddt
-        metrics["chain/lddt-ca"] = chain_lddt
+        metrics["chain/lddt"] = float(np.mean(chain_lddts))
+    if chain_lddt_cas:
+        metrics["chain/lddt-ca"] = float(np.mean(chain_lddt_cas))
 
     interface_lddts = []
-    pdist_gt = torch.cdist(x_gt[:, CA_IDX], x_gt[:, CA_IDX])
-    pdist_pred = torch.cdist(x_pred[:, CA_IDX], x_pred[:, CA_IDX])
-    pair_score = torch.zeros_like(pdist_gt)
-    for cutoff in (0.5, 1.0, 2.0, 4.0):
-        pair_score += (torch.abs(pdist_gt - pdist_pred) < cutoff).float()
-    pair_score *= 0.25
+    interface_lddt_cas = []
+    low_homology_interfaces = _get_low_homology_interface_asym_ids(label)
+    ca_pdist_gt = torch.cdist(x_gt[:, CA_IDX], x_gt[:, CA_IDX])
+    ca_pdist_pred = torch.cdist(x_pred[:, CA_IDX], x_pred[:, CA_IDX])
+    ca_pair_score = _compute_pair_lddt(ca_pdist_pred, ca_pdist_gt)
 
     for i, chain_i in enumerate(chains):
         idx_i = chain_i["indices"]
         for chain_j in chains[i + 1 :]:
+            asym_i = int(chain_i["asym_id"])
+            asym_j = int(chain_j["asym_id"])
+            interface_key = (asym_i, asym_j) if asym_i <= asym_j else (asym_j, asym_i)
+            if interface_key not in low_homology_interfaces:
+                continue
+
             idx_j = chain_j["indices"]
             pair_mask = ca_mask[idx_i, None] & ca_mask[idx_j][None, :]
-            pair_mask &= pdist_gt[idx_i[:, None], idx_j[None, :]] < 15.0
+            pair_mask &= ca_pdist_gt[idx_i[:, None], idx_j[None, :]] < 15.0
             if pair_mask.any():
-                score = pair_score[idx_i[:, None], idx_j[None, :]]
-                interface_lddts.append(score[pair_mask].mean().item())
+                score = ca_pair_score[idx_i[:, None], idx_j[None, :]]
+                interface_lddt_cas.append(score[pair_mask].mean().item())
+
+            pred_i = x_pred[idx_i].reshape(-1, 3)
+            pred_j = x_pred[idx_j].reshape(-1, 3)
+            gt_i = x_gt[idx_i].reshape(-1, 3)
+            gt_j = x_gt[idx_j].reshape(-1, 3)
+            atom_mask_i = atom_mask[idx_i].reshape(-1)
+            atom_mask_j = atom_mask[idx_j].reshape(-1)
+            atom_pair_mask = atom_mask_i[:, None] & atom_mask_j[None, :]
+            atom_pdist_gt = torch.cdist(gt_i, gt_j)
+            atom_pair_mask &= atom_pdist_gt < 15.0
+            if atom_pair_mask.any():
+                atom_pdist_pred = torch.cdist(pred_i, pred_j)
+                atom_score = _compute_pair_lddt(atom_pdist_pred, atom_pdist_gt)
+                interface_lddts.append(atom_score[atom_pair_mask].mean().item())
     if interface_lddts:
-        iface_lddt = float(np.mean(interface_lddts))
-        metrics["interface/lddt"] = iface_lddt
-        metrics["interface/lddt-ca"] = iface_lddt
+        metrics["interface/lddt"] = float(np.mean(interface_lddts))
+    if interface_lddt_cas:
+        metrics["interface/lddt-ca"] = float(np.mean(interface_lddt_cas))
 
     return metrics
 
