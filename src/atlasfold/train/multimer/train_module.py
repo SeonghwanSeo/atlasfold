@@ -70,6 +70,28 @@ class TrainingModule(MonomerTrainingModule):
         )
         self.last_lr_step: int = -1
 
+    def transfer_batch_to_device(
+        self,
+        batch: Any,
+        device: torch.device,
+        dataloader_idx: int,
+    ) -> Any:
+        if not isinstance(batch, dict) or "full_label" not in batch:
+            return super().transfer_batch_to_device(batch, device, dataloader_idx)
+
+        return {
+            "feat": super().transfer_batch_to_device(
+                batch["feat"], device, dataloader_idx
+            ),
+            "label": super().transfer_batch_to_device(
+                batch["label"], device, dataloader_idx
+            ),
+            "loss_mask": super().transfer_batch_to_device(
+                batch["loss_mask"], device, dataloader_idx
+            ),
+            "full_label": batch["full_label"],
+        }
+
     def setup_metrics(self):
         val_metrics = {}
         metric_names = [
@@ -149,6 +171,9 @@ class TrainingModule(MonomerTrainingModule):
         if self.train_confidence_head:
             confidence_out = model_out["confidence"]
             x_pred = confidence_out["mini_rollout"]["sample_coords"]
+            confidence_mask = loss_mask["confidence"].to(
+                device=x_pred.device, dtype=torch.bool
+            )
 
             aligned_coords_list = []
             aligned_mask_list = []

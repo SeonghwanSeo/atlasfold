@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from atlasfold.common import featurize, metadata, protein
 from atlasfold.common import templates as template_utils
 from atlasfold.train.monomer.dataset import DataPipeline as MonomerDataPipeline
+from atlasfold.train.multimer import train_alignment
 from atlasfold.train.multimer.cropper import MultimerCropper
 from atlasfold.utils.geometry.random_augment import do_centering_atom14
 from atlaslm.alphabet import Alphabet
@@ -432,6 +433,9 @@ class TrainingDataset(LMDBDataset):
         template_input = {k: torch.from_numpy(v) for k, v in template_input.items()}
         label = {k: torch.from_numpy(v) for k, v in label.items()}
         full_label = {k: torch.from_numpy(v) for k, v in full_label.items()}
+        full_label["alignment_metadata"] = train_alignment.prepare_alignment_metadata(
+            full_label
+        )
         loss_mask = {k: torch.tensor(v) for k, v in loss_mask.items()}
 
         fold_input = pad_input(fold_input, max_length=self.max_length)
