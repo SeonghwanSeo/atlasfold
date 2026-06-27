@@ -1,34 +1,42 @@
-seed: 1
+seed: 5
 
 model:
   _yaml_: _model.yaml
-  trunk:
-    blocks_per_ckpt: null
   diffusion_head:
-    blocks_per_ckpt: null
+    blocks_per_ckpt: 4
   confidence_head:
     blocks_per_ckpt: null
 
 train:
   _yaml_: _train_base.yaml
-  name: stage1
+  name: stage5
 
   data:
-    max_length: 256
-    max_seq_length: 512
+    max_length: 768
+    max_seq_length: 1280
     batch_size: 2
     global_batch_size: 256
 
     data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
     train_datasets:
       - name: rcsb
-        weight: 1.0
         is_distillation: false
+        weight: 1.0
         sampling_strategy: ["length", "cluster"]
     val_dataset:
       name: cameo_val
 
   training:
-    train_trunk: true
+    train_trunk: false
     train_diffusion_head: true
+    train_confidence_head: true
+    train_pae_head: true
     diffusion_batch_size: 32
+
+  optimizer:
+    max_lr: 1e-4
+    lr_decay_factor: 1.0
+    ema_update_params: ["diffusion_head.", "confidence_head."]
+
+  validation:
+    num_diffusion_samples: 5
