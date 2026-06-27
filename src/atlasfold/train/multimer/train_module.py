@@ -15,7 +15,7 @@ from atlasfold.train.monomer.train_module import (
 from atlasfold.train.monomer.train_module import (
     to_dict,
 )
-from atlasfold.train.multimer import validation_metrics
+from atlasfold.train.multimer import train_alignment, validation_metrics
 from atlasfold.train.multimer.model_train import AtlasFoldForTrain
 from atlasfold.train.utils import structure_metrics
 from atlasfold.train.utils.ema import ExponentialMovingAverage
@@ -155,19 +155,13 @@ class TrainingModule(MonomerTrainingModule):
             for b_i in range(x_pred.shape[0]):
                 feat_i = {k: v[b_i] for k, v in batch.items()}
                 label_i = {k: v[b_i] for k, v in label.items()}
-                if full_label is None:
-                    x_gt, mask = validation_metrics.get_aligned_gt_structure(
-                        x_pred[b_i], feat_i, label_i
-                    )
-                else:
-                    x_gt, mask = (
-                        validation_metrics.get_aligned_gt_structure_from_full_label(
-                            x_pred=x_pred[b_i],
-                            batch=feat_i,
-                            label=label_i,
-                            full_label=full_label[b_i],
-                        )
-                    )
+                full_label_i = None if full_label is None else full_label[b_i]
+                x_gt, mask = train_alignment.get_aligned_gt_structure(
+                    x_pred=x_pred[b_i],
+                    batch=feat_i,
+                    label=label_i,
+                    full_label=full_label_i,
+                )
                 aligned_coords_list.append(x_gt)
                 aligned_mask_list.append(mask)
 

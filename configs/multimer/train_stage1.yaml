@@ -3,7 +3,7 @@ seed: 1
 model:
   _yaml_: _model.yaml
   trunk:
-    blocks_per_ckpt: 8
+    blocks_per_ckpt: null
   template_module:
     blocks_per_ckpt: null
   diffusion_head:
