@@ -20,8 +20,8 @@ train:
       - name: rcsb
         is_distillation: false
         weight: 1.000
-        sampling_strategy: ["length", "cluster"]
-        metadata: /cache/wykim_lab/icl_shwan/atlasfold_data/rcsb/manifest_confidence.msgpack
+        sampling_strategy: ["cluster"]
+        metadata_path: /cache/wykim_lab/icl_shwan/atlasfold_data/rcsb/manifest_confidence.msgpack
     val_dataset:
       name: cameo_val
 
@@ -29,5 +29,10 @@ train:
     train_confidence_head: true
     train_pae_head: true
 
-    optimizer:
-      ema_update_params: ["confidence_head."]
+  optimizer:
+    max_lr: 1e-3
+    lr_decay_factor: 1.0
+    ema_update_params: ["confidence_head."]
+
+  validation:
+    num_diffusion_samples: 5
