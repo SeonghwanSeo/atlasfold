@@ -59,7 +59,7 @@ class ConfidenceHeadConfig:
     max_dist: float = 50.75
     # heads
     has_pae_head: bool = True
-    has_pde_head: bool = True
+    has_pde_head: bool = False
     max_pae_error: float = 32.0
     num_pae_bins: int = 64
     max_pde_error: float = 32.0
@@ -548,15 +548,11 @@ class AtlasFold(torch.nn.Module):
             # Remove the LM, which will be loaded separately
             del model.lm
 
-            if dtype is torch.bfloat16:
-                model.lm_stack = model.lm_stack.to(dtype)
-                model.main_stack = model.main_stack.to(dtype)
-
         # Load the state dict onto the target device
         model = model.to_empty(device=device)
 
         # Load the state dict with the specified strictness
-        model.load_state_dict(state_dict, strict=False)
+        model.load_state_dict(state_dict, strict=True)
 
         # Finally, load the LM
         model.lm = load_model(
