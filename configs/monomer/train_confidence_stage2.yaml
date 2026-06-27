@@ -20,7 +20,7 @@ train:
       - name: rcsb
         is_distillation: false
         weight: 1.000
-        sampling_strategy: ["cluster"]
+        sampling_strategy: ["cluster", "length"]
         metadata_path: /cache/wykim_lab/icl_shwan/atlasfold_data/rcsb/manifest_confidence.msgpack
     val_dataset:
       name: cameo_val
