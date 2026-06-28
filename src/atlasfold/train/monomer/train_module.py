@@ -241,6 +241,7 @@ class TrainingModule(pl.LightningModule):
         for prefix in ["top", "avg", "rank"]:
             for k in ["rmsd", "lddt", "lddt-ca"]:
                 val_metrics[f"{prefix}/{k}"] = MeanMetric()
+        val_metrics["rank/plddt_rank"] = MeanMetric()
         self.val_metrics = MetricCollection(val_metrics, prefix="val/")
 
     def configure_optimizers(self):
@@ -435,7 +436,6 @@ class TrainingModule(pl.LightningModule):
         x_pred = sample_out["sample_coords"]  # [N, L, 14, 3]
 
         # Compute diffusion sample rank based on pLDDT.
-        # NOTE: If the confidence head is not trained, randomly select a sample.
         plddt = sample_out["plddt"]  # [N, L]
         mask = feat["seq_mask"]  # [L]
         w = mask.float()  # [L,]
@@ -450,6 +450,7 @@ class TrainingModule(pl.LightningModule):
 
         # Update validation metrics
         val_metrics: MetricCollection = self.val_metrics
+        val_metrics["rank/plddt"].update(avg_plddt[rank_idx])
         for k, v in metrics.items():
             val_metrics[k].update(v)
 
