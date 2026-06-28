@@ -78,6 +78,43 @@ def make_empty_template_features(
     }
 
 
+def template_sequence_mismatch_stats(
+    query_sequence: str,
+    template: protein.Protein,
+    hit: TemplateHit,
+) -> tuple[float, int, int]:
+    """Return aligned residue-type mismatch fraction, count, and aligned count."""
+    entry_indices = hit.entry_indices - 1
+    template_indices = hit.template_indices - 1
+    valid = (
+        (entry_indices >= 0)
+        & (entry_indices < len(query_sequence))
+        & (template_indices >= 0)
+        & (template_indices < len(template))
+    )
+    if not np.any(valid):
+        return 0.0, 0, 0
+
+    unknown_idx = residue_constants.restype_orders["X"]
+    query_aatype = np.asarray(
+        [
+            residue_constants.restype_orders.get(query_sequence[i], unknown_idx)
+            for i in entry_indices[valid]
+        ],
+        dtype=np.int64,
+    )
+    template_aatype = np.asarray(
+        [
+            residue_constants.restype_orders.get(template.sequence[i], unknown_idx)
+            for i in template_indices[valid]
+        ],
+        dtype=np.int64,
+    )
+    aligned_count = int(query_aatype.shape[0])
+    mismatch_count = int(np.count_nonzero(query_aatype != template_aatype))
+    return mismatch_count / aligned_count, mismatch_count, aligned_count
+
+
 def compute_backbone_frame_mask(atom14_mask: np.ndarray) -> np.ndarray:
     """Return mask for residues with valid N, CA, and C coordinates."""
     return (

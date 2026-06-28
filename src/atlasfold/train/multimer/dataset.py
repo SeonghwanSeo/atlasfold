@@ -21,6 +21,7 @@ from atlasfold.utils.geometry.random_augment import do_centering_atom14
 from atlaslm.alphabet import Alphabet
 
 DEFAULT_MAX_TEMPLATES = 0
+TEMPLATE_AATYPE_MISMATCH_SKIP_FRACTION = 0.5
 
 
 class MultimerDataPipeline:
@@ -307,6 +308,8 @@ class LMDBDataset(torch.utils.data.Dataset):
                     f"Template {hit.template_id} for {mapping_key} not found; skipping."
                 )
                 continue
+            if self.should_skip_template_hit(chain, template, hit, mapping_key):
+                continue
             template_features.append(
                 template_utils.featurize_aligned_template(
                     template,
@@ -320,6 +323,33 @@ class LMDBDataset(torch.utils.data.Dataset):
             num_templates=self.max_templates,
             query_length=len(chain),
         )
+
+    def should_skip_template_hit(
+        self,
+        chain: protein.Protein,
+        template: protein.Protein,
+        hit: template_utils.TemplateHit,
+        mapping_key: str | None,
+    ) -> bool:
+        mismatch_fraction, mismatch_count, aligned_count = (
+            template_utils.template_sequence_mismatch_stats(chain.sequence, template, hit)
+        )
+        if (
+            aligned_count > 0
+            and mismatch_fraction >= TEMPLATE_AATYPE_MISMATCH_SKIP_FRACTION
+        ):
+            self.logger.debug(
+                "Skipping template %s for %s: %.1f%% aligned residue types "
+                "mismatch (%d/%d; threshold %.1f%%).",
+                hit.template_id,
+                mapping_key,
+                100.0 * mismatch_fraction,
+                mismatch_count,
+                aligned_count,
+                100.0 * TEMPLATE_AATYPE_MISMATCH_SKIP_FRACTION,
+            )
+            return True
+        return False
 
     def to_metadata(self, m_dict: dict) -> metadata.MultimerMetadata:
         if self.is_multimer:
@@ -434,8 +464,8 @@ class TrainingDataset(LMDBDataset):
         label = {k: torch.from_numpy(v) for k, v in label.items()}
         full_label = {k: torch.from_numpy(v) for k, v in full_label.items()}
         if loss_mask["confidence"]:
-            full_label["alignment_metadata"] = (
-                train_alignment.prepare_alignment_metadata(full_label)
+            full_label["alignment_metadata"] = train_alignment.prepare_alignment_metadata(
+                full_label
             )
         loss_mask = {k: torch.tensor(v) for k, v in loss_mask.items()}
 
@@ -633,6 +663,8 @@ class TrainingDataset(LMDBDataset):
                 self.logger.warning(
                     f"Template {hit.template_id} for {mapping_key} not found; skipping."
                 )
+                continue
+            if self.should_skip_template_hit(chain, template, hit, mapping_key):
                 continue
             template_features.append(
                 template_utils.featurize_aligned_template(
