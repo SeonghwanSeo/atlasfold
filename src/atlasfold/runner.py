@@ -1,6 +1,6 @@
 import contextlib
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 import numpy as np
 import torch
@@ -66,6 +66,17 @@ class ProteinOutput(protein.Protein):
         assert self.residue_index is None
 
 
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class FoldBatchOutput:
+    """Outputs from one concrete batched model call."""
+
+    bucket_length: int
+    batch_index: int
+    num_batches: int
+    inputs: list[tuple[int, str, str]]
+    outputs: list[list[ProteinOutput]]
+
+
 class FoldingRunner:
     """A class for running protein folding using the AtlasFold model."""
 
@@ -124,8 +135,50 @@ class FoldingRunner:
         list of ``num_samples`` predictions for the corresponding input.
         """
         inputs = list(inputs)
+        outputs: list[list[ProteinOutput] | None] = [None] * len(inputs)
+
+        for batch_output in self.iter_fold_batches(
+            inputs,
+            num_samples=num_samples,
+            preset=preset,
+            seed=seed,
+            num_recycles=num_recycles,
+            mlm_prob=mlm_prob,
+            sampling_config=sampling_config,
+            length_buckets=length_buckets,
+            max_tokens_per_batch=max_tokens_per_batch,
+            disable_tqdm=disable_tqdm,
+        ):
+            for (input_idx, _, _), sample_outputs in zip(
+                batch_output.inputs, batch_output.outputs, strict=True
+            ):
+                outputs[input_idx] = sample_outputs
+
+        completed_outputs = []
+        for output in outputs:
+            if output is None:
+                raise RuntimeError("Some batched folding outputs were not produced.")
+            completed_outputs.append(output)
+        return completed_outputs
+
+    def iter_fold_batches(
+        self,
+        inputs: Sequence[tuple[str, str]],
+        *,
+        num_samples: int = 1,
+        preset: str = "base",
+        seed: int = 1,
+        num_recycles: int | None = None,
+        mlm_prob: float | None = None,
+        sampling_config: SamplingConfig | None = None,
+        length_buckets: Sequence[int] | None = None,
+        max_tokens_per_batch: int = 1024,
+        disable_tqdm: bool = False,
+    ) -> Iterator[FoldBatchOutput]:
+        """Yield predictions for each token-budgeted model-call batch."""
+        inputs = list(inputs)
         if len(inputs) == 0:
-            return []
+            return
         if num_samples <= 0:
             raise ValueError(f"num_samples must be positive, got {num_samples}.")
         if max_tokens_per_batch <= 0:
@@ -141,23 +194,25 @@ class FoldingRunner:
         )
 
         bucketed_inputs = self._bucket_inputs(inputs, length_buckets)
-        outputs: list[list[ProteinOutput] | None] = [None] * len(inputs)
+        batch_specs = self._make_batch_specs(bucketed_inputs, max_tokens_per_batch)
 
         total_count = len(inputs)
         curr_count = 0
-        for bucket_length in (
-            pbar := tqdm(
-                sorted(bucketed_inputs.keys()),
-                desc="Folding",
-                disable=disable_tqdm,
-                unit="bucket",
-            )
-        ):
-            bucket_items = bucketed_inputs[bucket_length]
-            batch_size = max(1, max_tokens_per_batch // bucket_length)
-
-            for start in range(0, len(bucket_items), batch_size):
-                chunk = bucket_items[start : start + batch_size]
+        with tqdm(
+            batch_specs,
+            desc="Folding",
+            disable=disable_tqdm,
+            unit="batch",
+        ) as pbar:
+            num_batches = len(batch_specs)
+            for batch_idx, (bucket_length, chunk) in enumerate(pbar, start=1):
+                pbar.set_postfix(
+                    {
+                        "bucket": bucket_length,
+                        "batch_size": len(chunk),
+                        "progress": f"{curr_count}/{total_count}",
+                    }
+                )
                 sequences = [sequence for _, _, sequence in chunk]
                 feat = self._make_batch_features(sequences, bucket_length)
 
@@ -168,23 +223,46 @@ class FoldingRunner:
                     **settings,
                 )
 
-                for batch_idx, (input_idx, name, sequence) in enumerate(chunk):
-                    outputs[input_idx] = self._make_protein_outputs(
+                batch_outputs = [
+                    self._make_protein_outputs(
                         name=name,
                         sequence=sequence,
                         out=out,
-                        batch_idx=batch_idx,
+                        batch_idx=batch_item_idx,
                         num_samples=num_samples,
                     )
+                    for batch_item_idx, (_, name, sequence) in enumerate(chunk)
+                ]
                 curr_count += len(chunk)
-                pbar.set_postfix({"progress": f"{curr_count}/{total_count}"})
+                pbar.set_postfix(
+                    {
+                        "bucket": bucket_length,
+                        "batch_size": len(chunk),
+                        "progress": f"{curr_count}/{total_count}",
+                    }
+                )
+                yield FoldBatchOutput(
+                    bucket_length=bucket_length,
+                    batch_index=batch_idx,
+                    num_batches=num_batches,
+                    inputs=chunk,
+                    outputs=batch_outputs,
+                )
 
-        completed_outputs = []
-        for output in outputs:
-            if output is None:
-                raise RuntimeError("Some batched folding outputs were not produced.")
-            completed_outputs.append(output)
-        return completed_outputs
+    @staticmethod
+    def _make_batch_specs(
+        bucketed_inputs: dict[int, list[tuple[int, str, str]]],
+        max_tokens_per_batch: int,
+    ) -> list[tuple[int, list[tuple[int, str, str]]]]:
+        batch_specs: list[tuple[int, list[tuple[int, str, str]]]] = []
+        for bucket_length in sorted(bucketed_inputs):
+            bucket_items = bucketed_inputs[bucket_length]
+            batch_size = max(1, max_tokens_per_batch // bucket_length)
+            for start in range(0, len(bucket_items), batch_size):
+                batch_specs.append(
+                    (bucket_length, bucket_items[start : start + batch_size])
+                )
+        return batch_specs
 
     def _get_run_settings(
         self,

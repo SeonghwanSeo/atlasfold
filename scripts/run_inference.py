@@ -415,8 +415,9 @@ def run(args: argparse.Namespace) -> None:
     )
 
     start = timer()
+    num_written = 0
     try:
-        batched_outputs = runner.fold_batch(
+        for batch_output in runner.iter_fold_batches(
             sequences,
             num_samples=args.num_samples,
             preset=args.preset,
@@ -426,7 +427,36 @@ def run(args: argparse.Namespace) -> None:
             sampling_config=sampling_config,
             length_buckets=args.length_buckets,
             max_tokens_per_batch=args.max_tokens_per_batch,
-        )
+        ):
+            for (_, name, sequence), samples in zip(
+                batch_output.inputs, batch_output.outputs, strict=True
+            ):
+                target_dir = args.out_dir / name
+                write_outputs_for_target(
+                    target_dir,
+                    samples,
+                    rank_by=args.rank_by,
+                    output_format=args.output_format,
+                    seed=args.seed,
+                )
+                scores = get_sample_scores(samples, args.rank_by)
+                best_score = max(scores.values())
+                best_sample = max(scores, key=scores.get)
+                num_written += 1
+                logger.info(
+                    "Wrote %s: length=%d, bucket=%d, batch=%d/%d, "
+                    "best=%s, %s=%.4f (%d/%d).",
+                    name,
+                    len(sequence),
+                    batch_output.bucket_length,
+                    batch_output.batch_index,
+                    batch_output.num_batches,
+                    best_sample,
+                    args.rank_by,
+                    best_score,
+                    num_written,
+                    len(sequences),
+                )
     except RuntimeError as err:
         if "out of memory" in str(err).lower():
             logger.error(
@@ -434,31 +464,6 @@ def run(args: argparse.Namespace) -> None:
                 "--max-tokens-per-batch or --sampling-chunk-size."
             )
         raise
-
-    num_written = 0
-    for (name, sequence), samples in zip(sequences, batched_outputs, strict=True):
-        target_dir = args.out_dir / name
-        write_outputs_for_target(
-            target_dir,
-            samples,
-            rank_by=args.rank_by,
-            output_format=args.output_format,
-            seed=args.seed,
-        )
-        scores = get_sample_scores(samples, args.rank_by)
-        best_score = max(scores.values())
-        best_sample = max(scores, key=scores.get)
-        num_written += 1
-        logger.info(
-            "Wrote %s: length=%d, best=%s, %s=%.4f (%d/%d).",
-            name,
-            len(sequence),
-            best_sample,
-            args.rank_by,
-            best_score,
-            num_written,
-            len(sequences),
-        )
 
     elapsed = timer() - start
     logger.info(
