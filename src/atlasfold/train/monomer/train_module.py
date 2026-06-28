@@ -450,7 +450,7 @@ class TrainingModule(pl.LightningModule):
 
         # Update validation metrics
         val_metrics: MetricCollection = self.val_metrics
-        val_metrics["rank/plddt"].update(avg_plddt[rank_idx])
+        val_metrics["rank/plddt_rank"].update(avg_plddt[rank_idx])
         for k, v in metrics.items():
             val_metrics[k].update(v)
 
