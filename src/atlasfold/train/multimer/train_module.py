@@ -12,8 +12,8 @@ from atlasfold.model.network.diffusion_head import SamplingConfig
 from atlasfold.train.monomer import train_module as monomer_train_module
 from atlasfold.train.multimer import train_alignment, validation_metrics
 from atlasfold.train.multimer.model_train import AtlasFoldForTrain
-from atlasfold.train.utils import structure_metrics
 from atlasfold.train.utils.ema import ExponentialMovingAverage
+from atlasfold.utils.geometry import metrics as structure_metrics
 
 
 def to_dict(config: DictConfig) -> dict:

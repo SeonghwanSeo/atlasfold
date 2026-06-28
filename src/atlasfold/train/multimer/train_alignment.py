@@ -9,7 +9,9 @@ from typing import Any
 
 import torch
 
-from atlasfold.train.utils.structure_metrics import (
+# NOTE: For monomer training, alignment is done only at the atom level,
+# without chain permutation.
+from atlasfold.train.monomer.structure_alignment import (
     get_aligned_gt_structure as get_atom_aligned_gt_structure,
 )
 from atlasfold.utils.geometry.rigid_align import get_rigid_transform
@@ -397,8 +399,8 @@ def _get_greedy_full_label_chain_mapping(
             continue
 
         rt, trans = get_rigid_transform(
-            full_coords[anchor_source_idx, CA_IDX].float(),
-            x_pred_crop[anchor_pos, CA_IDX].float(),
+            full_coords[anchor_source_idx, CA_IDX],
+            x_pred_crop[anchor_pos, CA_IDX],
             anchor_mask,
         )
 
@@ -420,7 +422,7 @@ def _get_greedy_full_label_chain_mapping(
             for target_i, target_asym in enumerate(targets):
                 target_pos_cpu = target_positions[target_asym]
                 target_pos = target_pos_cpu.to(device=device)
-                x_pred_target = x_pred_crop[target_pos, CA_IDX].float()
+                x_pred_target = x_pred_crop[target_pos, CA_IDX]
                 for source_i, source_asym in enumerate(sources):
                     source_idx_cpu, source_found_cpu = (
                         _map_target_positions_to_source_indices(
@@ -438,7 +440,7 @@ def _get_greedy_full_label_chain_mapping(
                     if not mask.any():
                         continue
 
-                    x_gt_source = full_coords[source_idx, CA_IDX].float() @ rt + trans
+                    x_gt_source = full_coords[source_idx, CA_IDX] @ rt + trans
                     x_gt_centroid = (x_gt_source * mask[:, None]).sum(dim=0)
                     x_gt_centroid = x_gt_centroid / mask.sum().clamp_min(1)
                     x_pred_centroid = (x_pred_target * mask[:, None]).sum(dim=0)

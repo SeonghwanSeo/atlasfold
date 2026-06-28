@@ -3,11 +3,11 @@
 import numpy as np
 import torch
 
-from atlasfold.train.utils.structure_metrics import (
+from atlasfold.train.monomer.structure_alignment import get_aligned_gt_structure
+from atlasfold.utils.geometry.metrics import (
     compute_lddt_ca,
     compute_lddt_fullatom,
     compute_rmsd_atom14,
-    get_aligned_gt_structure,
 )
 
 

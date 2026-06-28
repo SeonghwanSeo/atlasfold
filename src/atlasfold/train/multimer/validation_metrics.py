@@ -10,15 +10,15 @@ from collections.abc import Iterable
 import numpy as np
 import torch
 
-from atlasfold.train.utils.structure_metrics import (
+from atlasfold.train.monomer.structure_alignment import (
+    get_aligned_gt_structure as get_atom_aligned_gt_structure,
+)
+from atlasfold.utils.geometry.metrics import (
     compute_lddt,
     compute_lddt_ca,
     compute_lddt_fullatom,
     compute_rmsd,
     compute_rmsd_atom14,
-)
-from atlasfold.train.utils.structure_metrics import (
-    get_aligned_gt_structure as get_atom_aligned_gt_structure,
 )
 from atlasfold.utils.geometry.rigid_align import rigid_align_atom14
 

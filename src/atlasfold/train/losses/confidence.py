@@ -9,8 +9,12 @@ import torch
 import torch.nn.functional as F
 
 from atlasfold.common import residue_constants
-from atlasfold.train.utils.structure_metrics import cdist
 from atlasfold.utils.torch_utils import get_one_hot_from_bins, index_select_dim
+
+
+def cdist(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Compute pairwise distances between two sets of points."""
+    return torch.norm(x[..., :, None, :] - y[..., None, :, :], dim=-1)
 
 
 # Compute restype_atom_swap based on restype_ambiguous_atoms

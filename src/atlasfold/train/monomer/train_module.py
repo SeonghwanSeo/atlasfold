@@ -12,12 +12,12 @@ from torchmetrics import MeanMetric, MetricCollection
 from atlasfold.model import AtlasFoldConfig
 from atlasfold.model.network.diffusion_head import SamplingConfig
 from atlasfold.train import losses
-from atlasfold.train.monomer import validation_metrics
+from atlasfold.train.monomer import structure_alignment, validation_metrics
 from atlasfold.train.monomer.model_train import AtlasFoldForTrain
-from atlasfold.train.utils import structure_metrics
 from atlasfold.train.utils.ema import ExponentialMovingAverage
 from atlasfold.train.utils.gradient_logging import gradient_norm, parameter_norm
 from atlasfold.train.utils.lr_scheduler import AlphaFoldLRScheduler
+from atlasfold.utils.geometry import metrics as structure_metrics
 
 
 def to_dict(config: DictConfig) -> dict:
@@ -379,7 +379,7 @@ class TrainingModule(pl.LightningModule):
             aligned_coords_list = []
             aligned_mask_list = []
             for b_i in range(x_pred.shape[0]):
-                x_gt, mask = structure_metrics.get_aligned_gt_structure(
+                x_gt, mask = structure_alignment.get_aligned_gt_structure(
                     x_gt=label["coordinates"][b_i],
                     x_pred=x_pred[b_i],
                     aatype=batch["aatype_int"][b_i],
