@@ -132,6 +132,11 @@ def featurize_complex(
             sequences, entity_ids, asym_ids, sym_ids, strict=True
         )
     ]
+    lm_offset = 0
+    for feat in feats:
+        feat["seq_tok_idx"] = feat["seq_tok_idx"] + lm_offset
+        lm_offset += len(feat["lm.input_ids"])
+
     # Concatenate features from all chains
     concatenated_feats = {}
     for k in feats[0].keys():
