@@ -3,7 +3,7 @@ seed: 5
 model:
   _yaml_: _model.yaml
   diffusion_head:
-    blocks_per_ckpt: 4
+    blocks_per_ckpt: null
   confidence_head:
     blocks_per_ckpt: null
 
@@ -12,8 +12,8 @@ train:
   name: stage5
 
   data:
-    max_length: 768
-    max_seq_length: 1280
+    max_length: 640
+    max_seq_length: 1024
     batch_size: 2
     global_batch_size: 256
 
@@ -23,9 +23,9 @@ train:
         is_distillation: false
         weight: 0.240
         sampling_strategy: ["length", "cluster"]
-      - name: disordered_pdb
+      - name: disordered_pdb_afm
         is_distillation: true
-        weight: 0.010
+        weight: 0.020
         sampling_strategy: ["length", "cluster"]
       - name: long_monomers
         is_distillation: true
@@ -44,9 +44,10 @@ train:
     train_confidence_head: true
     train_pae_head: true
     diffusion_batch_size: 32
+    num_recycles: 4
 
   optimizer:
-    max_lr: 1e-4
+    max_lr: 1e-3
     lr_decay_factor: 1.0
     ema_update_params: ["diffusion_head.", "confidence_head."]
 

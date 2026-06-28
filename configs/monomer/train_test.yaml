@@ -2,18 +2,20 @@ seed: 5
 
 model:
   _yaml_: _model.yaml
+  trunk:
+    blocks_per_ckpt: 8
   diffusion_head:
-    blocks_per_ckpt: 4
+    blocks_per_ckpt: null
   confidence_head:
     blocks_per_ckpt: null
 
 train:
   _yaml_: _train_base.yaml
-  name: stage5
+  name: test
 
   data:
-    max_length: 768
-    max_seq_length: 1280
+    max_length: 512
+    max_seq_length: 1024
     batch_size: 2
     global_batch_size: 256
 
@@ -21,22 +23,21 @@ train:
     train_datasets:
       - name: rcsb
         is_distillation: false
-        weight: 1.0
+        weight: 0.5
+        sampling_strategy: ["length", "cluster"]
+      - name: disordered_pdb_afm
+        is_distillation: true
+        weight: 0.5
         sampling_strategy: ["length", "cluster"]
     val_dataset:
       name: cameo_val
 
   training:
-    train_trunk: false
+    train_trunk: true
     train_diffusion_head: true
     train_confidence_head: true
-    train_pae_head: true
+    train_pae_head: false
     diffusion_batch_size: 32
-
-  optimizer:
-    max_lr: 1e-4
-    lr_decay_factor: 1.0
-    ema_update_params: ["diffusion_head.", "confidence_head."]
 
   validation:
     num_diffusion_samples: 5
