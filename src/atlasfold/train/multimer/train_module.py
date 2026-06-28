@@ -180,13 +180,17 @@ class TrainingModule(MonomerTrainingModule):
             for b_i in range(x_pred.shape[0]):
                 feat_i = {k: v[b_i] for k, v in batch.items()}
                 label_i = {k: v[b_i] for k, v in label.items()}
-                full_label_i = None if full_label is None else full_label[b_i]
-                x_gt, mask = train_alignment.get_aligned_gt_structure(
-                    x_pred=x_pred[b_i],
-                    batch=feat_i,
-                    label=label_i,
-                    full_label=full_label_i,
-                )
+                if bool(confidence_mask[b_i].item()):
+                    full_label_i = None if full_label is None else full_label[b_i]
+                    x_gt, mask = train_alignment.get_aligned_gt_structure(
+                        x_pred=x_pred[b_i],
+                        batch=feat_i,
+                        label=label_i,
+                        full_label=full_label_i,
+                    )
+                else:
+                    x_gt = label_i["coordinates"].float()
+                    mask = label_i["resolved_mask"].bool()
                 aligned_coords_list.append(x_gt)
                 aligned_mask_list.append(mask)
 

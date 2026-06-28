@@ -433,9 +433,10 @@ class TrainingDataset(LMDBDataset):
         template_input = {k: torch.from_numpy(v) for k, v in template_input.items()}
         label = {k: torch.from_numpy(v) for k, v in label.items()}
         full_label = {k: torch.from_numpy(v) for k, v in full_label.items()}
-        full_label["alignment_metadata"] = train_alignment.prepare_alignment_metadata(
-            full_label
-        )
+        if loss_mask["confidence"]:
+            full_label["alignment_metadata"] = (
+                train_alignment.prepare_alignment_metadata(full_label)
+            )
         loss_mask = {k: torch.tensor(v) for k, v in loss_mask.items()}
 
         fold_input = pad_input(fold_input, max_length=self.max_length)
