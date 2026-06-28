@@ -9,19 +9,19 @@ from torchmetrics import MeanMetric, MetricCollection
 
 from atlasfold.model.model_multimer import AtlasFoldMultimerConfig
 from atlasfold.model.network.diffusion_head import SamplingConfig
-from atlasfold.train.monomer.train_module import (
-    TrainingModule as MonomerTrainingModule,
-)
-from atlasfold.train.monomer.train_module import (
-    to_dict,
-)
+from atlasfold.train.monomer import train_module as monomer_train_module
 from atlasfold.train.multimer import train_alignment, validation_metrics
 from atlasfold.train.multimer.model_train import AtlasFoldForTrain
 from atlasfold.train.utils import structure_metrics
 from atlasfold.train.utils.ema import ExponentialMovingAverage
 
 
-class TrainingModule(MonomerTrainingModule):
+def to_dict(config: DictConfig) -> dict:
+    """Convert a DictConfig to a standard Python dictionary."""
+    return OmegaConf.to_container(config, resolve=True)
+
+
+class TrainingModule(monomer_train_module.TrainingModule):
     """Lightning module for multimer training and validation."""
 
     def __init__(self, config: DictConfig):
@@ -89,7 +89,9 @@ class TrainingModule(MonomerTrainingModule):
             "loss_mask": super().transfer_batch_to_device(
                 batch["loss_mask"], device, dataloader_idx
             ),
-            "full_label": batch["full_label"],
+            "full_label": super().transfer_batch_to_device(
+                batch["full_label"], device, dataloader_idx
+            ),
         }
 
     def setup_metrics(self):
@@ -133,7 +135,7 @@ class TrainingModule(MonomerTrainingModule):
                 batch=batch["feat"],
                 label=batch["label"],
                 loss_mask=batch["loss_mask"],
-                full_label=batch.get("full_label"),
+                full_label=batch["full_label"],
             )
 
         for k, v in metrics.items():
@@ -147,7 +149,7 @@ class TrainingModule(MonomerTrainingModule):
         batch: dict[str, torch.Tensor],
         label: dict[str, torch.Tensor],
         loss_mask: dict[str, torch.Tensor],
-        full_label: list[dict[str, torch.Tensor]] | None = None,
+        full_label: list[dict[str, Any]],
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute multimer losses with full-label confidence alignment."""
         loss = torch.zeros(1, device=batch["aatype"].device, dtype=torch.float32)
@@ -171,26 +173,21 @@ class TrainingModule(MonomerTrainingModule):
         if self.train_confidence_head:
             confidence_out = model_out["confidence"]
             x_pred = confidence_out["mini_rollout"]["sample_coords"]
-            confidence_mask = loss_mask["confidence"].to(
-                device=x_pred.device, dtype=torch.bool
-            )
+            do_permutation = loss_mask["confidence"].tolist()
 
             aligned_coords_list = []
             aligned_mask_list = []
             for b_i in range(x_pred.shape[0]):
+                x_pred_i = x_pred[b_i]
                 feat_i = {k: v[b_i] for k, v in batch.items()}
                 label_i = {k: v[b_i] for k, v in label.items()}
-                if bool(confidence_mask[b_i].item()):
-                    full_label_i = None if full_label is None else full_label[b_i]
-                    x_gt, mask = train_alignment.get_aligned_gt_structure(
-                        x_pred=x_pred[b_i],
-                        batch=feat_i,
-                        label=label_i,
-                        full_label=full_label_i,
-                    )
-                else:
-                    x_gt = label_i["coordinates"].float()
-                    mask = label_i["resolved_mask"].bool()
+                x_gt, mask = train_alignment.get_aligned_gt_structure(
+                    x_pred=x_pred_i,
+                    feat=feat_i,
+                    label=label_i,
+                    full_label=full_label[b_i],
+                    permutation=do_permutation[b_i],
+                )
                 aligned_coords_list.append(x_gt)
                 aligned_mask_list.append(mask)
 

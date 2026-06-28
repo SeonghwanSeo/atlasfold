@@ -9,9 +9,6 @@ from typing import Any
 
 import torch
 
-from atlasfold.train.multimer.validation_metrics import (
-    get_aligned_gt_structure as get_validation_aligned_gt_structure,
-)
 from atlasfold.train.utils.structure_metrics import (
     get_aligned_gt_structure as get_atom_aligned_gt_structure,
 )
@@ -21,16 +18,11 @@ CA_IDX = 1
 
 logger = logging.getLogger(__name__)
 
-_CPU_METADATA_DTYPES = {
-    "crop_to_full_idx": torch.long,
-    "asym_id": torch.long,
-    "entity_id": torch.long,
-    "res_idx": torch.long,
-    "resolved_mask": torch.bool,
-}
 
-
-@dataclasses.dataclass(frozen=True)
+# ============================================================
+# Metadata for chain permutation alignment
+# ============================================================
+@dataclasses.dataclass(slots=True)
 class ChainInfo:
     asym_id: int
     entity_id: int
@@ -38,7 +30,7 @@ class ChainInfo:
     res_idx: torch.Tensor
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(slots=True)
 class FullLabelMetadata:
     crop_to_full_idx: torch.Tensor
     asym_id: torch.Tensor
@@ -50,18 +42,22 @@ class FullLabelMetadata:
     entity_to_sources: dict[int, list[int]]
     residue_lookup: dict[tuple[int, int], int]
 
+    @property
+    def has_swappable_target(self) -> bool:
+        asym_ids = set(self.target_positions.keys())
+        return any(
+            len(sources) > 1 and any(aid in asym_ids for aid in sources)
+            for sources in self.entity_to_sources.values()
+        )
+
 
 def prepare_alignment_metadata(full_label: dict[str, Any]) -> FullLabelMetadata:
-    """Build CPU metadata used by train-time chain permutation alignment."""
-    cpu_tensors = {
-        key: _as_cpu_tensor(full_label[key], dtype)
-        for key, dtype in _CPU_METADATA_DTYPES.items()
-    }
-    crop_to_full_idx = cpu_tensors["crop_to_full_idx"]
-    asym_id = cpu_tensors["asym_id"]
-    entity_id = cpu_tensors["entity_id"]
-    res_idx = cpu_tensors["res_idx"]
-    resolved_mask = cpu_tensors["resolved_mask"]
+    """Build metadata used by train-time chain permutation alignment."""
+    crop_to_full_idx = full_label["crop_to_full_idx"]
+    asym_id = full_label["asym_id"]
+    entity_id = full_label["entity_id"]
+    res_idx = full_label["res_idx"]
+    resolved_mask = full_label["resolved_mask"]
 
     chain_info = _build_chain_info(asym_id, entity_id, res_idx)
     target_positions = _build_crop_positions_by_asym(crop_to_full_idx, asym_id)
@@ -81,126 +77,6 @@ def prepare_alignment_metadata(full_label: dict[str, Any]) -> FullLabelMetadata:
     )
 
 
-@torch.no_grad()
-def get_aligned_gt_structure(
-    x_pred: torch.Tensor,
-    batch: dict[str, torch.Tensor],
-    label: dict[str, torch.Tensor],
-    full_label: dict[str, Any] | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Align GT to a training mini-rollout using the train-time policy."""
-    if full_label is None:
-        return _align_cropped_label(x_pred, batch, label)
-    return get_aligned_gt_structure_from_full_label(x_pred, batch, label, full_label)
-
-
-@torch.no_grad()
-def get_aligned_gt_structure_from_full_label(
-    x_pred: torch.Tensor,
-    batch: dict[str, torch.Tensor],
-    label: dict[str, torch.Tensor],
-    full_label: dict[str, Any],
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Align full-complex GT to a cropped training mini-rollout.
-
-    The chain choice follows the KFold/AlphaFold-Multimer train-time heuristic:
-    choose one anchor chain, align that source chain to each possible cropped
-    anchor, then greedily assign same-entity chains by centroid distance.
-    """
-    device = x_pred.device
-    seq_mask = batch["seq_mask"].to(device=device, dtype=torch.bool)
-    valid_pos = torch.nonzero(seq_mask, as_tuple=False).flatten()
-    metadata = _get_alignment_metadata(full_label)
-    crop_to_full_idx = metadata.crop_to_full_idx
-    if crop_to_full_idx.numel() != valid_pos.numel():
-        raise ValueError(
-            "full_label crop_to_full_idx length does not match cropped seq_mask: "
-            f"{crop_to_full_idx.numel()} != {valid_pos.numel()}"
-        )
-
-    x_pred_crop = x_pred[valid_pos].float()
-    if not _has_swappable_target(metadata):
-        return _align_cropped_label(x_pred, batch, label)
-
-    try:
-        with torch.autocast(device.type, enabled=False):
-            target_to_source_asym = _get_greedy_full_label_chain_mapping(
-                crop_to_full_idx=crop_to_full_idx,
-                full_label=full_label,
-                x_pred_crop=x_pred_crop,
-                metadata=metadata,
-            )
-    except (RuntimeError, ValueError, KeyError, IndexError) as e:
-        logger.warning(
-            "Greedy chain alignment failed; falling back to cropped label: %s", e
-        )
-        return _align_cropped_label(x_pred, batch, label)
-
-    source_idx, source_found = _map_crop_to_full_indices(
-        crop_to_full_idx=crop_to_full_idx,
-        full_label=full_label,
-        target_to_source_asym=target_to_source_asym,
-        metadata=metadata,
-    )
-    source_idx = source_idx.to(device=device)
-    source_found = source_found.to(device=device)
-
-    full_coords = full_label["coordinates"].to(device=device, dtype=torch.float32)
-    full_mask = full_label["resolved_mask"].to(device=device, dtype=torch.bool)
-    full_aatype = full_label["aatype_int"].to(device=device, dtype=torch.long)
-
-    x_candidate = full_coords[source_idx]
-    mask_candidate = full_mask[source_idx] & source_found[:, None]
-    if mask_candidate[:, CA_IDX].sum() < 3:
-        return _align_cropped_label(x_pred, batch, label)
-
-    x_aligned, mask_aligned = get_atom_aligned_gt_structure(
-        x_gt=x_candidate,
-        x_pred=x_pred_crop,
-        aatype=full_aatype[source_idx],
-        mask=mask_candidate,
-    )
-
-    out_x = torch.zeros_like(x_pred)
-    out_mask = torch.zeros(x_pred.shape[:-1], device=device, dtype=torch.bool)
-    out_x[valid_pos] = x_aligned
-    out_mask[valid_pos] = mask_aligned
-    return out_x, out_mask
-
-
-def _align_cropped_label(
-    x_pred: torch.Tensor,
-    batch: dict[str, torch.Tensor],
-    label: dict[str, torch.Tensor],
-) -> tuple[torch.Tensor, torch.Tensor]:
-    return get_validation_aligned_gt_structure(x_pred, batch, label)
-
-
-def _as_cpu_tensor(tensor: Any, dtype: torch.dtype) -> torch.Tensor:
-    if isinstance(tensor, torch.Tensor):
-        return tensor.detach().to(device="cpu", dtype=dtype)
-    return torch.as_tensor(tensor, dtype=dtype, device="cpu")
-
-
-def _get_alignment_metadata(full_label: dict[str, Any]) -> FullLabelMetadata:
-    metadata = full_label.get("alignment_metadata")
-    if isinstance(metadata, FullLabelMetadata):
-        return metadata
-    return prepare_alignment_metadata(full_label)
-
-
-def _has_swappable_target(metadata: FullLabelMetadata) -> bool:
-    target_asym_ids = set(metadata.target_positions.keys())
-    return any(
-        len(sources) > 1 and any(asym_id in target_asym_ids for asym_id in sources)
-        for sources in metadata.entity_to_sources.values()
-    )
-
-
-def _get_full_chain_info(full_label: dict[str, Any]) -> dict[int, ChainInfo]:
-    return _get_alignment_metadata(full_label).chain_info
-
-
 def _build_chain_info(
     asym_id: torch.Tensor,
     entity_id: torch.Tensor,
@@ -211,8 +87,6 @@ def _build_chain_info(
         if aid == 0:
             continue
         indices = torch.nonzero(asym_id == aid, as_tuple=False).flatten()
-        if indices.numel() == 0:
-            continue
         asym_id_int = int(aid)
         chain_info[asym_id_int] = ChainInfo(
             asym_id=asym_id_int,
@@ -221,17 +95,6 @@ def _build_chain_info(
             res_idx=res_idx[indices],
         )
     return chain_info
-
-
-def _get_crop_positions_by_asym(
-    crop_to_full_idx: torch.Tensor,
-    full_label: dict[str, Any],
-) -> dict[int, torch.Tensor]:
-    crop_to_full_idx = _as_cpu_tensor(crop_to_full_idx, torch.long)
-    metadata = _get_alignment_metadata(full_label)
-    if torch.equal(crop_to_full_idx, metadata.crop_to_full_idx):
-        return metadata.target_positions
-    return _build_crop_positions_by_asym(crop_to_full_idx, metadata.asym_id)
 
 
 def _build_crop_positions_by_asym(
@@ -249,6 +112,17 @@ def _build_crop_positions_by_asym(
     }
 
 
+def _build_entity_to_sources(
+    chain_info: dict[int, ChainInfo],
+) -> dict[int, list[int]]:
+    entity_to_sources: dict[int, list[int]] = defaultdict(list)
+    for asym_id, info in chain_info.items():
+        entity_to_sources[info.entity_id].append(asym_id)
+    for sources in entity_to_sources.values():
+        sources.sort()
+    return entity_to_sources
+
+
 def _build_residue_lookup(
     asym_id: torch.Tensor,
     res_idx: torch.Tensor,
@@ -261,18 +135,132 @@ def _build_residue_lookup(
     }
 
 
+# ============================================================
+# Align full-complex GT to a cropped training mini-rollout
+# ============================================================
+def get_aligned_gt_structure(
+    x_pred: torch.Tensor,
+    feat: dict[str, torch.Tensor],
+    label: dict[str, torch.Tensor],
+    full_label: dict[str, Any] | None,
+    permutation: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Align full-complex GT to a cropped training mini-rollout.
+
+    The chain choice follows the KFold/AlphaFold-Multimer train-time heuristic:
+    choose one anchor chain, align that source chain to each possible cropped
+    anchor, then greedily assign same-entity chains by centroid distance.
+
+
+    Parameters
+    ----------
+    x_pred : torch.Tensor
+        Tensor of shape (L, 14, 3) containing predicted coordinates.
+    feat : dict[str, torch.Tensor]
+        Dictionary containing input data.
+    label : dict[str, torch.Tensor]
+        Dictionary containing cropped ground truth data.
+    full_label : dict[str, Any] | None
+        Dictionary containing full ground truth data, or None if not available.
+    permutation : bool, optional
+        Whether to perform chain permutation alignment. Default is True.
+        If False, only the atom-level alignment of the cropped GT to the prediction
+        is performed.
+    """
+    with torch.no_grad(), torch.autocast(x_pred.device.type, enabled=False):
+        return _get_aligned_gt_structure(x_pred, feat, label, full_label, permutation)
+
+
+def _get_aligned_gt_structure(
+    x_pred: torch.Tensor,
+    feat: dict[str, torch.Tensor],
+    label: dict[str, torch.Tensor],
+    full_label: dict[str, Any] | None,
+    permutation: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor]:
+
+    def _fallback() -> tuple[torch.Tensor, torch.Tensor]:
+        aatype = feat["aatype_int"]
+        x_gt, mask = label["coordinates"], label["resolved_mask"]
+        return get_atom_aligned_gt_structure(x_gt, x_pred, aatype, mask=mask)
+
+    if permutation is False:
+        # Simple case: no chain permutation, just align the cropped GT to the prediction
+        return _fallback()
+
+    assert full_label is not None, (
+        "full_label must be provided for chain permutation alignment"
+    )
+
+    metadata = full_label["alignment_metadata"]
+    assert isinstance(metadata, FullLabelMetadata), (
+        "full_label['alignment_metadata'] must be prepared by the multimer dataset"
+    )
+
+    # If there are no swappable chains, we can just align the cropped GT to the prediction
+    if not metadata.has_swappable_target:
+        return _fallback()
+
+    # 1. Chain permutation alignment.
+    L_valid = feat["seq_mask"].sum().item()
+
+    crop_to_full_idx = metadata.crop_to_full_idx
+    assert crop_to_full_idx.numel() == L_valid, (
+        "full_label crop_to_full_idx length does not match valid sequence length: "
+        f"{crop_to_full_idx.numel()} != {L_valid}"
+    )
+
+    x_pred_crop = x_pred[:L_valid]
+    aatype = feat["aatype_int"][:L_valid]
+    try:
+        target_to_source_asym = _get_greedy_full_label_chain_mapping(
+            crop_to_full_idx=crop_to_full_idx,
+            full_label=full_label,
+            x_pred_crop=x_pred_crop,
+            metadata=metadata,
+        )
+    except (RuntimeError, ValueError, KeyError, IndexError) as e:
+        logger.warning(
+            "Greedy chain alignment failed; falling back to cropped label: %s", e
+        )
+        return _fallback()
+
+    source_idx, source_found = _map_crop_to_full_indices(
+        crop_to_full_idx=crop_to_full_idx,
+        target_to_source_asym=target_to_source_asym,
+        metadata=metadata,
+    )
+    device = x_pred.device
+    source_idx = source_idx.to(device=device)
+    source_found = source_found.to(device=device)
+    x_gt_crop = full_label["coordinates"][source_idx]
+    mask_crop = full_label["resolved_mask"][source_idx] & source_found[:, None]
+
+    if mask_crop[:, CA_IDX].sum() < 3:
+        logger.warning(
+            "Not enough resolved CA atoms in the aligned GT structure; "
+            "falling back to cropped label"
+        )
+        return _fallback()
+
+    x_aligned, mask_aligned = get_atom_aligned_gt_structure(
+        x_gt_crop, x_pred_crop, aatype, mask=mask_crop
+    )
+
+    out_x = torch.zeros_like(x_pred)
+    out_mask = torch.zeros(x_pred.shape[:-1], device=device, dtype=torch.bool)
+    out_x[:L_valid] = x_aligned
+    out_mask[:L_valid] = mask_aligned
+    return out_x, out_mask
+
+
 def _map_target_positions_to_source_indices(
     target_positions: torch.Tensor,
     crop_to_full_idx: torch.Tensor,
-    full_label: dict[str, Any],
     source_asym: int,
     lookup: dict[tuple[int, int], int],
-    metadata: FullLabelMetadata | None = None,
+    full_res_idx: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    target_positions = _as_cpu_tensor(target_positions, torch.long)
-    crop_to_full_idx = _as_cpu_tensor(crop_to_full_idx, torch.long)
-    metadata = metadata or _get_alignment_metadata(full_label)
-    full_res_idx = metadata.res_idx
     source_indices = []
     found = []
     for target_idx in crop_to_full_idx[target_positions].tolist():
@@ -288,12 +276,9 @@ def _map_target_positions_to_source_indices(
 
 def _map_crop_to_full_indices(
     crop_to_full_idx: torch.Tensor,
-    full_label: dict[str, Any],
     target_to_source_asym: dict[int, int],
-    metadata: FullLabelMetadata | None = None,
+    metadata: FullLabelMetadata,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    crop_to_full_idx = _as_cpu_tensor(crop_to_full_idx, torch.long)
-    metadata = metadata or _get_alignment_metadata(full_label)
     full_asym_id = metadata.asym_id
     full_res_idx = metadata.res_idx
     lookup = metadata.residue_lookup
@@ -312,17 +297,6 @@ def _map_crop_to_full_indices(
         torch.as_tensor(source_indices, dtype=torch.long),
         torch.as_tensor(found, dtype=torch.bool),
     )
-
-
-def _build_entity_to_sources(
-    chain_info: dict[int, ChainInfo],
-) -> dict[int, list[int]]:
-    entity_to_sources: dict[int, list[int]] = defaultdict(list)
-    for asym_id, info in chain_info.items():
-        entity_to_sources[info.entity_id].append(asym_id)
-    for sources in entity_to_sources.values():
-        sources.sort()
-    return entity_to_sources
 
 
 def _select_anchor_source_asym(
@@ -373,12 +347,8 @@ def _get_greedy_full_label_chain_mapping(
     crop_to_full_idx: torch.Tensor,
     full_label: dict[str, Any],
     x_pred_crop: torch.Tensor,
-    full_coords: torch.Tensor | None = None,
-    full_mask: torch.Tensor | None = None,
-    metadata: FullLabelMetadata | None = None,
+    metadata: FullLabelMetadata,
 ) -> dict[int, int]:
-    crop_to_full_idx = _as_cpu_tensor(crop_to_full_idx, torch.long)
-    metadata = metadata or _get_alignment_metadata(full_label)
     target_positions = metadata.target_positions
     target_asym_ids = set(target_positions.keys())
     if not target_asym_ids:
@@ -403,14 +373,8 @@ def _get_greedy_full_label_chain_mapping(
         return {}
 
     device = x_pred_crop.device
-    if full_coords is None:
-        full_coords = full_label["coordinates"].to(device=device, dtype=torch.float32)
-    else:
-        full_coords = full_coords.to(device=device, dtype=torch.float32)
-    if full_mask is None:
-        full_mask = full_label["resolved_mask"].to(device=device, dtype=torch.bool)
-    else:
-        full_mask = full_mask.to(device=device, dtype=torch.bool)
+    full_coords = full_label["coordinates"]
+    full_mask = full_label["resolved_mask"]
 
     lookup = metadata.residue_lookup
     best_cost = float("inf")
@@ -418,15 +382,12 @@ def _get_greedy_full_label_chain_mapping(
 
     for anchor_target in anchor_targets:
         anchor_pos_cpu = target_positions[anchor_target]
-        anchor_source_idx_cpu, anchor_found_cpu = (
-            _map_target_positions_to_source_indices(
-                anchor_pos_cpu,
-                crop_to_full_idx,
-                full_label,
-                anchor_source,
-                lookup,
-                metadata=metadata,
-            )
+        anchor_source_idx_cpu, anchor_found_cpu = _map_target_positions_to_source_indices(
+            anchor_pos_cpu,
+            crop_to_full_idx,
+            anchor_source,
+            lookup,
+            metadata.res_idx,
         )
         anchor_pos = anchor_pos_cpu.to(device=device)
         anchor_source_idx = anchor_source_idx_cpu.to(device=device)
@@ -465,10 +426,9 @@ def _get_greedy_full_label_chain_mapping(
                         _map_target_positions_to_source_indices(
                             target_pos_cpu,
                             crop_to_full_idx,
-                            full_label,
                             source_asym,
                             lookup,
-                            metadata=metadata,
+                            metadata.res_idx,
                         )
                     )
                     source_idx = source_idx_cpu.to(device=device)
