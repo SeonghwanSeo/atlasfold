@@ -253,7 +253,7 @@ def load_model(args: argparse.Namespace):
     else:
         state_dict = {k.removeprefix("model."): v for k, v in checkpoint.items()}
 
-    config = AtlasFoldMultimerConfig()
+    config = AtlasFoldMultimerConfig(lm_path=None)
     model = AtlasFold_Multimer.from_pretrained(
         state_dict=state_dict,
         config=config,
@@ -301,55 +301,42 @@ def structure_to_text(sample, output_format: str) -> str:
     raise ValueError(f"Unsupported output format: {output_format}")
 
 
-def write_outputs(
-    target_dir: Path,
+def write_best_output(
+    out_dir: Path,
+    target_name: str,
     samples,
     *,
     rank_by: str,
     output_format: str,
     seed: int,
 ) -> None:
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    sample_texts: dict[str, str] = {}
+    out_dir.mkdir(parents=True, exist_ok=True)
     scores = get_sample_scores(samples, rank_by)
-
-    for sample_idx, sample in enumerate(samples):
-        sample_name = f"sample_{sample_idx}"
-        sample_text = structure_to_text(sample, output_format)
-        sample_texts[sample_name] = sample_text
-        (target_dir / f"{sample_name}.{output_format}").write_text(sample_text)
-
-        write_json(
-            target_dir / f"confidence_{sample_name}.json",
-            {
-                "name": sample.name,
-                "sample": sample_idx,
-                "seed": seed,
-                "num_chains": sample.num_chains,
-                "num_residues": sample.num_residues,
-                "avg_plddt": float(sample.plddt.mean() * 100),
-                "ptm": float(sample.ptm),
-                "ranking_metric": rank_by,
-                "ranking_score": scores[sample_name],
-            },
-        )
-
     ranked_order = sorted(
         scores,
         key=lambda sample_name: (-scores[sample_name], int(sample_name.split("_")[1])),
     )
-    for rank_idx, sample_name in enumerate(ranked_order):
-        (target_dir / f"ranked_{rank_idx}.{output_format}").write_text(
-            sample_texts[sample_name]
-        )
+    best_sample_name = ranked_order[0]
+    best_sample_idx = int(best_sample_name.split("_")[1])
+    best_sample = samples[best_sample_idx]
+    (out_dir / f"{target_name}_model.{output_format}").write_text(
+        structure_to_text(best_sample, output_format)
+    )
 
-    metric_label = "plddts" if rank_by == "plddt" else "ptms"
     write_json(
-        target_dir / "ranking_debug.json",
+        out_dir / f"{target_name}_confidence.json",
         {
-            metric_label: scores,
-            "order": ranked_order,
+            "name": best_sample.name,
+            "sample": best_sample_idx,
+            "seed": seed,
+            "num_chains": best_sample.num_chains,
+            "num_residues": best_sample.num_residues,
+            "avg_plddt": float(best_sample.plddt.mean() * 100),
+            "ptm": float(best_sample.ptm),
+            "ranking_metric": rank_by,
+            "ranking_score": scores[best_sample_name],
+            "ranking_scores": scores,
+            "ranking_order": ranked_order,
         },
     )
 
@@ -403,8 +390,9 @@ def run(args: argparse.Namespace) -> None:
         max_tokens_per_batch=args.max_tokens_per_batch,
     )
     for (target_name, _), samples in zip(parsed_inputs, outputs, strict=True):
-        write_outputs(
-            args.out_dir / target_name,
+        write_best_output(
+            args.out_dir,
+            target_name,
             samples,
             rank_by=args.rank_by,
             output_format=args.output_format,
