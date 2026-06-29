@@ -40,7 +40,8 @@ class TrainConfig:
     kernel: "KernelConfig"
     # multi-phase training
     load_opt_state: bool = True
-    init_from_ema: bool = False  # if True, load EMA state instead of model weights
+    # Replace model parameters with EMA parameters
+    init_from_ema: tuple[str] | None = None
 
 
 @dataclasses.dataclass(kw_only=True)

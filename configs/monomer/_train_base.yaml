@@ -7,7 +7,7 @@ seed: 1
 
 # Multi-state training
 load_opt_state: true
-init_from_ema: false
+init_from_ema: []
 
 # Compilation settings
 compile:

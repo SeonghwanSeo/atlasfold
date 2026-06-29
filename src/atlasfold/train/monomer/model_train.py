@@ -53,6 +53,40 @@ class AtlasFoldForTrain(AtlasFold):
             else [],
         }
 
+    def get_module_group_names(self) -> dict[str, list[str]]:
+        return {
+            "lm": ["lm"],
+            "trunk": [
+                # Initialization
+                "s_init",
+                "z_init",
+                "z_rel_pos",
+                # Recycling
+                "recycle_s",
+                "recycle_z",
+                # LM stack
+                "lm_layer_weights",
+                "layernorm_lm_emb",
+                "lm_emb_to_s_lm",
+                "proj_lm_attn",
+                "lm_attn_to_z_lm",
+                "lm_stack",
+                "proj_s_lm",
+                "proj_z_lm",
+                # Main stack
+                "main_stack",
+            ],
+            "distogram_head": ["distogram_head"],
+            "diffusion_head": ["diffusion_head"],
+            "confidence_head": ["confidence_head"],
+            "pde_head": ["confidence_head.pde_head"]
+            if hasattr(self.confidence_head, "pde_head")
+            else [],
+            "pae_head": ["confidence_head.pae_head"]
+            if hasattr(self.confidence_head, "pae_head")
+            else [],
+        }
+
     # ==================================================
     # Forward functions for training step.
     # ==================================================
