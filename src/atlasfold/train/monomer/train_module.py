@@ -242,7 +242,7 @@ class TrainingModule(pl.LightningModule):
         for prefix in ["top", "avg", "rank"]:
             for k in ["rmsd", "lddt", "lddt-ca"]:
                 val_metrics[f"{prefix}/{k}"] = MeanMetric()
-        val_metrics["rank/plddt_rank"] = MeanMetric()
+        val_metrics["rank/rank"] = MeanMetric()
         self.val_metrics = MetricCollection(val_metrics, prefix="val/")
 
     def configure_optimizers(self):
@@ -451,7 +451,7 @@ class TrainingModule(pl.LightningModule):
 
         # Update validation metrics
         val_metrics: MetricCollection = self.val_metrics
-        val_metrics["rank/plddt_rank"].update(avg_plddt[rank_idx])
+        val_metrics["rank/rank"].update(float(rank_idx))
         for k, v in metrics.items():
             val_metrics[k].update(v)
 

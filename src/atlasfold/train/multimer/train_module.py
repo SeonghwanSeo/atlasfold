@@ -332,6 +332,16 @@ class TrainingModule(monomer_train_module.TrainingModule):
                     on_step=False,
                     on_epoch=True,
                     sync_dist=True,
+                    batch_size=1,
+                )
+                rank_idx = int(torch.argmin(global_pde))
+                self.log(
+                    "val/rank_idx",
+                    float(rank_idx),
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=1,
                 )
                 return rank_idx
 
@@ -344,6 +354,7 @@ class TrainingModule(monomer_train_module.TrainingModule):
             on_step=False,
             on_epoch=True,
             sync_dist=True,
+            batch_size=1,
         )
         return int(torch.argmax(avg_plddt))
 
