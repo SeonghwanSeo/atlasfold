@@ -588,7 +588,8 @@ class TrainingModule(pl.LightningModule):
         else:
             L_pae = 0.0
 
-        L_confidence = L_plddt + L_resolved + L_pde + L_pae
+        w_pae = self.loss_weights["pae"]
+        L_confidence = L_plddt + L_resolved + L_pde + w_pae * L_pae
         metrics["loss"] = L_confidence.detach()
         return L_confidence, metrics
 

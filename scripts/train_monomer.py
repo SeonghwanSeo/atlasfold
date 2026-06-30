@@ -259,7 +259,7 @@ def train(args) -> None:
                     f"Available moduels: {module_group_names}"
                 )
                 for submodule in module_group_names[module_name]:
-                    module_to_replace = f"model.{submodule}."
+                    module_to_replace = f"model.{submodule}"
                     keys_to_replace.append(module_to_replace)
             keys_to_replace = tuple(keys_to_replace)
             if is_global_zero:
