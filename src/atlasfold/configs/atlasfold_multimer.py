@@ -1,6 +1,6 @@
-from atlasfold.model import model, model_multimer
+from atlasfold.model import model_multimer as model
 
-multimer_config = model_multimer.AtlasFoldMultimerConfig(
+multimer_config = model.AtlasFoldMultimerConfig(
     name="atlasfold-3b-multimer",
     lm_name="SeonghwanSeo/atlaslm-3b-base",
     channel_s=384,
@@ -14,7 +14,7 @@ multimer_config = model_multimer.AtlasFoldMultimerConfig(
         num_blocks=48,
         num_pair_to_single_blocks=12,
     ),
-    template_module=model_multimer.TemplateModuleConfig(
+    template_module=model.TemplateModuleConfig(
         channel_template=64,
         num_blocks=2,
         num_tri_heads=4,
@@ -45,8 +45,6 @@ multimer_config = model_multimer.AtlasFoldMultimerConfig(
         num_bins=39,
         min_dist=3.25,
         max_dist=50.75,
-        has_pae_head=True,
-        has_pde_head=True,
         max_pae_error=32.0,
         num_pae_bins=64,
         max_pde_error=32.0,

@@ -26,6 +26,17 @@ from atlaslm.pretrained import get_model, load_model
 
 
 @dataclasses.dataclass(kw_only=True)
+class TrunkConfig:
+    num_heads: int = 16
+    num_tri_heads: int = 4
+    dropout_z: float = 0.25
+    num_lm_blocks: int = 4
+    num_blocks: int = 48
+    num_pair_to_single_blocks: int = 12
+    blocks_per_ckpt: int | None = None
+
+
+@dataclasses.dataclass(kw_only=True)
 class TemplateModuleConfig:
     channel_template: int = 64
     num_blocks: int = 2
@@ -38,10 +49,63 @@ class TemplateModuleConfig:
 
 
 @dataclasses.dataclass(kw_only=True)
+class DiffusionHeadConfig:
+    channel_a: int = 768
+    channel_atom: int = 96
+    channel_cond: int = 384
+    num_heads: int = 16
+    num_blocks: int = 12
+    num_atom_heads: int = 2
+    num_atom_blocks: int = 3
+    blocks_per_ckpt: int | None = None
+
+
+@dataclasses.dataclass(kw_only=True)
+class DistogramHeadConfig:
+    num_bins: int = 64
+    min_dist: float = 2.0
+    max_dist: float = 22.0
+
+
+@dataclasses.dataclass(kw_only=True)
+class ConfidenceHeadConfig:
+    num_heads: int = 16
+    num_tri_heads: int = 4
+    dropout_z: float = 0.25
+    num_blocks: int = 4
+    num_bins: int = 39
+    min_dist: float = 3.25
+    max_dist: float = 50.75
+    # heads
+    num_plddt_bins: int = 50
+    max_pae_error: float = 32.0
+    num_pae_bins: int = 64
+    max_pde_error: float = 32.0
+    num_pde_bins: int = 64
+    blocks_per_ckpt: int | None = None
+
+
+@dataclasses.dataclass(kw_only=True)
 class AtlasFoldMultimerConfig(AtlasFoldConfig):
     name: str = "atlasfold-multimer-base"
+    lm_name: str = "atlaslm-3b"
+    lm_path: str | None = None
+
+    channel_s: int = 384
+    channel_s_lm: int = 768
+    channel_z: int = 128
+    trunk: TrunkConfig = dataclasses.field(default_factory=TrunkConfig)
     template_module: TemplateModuleConfig = dataclasses.field(
         default_factory=TemplateModuleConfig
+    )
+    distogram_head: DistogramHeadConfig = dataclasses.field(
+        default_factory=DistogramHeadConfig
+    )
+    diffusion_head: DiffusionHeadConfig = dataclasses.field(
+        default_factory=DiffusionHeadConfig
+    )
+    confidence_head: ConfidenceHeadConfig = dataclasses.field(
+        default_factory=ConfidenceHeadConfig
     )
 
 
@@ -164,7 +228,7 @@ class AtlasFold_Multimer(torch.nn.Module):
         )
 
         # === Confidence prediction head === #
-        self.confidence_head = confidence_head.ConfidenceHead(
+        self.confidence_head = confidence_head.ConfidenceHead_Multimer(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
             **dataclasses.asdict(cfg.confidence_head),
