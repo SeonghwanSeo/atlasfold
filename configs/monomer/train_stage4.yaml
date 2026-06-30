@@ -18,6 +18,7 @@ train:
     data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
     train_datasets:
       - name: rcsb
+        metadata_path: /cache/wykim_lab/icl_shwan/atlasfold_data/rcsb/manifest_confidence.msgpack
         is_distillation: false
         weight: 1.0
         sampling_strategy: ["length", "cluster"]
