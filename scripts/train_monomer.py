@@ -278,8 +278,20 @@ def train(args) -> None:
                     f"Replaced {len(is_replaced)} keys with EMA weights: {is_replaced}"
                 )
 
-        model_module.load_state_dict(ckpt["state_dict"], strict=True)
-        model_module.ema.load_state_dict(ckpt["ema"], strict=True)
+            # Remove confidence head weights
+            for k in list(live_weights.keys()):
+                if k.startswith("model.confidence_head"):
+                    del live_weights[k]
+                    if is_global_zero:
+                        logging.info(f"Removed {k} from state_dict.")
+            for k in list(ema_weights.keys()):
+                if k.startswith("model.confidence_head"):
+                    del ema_weights[k]
+                    if is_global_zero:
+                        logging.info(f"Removed {k} from ema state_dict.")
+
+        model_module.load_state_dict(ckpt["state_dict"], strict=False)
+        model_module.ema.load_state_dict(ckpt["ema"], strict=False)
         model_module.last_lr_step = ckpt["global_step"]
         trainer.fit_loop.load_state_dict(ckpt["loops"]["fit_loop"])
         trainer.fit(model_module, datamodule=data_module)

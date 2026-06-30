@@ -659,7 +659,7 @@ class TrainingModule(pl.LightningModule):
         checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
-        self.load_ema_state_dict(checkpoint["ema"], strict=True)
+        self.load_ema_state_dict(checkpoint["ema"], strict=False)
 
     def load_state_dict(
         self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
@@ -673,7 +673,7 @@ class TrainingModule(pl.LightningModule):
             provided_keys = set(state_dict.keys())
             missing_keys = model_keys - provided_keys
             unexpected_keys = provided_keys - model_keys
-            allowed_missing_prefixes = ("lm.",)
+            allowed_missing_prefixes = ("lm.", "confidence_head.")
             actual_missing_keys = [
                 k for k in missing_keys if not k.startswith(allowed_missing_prefixes)
             ]
