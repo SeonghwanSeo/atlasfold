@@ -17,7 +17,7 @@ class AtlasFoldForTrain(AtlasFold_Multimer):
         self.__forward_distogram = torch.compile(self.__forward_distogram, **kwargs)
         self.__forward_diffusion = torch.compile(self.__forward_diffusion, **kwargs)
         self.__forward_confidence = torch.compile(self.__forward_confidence, **kwargs)
-        self.__forward_mini_rollout = torch.compile(self.__forward_mini_rollout, **kwargs)
+        self.__forward_denoise_step = torch.compile(self.__forward_denoise_step, **kwargs)
 
     def get_module_groups(self) -> dict[str, list[torch.nn.Module | torch.nn.Parameter]]:
         return {
@@ -150,6 +150,7 @@ class AtlasFoldForTrain(AtlasFold_Multimer):
         mask: torch.Tensor,
         train: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+
         s = self.s_init(batch["aatype"])
         a, b = self.z_init(batch["aatype"]).chunk(2, dim=-1)
         z = a[..., :, None, :] + b[..., None, :, :]
@@ -258,18 +259,73 @@ class AtlasFoldForTrain(AtlasFold_Multimer):
         batch: dict[str, torch.Tensor],
         s: torch.Tensor,
         z: torch.Tensor,
-        sampling_config: SamplingConfig,
+        config: SamplingConfig,
     ) -> torch.Tensor:
         """Perform a mini rollout for the confidence head training."""
-        with torch.no_grad():
-            sample_coords = self.diffusion_head.sample(
-                batch,
-                s,
-                z,
-                num_samples=1,
-                config=sampling_config,
-            )
-        return sample_coords  # [B, 1, L, 14, 3]
+
+        device = s.device
+
+        B, L = batch["aatype_int"].shape
+        N = 1
+        mask = batch["atom14_mask"].unsqueeze(1)  # (B, 1, L, 14)
+
+        def sample_noise() -> torch.Tensor:
+            """Sample noise with synchronized randomness across different inputs.
+            This ensures that the resulting coordinates are the same regardless of
+            batch size.
+            """
+            return torch.randn(
+                size=(1, N, L, 14, 3), device=device, dtype=torch.float32
+            ).expand(B, -1, -1, -1, -1)  # (B, N, L, 14, 3)
+
+        # Get noise schedule
+        sigmas: list[float] = config.get_sigmas()
+        sigma_0 = sigmas[0]
+        x = sigma_0 * sample_noise()  # (B, N, L, 14, 3)
+        x.masked_fill_(~mask[..., None], 0.0)  # apply atom mask
+
+        diffusion_head = self.diffusion_head
+
+        # Compute time-independent variables
+        # Algorithm 20 Line 1: DiffusionConditioning
+        pair_bias = diffusion_head.pair_conditioning(batch, z)
+        del z
+
+        # Gradually denoise
+        for step in range(1, config.num_steps + 1):
+            # Apply centering and random augmentation.
+            x = diffusion_head.random_augmentation(x, mask)
+
+            sigma_tm, sigma_t = sigmas[step - 1], sigmas[step]
+            gamma = config.gamma_0 * (sigma_t > config.gamma_min)
+            t_hat = torch.tensor(sigma_tm * (1 + gamma), device=device)
+
+            # Add noise
+            noise_var = config.noise_scale**2 * (t_hat**2 - sigma_tm**2)
+            eps = noise_var.sqrt() * sample_noise()  # (B, N, L, 14, 3)
+            eps.masked_fill_(~mask[..., None], 0.0)  # apply atom mask
+            x_noisy = x + eps
+
+            # Denoise
+            x_denoised = self.__forward_denoise_step(batch, s, pair_bias, x_noisy, t_hat)
+            delta = (x_noisy - x_denoised) / t_hat
+            dt = sigma_t - t_hat
+            x = x_noisy + config.step_scale * dt * delta
+        return x  # [B, 1, L, 14, 3]
+
+    def __forward_denoise_step(
+        self,
+        batch: dict[str, torch.Tensor],
+        s: torch.Tensor,
+        pair_bias: torch.Tensor,
+        x_noisy: torch.Tensor,
+        t_hat: torch.Tensor,
+    ) -> torch.Tensor:
+        c_noise = self.diffusion_head.c_noise(t_hat).view(1, 1)
+        single_cond = self.diffusion_head.single_conditioning(batch, s, c_noise)
+        return self.diffusion_head.inference_step(
+            batch, x_noisy, t_hat, single_cond, pair_bias
+        )
 
     def __forward_confidence(
         self,
