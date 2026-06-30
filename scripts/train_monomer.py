@@ -279,16 +279,26 @@ def train(args) -> None:
                 )
 
             # Remove confidence head weights
+            removed_keys = []
             for k in list(live_weights.keys()):
                 if k.startswith("model.confidence_head"):
                     del live_weights[k]
-                    if is_global_zero:
-                        logging.info(f"Removed {k} from state_dict.")
+                    removed_keys.append(k)
+            if is_global_zero:
+                logging.info(
+                    f"Removed {len(removed_keys)} keys from live state_dict: {removed_keys}"
+                )
+
+            ema_weights = ckpt["ema"]["params"]
+            removed_keys = []
             for k in list(ema_weights.keys()):
-                if k.startswith("model.confidence_head"):
+                if k.startswith("confidence_head"):
                     del ema_weights[k]
-                    if is_global_zero:
-                        logging.info(f"Removed {k} from ema state_dict.")
+                    removed_keys.append(k)
+            if is_global_zero:
+                logging.info(
+                    f"Removed {len(removed_keys)} keys from EMA state_dict: {removed_keys}"
+                )
 
         model_module.load_state_dict(ckpt["state_dict"], strict=False)
         model_module.ema.load_state_dict(ckpt["ema"], strict=False)
