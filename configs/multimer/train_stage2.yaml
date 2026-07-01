@@ -1,0 +1,64 @@
+seed: 2
+
+model:
+  _yaml_: _model.yaml
+  trunk:
+    blocks_per_ckpt: 12
+  template_module:
+    blocks_per_ckpt: null
+  diffusion_head:
+    blocks_per_ckpt: null
+
+train:
+  _yaml_: _train_base.yaml
+  name: stage2-384
+
+  data:
+    max_length: 384
+    max_seq_length: 768
+    max_templates: 4
+    batch_size: 2
+    global_batch_size: 256
+
+    data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
+    train_datasets:
+      - name: rcsb_multimer
+        is_multimer: true
+        is_distillation: false
+        weight: 0.50
+        template_prob: 0.5
+      - name: disordered_pdb_multimer
+        is_multimer: true
+        is_distillation: true
+        use_templates: false
+        weight: 0.02
+      - name: long_monomers
+        is_multimer: false
+        is_distillation: true
+        weight: 0.475
+        use_templates: false
+      - name: short_monomers
+        is_multimer: false
+        is_distillation: true
+        weight: 0.005
+        use_templates: false
+    val_dataset:
+      name: rcsb_multimer_val
+      is_multimer: true
+      use_templates: false
+
+  training:
+    train_trunk: true
+    train_diffusion_head: true
+    train_confidence_head: true
+    train_pde_head: true
+    train_pae_head: true
+    diffusion_batch_size: 32
+
+  loss:
+    weights:
+      smooth_lddt: 1.0
+
+    diffusion_loss:
+      smooth_lddt_loss:
+        chunk_size: 16
