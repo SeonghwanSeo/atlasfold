@@ -12,7 +12,7 @@ train:
   data:
     max_length: 384
     max_seq_length: 768
-    batch_size: 8
+    batch_size: 2
     global_batch_size: 256
 
     data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
@@ -40,7 +40,7 @@ train:
   init_from_ema: ["trunk", "diffusion_head"]
 
   optimizer:
-    max_lr: 5e-4
+    max_lr: 1e-3
     lr_decay_factor: 1.0
     ema_update_params: ["confidence_head."]
 
