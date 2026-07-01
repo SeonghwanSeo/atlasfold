@@ -11,7 +11,7 @@ model:
 
 train:
   _yaml_: _train_base.yaml
-  name: multimer-stage1-384
+  name: stage1-384
 
   data:
     max_length: 384
