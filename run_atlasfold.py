@@ -177,7 +177,7 @@ def print_run_settings(
             format_setting(
                 user_args,
                 resolved_args,
-                "output_format",
+                "format",
                 label="  format",
                 source_name="format",
             )
@@ -242,7 +242,7 @@ def build_multimer_args(args: argparse.Namespace) -> argparse.Namespace:
         sampling_chunk_size=args.sampling_chunk_size,
         max_tokens_per_batch=resolve_default(args, "max_tokens_per_batch"),
         length_buckets=args.length_buckets,
-        output_format=resolve_default(args, "format"),
+        format=resolve_default(args, "format"),
         overwrite=args.overwrite,
     )
 

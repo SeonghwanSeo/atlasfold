@@ -1,7 +1,6 @@
 import argparse
 import json
 import logging
-import shutil
 import sys
 from pathlib import Path
 from timeit import default_timer as timer
@@ -10,7 +9,7 @@ import torch
 
 from atlasfold.data.fasta import read_fasta
 from atlasfold.model import AtlasFold_Multimer, SamplingConfig
-from atlasfold.runner_multimer import MultimerFoldingRunner
+from atlasfold.runner_multimer import MultimerFoldingOutput, MultimerFoldingRunner
 
 logger = logging.getLogger("atlasfold.multimer")
 
@@ -117,7 +116,7 @@ def create_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--output-format",
+        "--format",
         choices=["cif", "pdb"],
         default="cif",
         help="Structure file format for sample and ranked outputs.",
@@ -165,7 +164,7 @@ def load_inputs(args: argparse.Namespace) -> list[tuple[str, str]]:
 
 def target_is_complete(
     target_dir: Path,
-    output_format: str,
+    format: str,
     seeds: list[int],
     num_samples: int,
 ) -> bool:
@@ -173,7 +172,7 @@ def target_is_complete(
     return target_rank_is_complete(
         target_dir,
         target_name,
-        output_format,
+        format,
         seeds,
         num_samples,
     )
@@ -182,13 +181,13 @@ def target_is_complete(
 def sample_output_paths(
     target_dir: Path,
     target_name: str,
-    output_format: str,
+    format: str,
     seed: int,
     sample_idx: int,
 ) -> tuple[Path, Path]:
     sample_name = f"{target_name}_seed-{seed}_sample-{sample_idx}"
     return (
-        target_dir / f"{sample_name}.{output_format}",
+        target_dir / f"{sample_name}.{format}",
         target_dir / f"{sample_name}_confidence.json",
     )
 
@@ -196,7 +195,7 @@ def sample_output_paths(
 def seed_samples_are_complete(
     target_dir: Path,
     target_name: str,
-    output_format: str,
+    format: str,
     seed: int,
     num_samples: int,
 ) -> bool:
@@ -206,7 +205,7 @@ def seed_samples_are_complete(
         for path in sample_output_paths(
             target_dir,
             target_name,
-            output_format,
+            format,
             seed,
             sample_idx,
         )
@@ -216,7 +215,7 @@ def seed_samples_are_complete(
 def target_samples_are_complete(
     target_dir: Path,
     target_name: str,
-    output_format: str,
+    format: str,
     seeds: list[int],
     num_samples: int,
 ) -> bool:
@@ -224,7 +223,7 @@ def target_samples_are_complete(
         seed_samples_are_complete(
             target_dir,
             target_name,
-            output_format,
+            format,
             seed,
             num_samples,
         )
@@ -235,25 +234,19 @@ def target_samples_are_complete(
 def target_rank_is_complete(
     target_dir: Path,
     target_name: str,
-    output_format: str,
+    format: str,
     seeds: list[int],
     num_samples: int,
 ) -> bool:
     if not target_samples_are_complete(
         target_dir,
         target_name,
-        output_format,
+        format,
         seeds,
         num_samples,
     ):
         return False
-    required_outputs = [
-        target_dir / f"{target_name}_ranked_model.{output_format}",
-        target_dir / f"{target_name}_ranked_confidence.json",
-        target_dir / f"{target_name}_summary.csv",
-        target_dir / "done.txt",
-    ]
-    return all(path.exists() for path in required_outputs)
+    return (target_dir / "done.txt").exists()
 
 
 def estimate_num_residues(sequence: str) -> int:
@@ -263,7 +256,7 @@ def estimate_num_residues(sequence: str) -> int:
 def filter_completed_inputs(
     inputs: list[tuple[str, str]],
     out_dir: Path,
-    output_format: str,
+    format: str,
     seeds: list[int],
     num_samples: int,
     overwrite: bool,
@@ -274,7 +267,7 @@ def filter_completed_inputs(
     filtered = [
         (name, sequence)
         for name, sequence in inputs
-        if not target_is_complete(out_dir / name, output_format, seeds, num_samples)
+        if not target_is_complete(out_dir / name, format, seeds, num_samples)
     ]
     num_skipped = len(inputs) - len(filtered)
     if num_skipped > 0:
@@ -320,139 +313,77 @@ def load_model(args: argparse.Namespace):
     return model
 
 
-def build_sampling_config(args: argparse.Namespace):
-    return SamplingConfig(
-        num_steps=args.num_steps,
-        chunk_size=5,
-    )
-
-
 def write_json(path: Path, payload: dict) -> None:
     with open(path, "w") as f:
         json.dump(payload, f, indent=2)
         f.write("\n")
 
 
-def load_json(path: Path) -> dict:
-    with open(path) as f:
-        return json.load(f)
-
-
-def structure_to_text(sample, output_format: str) -> str:
-    if output_format == "cif":
-        return sample.to_mmcif()
-    if output_format == "pdb":
-        return sample.to_pdb()
-    raise ValueError(f"Unsupported output format: {output_format}")
-
-
-def get_ranking_score(confidence: dict) -> float:
-    if "complex" in confidence:
-        confidence = confidence["complex"]
-    if "ranking_score" in confidence:
-        return float(confidence["ranking_score"])
-    return 0.8 * float(confidence.get("iptm", 0.0)) + 0.2 * float(confidence["ptm"])
-
-
-def get_complex_confidence(confidence: dict) -> dict:
-    if "complex" in confidence:
-        return confidence["complex"]
-    return confidence
-
-
-def write_sample_outputs(
+def write_outputs(
     out_dir: Path,
-    target_name: str,
-    samples,
-    *,
-    output_format: str,
-):
+    output: MultimerFoldingOutput,
+    format: str,
+) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
-    for (seed, sample_idx), sample in sorted(samples.items()):
-        sample_text = structure_to_text(sample, output_format)
-        model_path, confidence_path = sample_output_paths(
-            out_dir,
-            target_name,
-            output_format,
-            seed,
-            sample_idx,
-        )
-        model_path.write_text(sample_text)
-        write_json(confidence_path, sample.confidence_scores)
-
-
-def load_sample_records(
-    out_dir: Path,
-    target_name: str,
-    *,
-    output_format: str,
-    seeds: list[int],
-    num_samples: int,
-) -> list[dict]:
     sample_records = []
-    for seed in seeds:
-        for sample_idx in range(num_samples):
-            model_path, confidence_path = sample_output_paths(
-                out_dir,
-                target_name,
-                output_format,
-                seed,
-                sample_idx,
-            )
-            confidence = load_json(confidence_path)
-            sample_records.append(
-                {
-                    "seed": seed,
-                    "sample": sample_idx,
-                    "sample_name": f"seed-{seed}_sample-{sample_idx}",
-                    "score": get_ranking_score(confidence),
-                    "confidence": confidence,
-                    "model_path": model_path,
-                }
-            )
-    return sample_records
 
+    # Remove the "done.txt" file if it exists, since we are overwriting the outputs.
+    done_path = out_dir / "done.txt"
+    if done_path.exists():
+        done_path.unlink()
 
-def write_ranked_outputs(
-    out_dir: Path,
-    target_name: str,
-    sample_records: list[dict],
-    *,
-    output_format: str,
-) -> None:
-    if len(sample_records) == 0:
-        raise ValueError(f"No samples to rank for target {target_name!r}.")
+    best_sample_idx: tuple[int, int] = output.ranking[0]
+    for (seed, sample_idx), sample in sorted(output.outputs.items()):
+        target_name = output.name
+        sample_name = f"{target_name}_seed-{seed}_sample-{sample_idx}"
 
-    best_record = max(
-        sample_records,
-        key=lambda record: (record["score"], -record["seed"], -record["sample"]),
-    )
-    shutil.copyfile(
-        best_record["model_path"],
-        out_dir / f"{target_name}_ranked_model.{output_format}",
-    )
+        sample_text = sample.to_mmcif() if format == "cif" else sample.to_pdb()
+        confidence_scores = sample.confidence_scores
 
-    ranked_confidence = {
-        **best_record["confidence"],
-        "seed": best_record["seed"],
-        "sample": best_record["sample"],
-        "ranked_sample": best_record["sample_name"],
-        "samples": {
-            record["sample_name"]: record["confidence"] for record in sample_records
-        },
-    }
-    write_json(out_dir / f"{target_name}_ranked_confidence.json", ranked_confidence)
+        with open(out_dir / f"{sample_name}.{format}", "w") as f:
+            f.write(sample_text)
+        with open(out_dir / f"{sample_name}_confidence.json", "w") as f:
+            json.dump(confidence_scores, f, indent=2)
 
-    with open(out_dir / f"{target_name}_summary.csv", "w") as f:
-        f.write("sample,seed,sample_index,avg_plddt,ptm,iptm,ranking_score\n")
+        record = {
+            "seed": seed,
+            "sample_index": sample_idx,
+            "sample_name": sample_name,
+            "score": sample.ranking_score,
+            "ranking_score": confidence_scores["complex"]["ranking_score"],
+            "ptm": confidence_scores["complex"]["ptm"],
+            "iptm": confidence_scores["complex"]["iptm"],
+            "avg_plddt": confidence_scores["complex"]["avg_plddt"],
+            "avg_pde": confidence_scores["complex"]["avg_pde"],
+        }
+
+        sample_records.append(record)
+
+        if (seed, sample_idx) == best_sample_idx:
+            rank_name = f"{target_name}_ranked"
+            best_record = record
+            with open(out_dir / f"{rank_name}.{format}", "w") as f:
+                f.write(sample_text)
+            with open(out_dir / f"{rank_name}_confidence.json", "w") as f:
+                json.dump(confidence_scores, f, indent=2)
+
+    with open(out_dir / f"{output.name}_summary.csv", "w") as f:
+        f.write("seed,sample_index,ranking_score,ptm,iptm,avg_pde,avg_plddt\n")
         for record in sample_records:
-            confidence = get_complex_confidence(record["confidence"])
             f.write(
-                f"{record['sample_name']},{record['seed']},{record['sample']},"
-                f"{confidence['avg_plddt']:.3f},{confidence['ptm']:.3f},"
-                f"{confidence.get('iptm', 0.0):.3f},"
-                f"{confidence.get('ranking_score', record['score']):.3f}\n"
+                f"{record['seed']},"
+                f"{record['sample_index']},"
+                f"{record['ranking_score']:.3f},"
+                f"{record['ptm']:.3f},"
+                f"{record['iptm']:.3f},"
+                f"{record['avg_pde']:.3f},"
+                f"{record['avg_plddt']:.3f}\n"
             )
+
+    # Create a "done.txt" file to indicate that the target is complete.
+    done_path.touch()
+
+    return best_record
 
 
 def run(args: argparse.Namespace) -> None:
@@ -470,7 +401,7 @@ def run(args: argparse.Namespace) -> None:
     inputs = filter_completed_inputs(
         inputs,
         args.out_dir,
-        args.output_format,
+        args.format,
         args.seed,
         args.num_samples,
         args.overwrite,
@@ -479,118 +410,52 @@ def run(args: argparse.Namespace) -> None:
         logger.info("All targets are complete. Nothing to do.")
         return
 
-    pending_by_seeds: dict[tuple[int, ...], list[tuple[str, str]]] = {}
-    for name, sequence in inputs:
-        missing_seeds = [
-            seed
-            for seed in args.seed
-            if args.overwrite
-            or not seed_samples_are_complete(
-                args.out_dir / name,
-                name,
-                args.output_format,
-                seed,
-                args.num_samples,
-            )
-        ]
-        if missing_seeds:
-            pending_by_seeds.setdefault(tuple(missing_seeds), []).append((name, sequence))
-    pending_count = sum(len(seed_inputs) for seed_inputs in pending_by_seeds.values())
-
-    runner = None
-    sampling_config = None
-    if pending_count > 0:
-        model = load_model(args)
-        runner = MultimerFoldingRunner(model)
-        sampling_config = build_sampling_config(args)
+    model = load_model(args)
+    runner = MultimerFoldingRunner(model)
+    sampling_config = SamplingConfig(num_steps=args.num_steps, chunk_size=5)
 
     logger.info(
         "Starting multimer inference: seeds=%s, num_samples=%d, "
-        "num_recycles=%d, output_format=%s",
+        "num_recycles=%d, format=%s",
         args.seed,
         args.num_samples,
         args.num_recycles,
-        args.output_format,
+        args.format,
     )
 
+    num_finished = 0
+    num_total = len(inputs)
     start = timer()
-    for seed_group, seed_inputs in pending_by_seeds.items():
-        if len(seed_inputs) == 0:
-            continue
-        if runner is None or sampling_config is None:
-            raise RuntimeError("Internal error: runner was not initialized.")
+    batch_start = timer()
+    for outputs in runner.iter_fold_batch(
+        inputs,
+        num_samples=args.num_samples,
+        seeds=args.seed,
+        num_recycles=args.num_recycles,
+        sampling_config=sampling_config,
+        length_buckets=args.length_buckets,
+        max_tokens_per_batch=args.max_tokens_per_batch,
+    ):
+        batch_elapsed = timer() - batch_start
+        time_per_target = batch_elapsed / len(outputs)
+        batch_start = timer()
 
-        logger.info(
-            "Running seeds %s for %d target(s).",
-            list(seed_group),
-            len(seed_inputs),
-        )
-        for output in runner.iter_fold(
-            seed_inputs,
-            num_samples=args.num_samples,
-            seeds=list(seed_group),
-            num_recycles=args.num_recycles,
-            sampling_config=sampling_config,
-            length_buckets=args.length_buckets,
-            max_tokens_per_batch=args.max_tokens_per_batch,
-        ):
-            write_sample_outputs(
-                args.out_dir / output.name,
-                output.name,
-                output.outputs,
-                output_format=args.output_format,
-            )
-
-    for target_name, _ in inputs:
-        target_dir = args.out_dir / target_name
-        if not target_samples_are_complete(
-            target_dir,
-            target_name,
-            args.output_format,
-            args.seed,
-            args.num_samples,
-        ):
+        for output in outputs:
+            target_dir = args.out_dir / output.name
+            best_record = write_outputs(target_dir, output, args.format)
+            num_finished += 1
             logger.info(
-                "Skipping rank for %s: not all samples are complete.",
-                target_name,
+                "Completed %s (length=%d): "
+                "ptm=%.3f, iptm=%.3f, avg_plddt=%.3f time=%.2f (%d/%d)",
+                output.name,
+                output.length,
+                best_record["ptm"],
+                best_record["iptm"],
+                best_record["avg_plddt"],
+                time_per_target,
+                num_finished,
+                num_total,
             )
-            continue
-
-        (target_dir / "done.txt").touch()
-        if not args.overwrite and target_rank_is_complete(
-            target_dir,
-            target_name,
-            args.output_format,
-            args.seed,
-            args.num_samples,
-        ):
-            logger.info("Ranked outputs for %s already exist.", target_name)
-            continue
-
-        sample_records = load_sample_records(
-            target_dir,
-            target_name,
-            output_format=args.output_format,
-            seeds=args.seed,
-            num_samples=args.num_samples,
-        )
-        write_ranked_outputs(
-            target_dir,
-            target_name,
-            sample_records,
-            output_format=args.output_format,
-        )
-        ranked_record = max(
-            sample_records,
-            key=lambda record: (record["score"], -record["seed"], -record["sample"]),
-        )
-        logger.info(
-            "Ranked %s: seed=%d, sample=%d, ptm=%.3f",
-            target_name,
-            ranked_record["seed"],
-            ranked_record["sample"],
-            ranked_record["score"],
-        )
     elapsed = timer() - start
     logger.info(
         "Finished %d target(s) in %.1fs.",

@@ -86,13 +86,20 @@ class ProteinOutput(protein.Protein):
         }
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
+@dataclasses.dataclass()
 class FoldingOutput:
     """Outputs for one folded target."""
 
-    name: str
     outputs: dict[SampleKey, ProteinOutput]
     ranking: list[SampleKey]
+
+    @property
+    def name(self) -> str:
+        return self.outputs[next(iter(self.outputs))].name
+
+    @property
+    def length(self) -> int:
+        return self.outputs[next(iter(self.outputs))].num_residues
 
 
 class FoldingRunner:
@@ -101,8 +108,6 @@ class FoldingRunner:
     def __init__(self, model: AtlasFold):
         self.model: AtlasFold = model
         self.device = self.model.device
-
-    # TODO: add pre-trained model loading from HuggingFace Hub
 
     def fold(
         self,
@@ -118,7 +123,7 @@ class FoldingRunner:
         length_buckets: Sequence[int] | None = None,
     ) -> FoldingOutput:
         outputs = list(
-            self.iter_fold(
+            self.iter_fold_batch(
                 [(name, sequence)],
                 num_samples=num_samples,
                 seeds=seeds,
@@ -129,9 +134,9 @@ class FoldingRunner:
                 length_buckets=length_buckets,
             )
         )
-        return outputs[0]
+        return outputs[0][0]
 
-    def iter_fold(
+    def iter_fold_batch(
         self,
         inputs: Sequence[tuple[str, str]],
         *,
@@ -143,8 +148,8 @@ class FoldingRunner:
         sampling_config: SamplingConfig | None = None,
         length_buckets: Sequence[int] | None = None,
         max_tokens_per_batch: int = 1024,
-    ) -> Iterator[FoldingOutput]:
-        """Yield predictions for each target."""
+    ) -> Iterator[list[FoldingOutput]]:
+        """Yield predictions grouped by model batch."""
         seeds = [seeds] if isinstance(seeds, int) else list(seeds)
         inputs = list(inputs)
         if len(inputs) == 0:
@@ -193,12 +198,13 @@ class FoldingRunner:
                         )
                     )
 
+            model_outputs = []
             for outputs in batch_outputs:
-                name = next(iter(outputs.values())).name
                 ranking = sorted(
                     outputs.keys(), key=lambda k: outputs[k].ranking_score, reverse=True
                 )
-                yield FoldingOutput(name=name, outputs=outputs, ranking=ranking)
+                model_outputs.append(FoldingOutput(outputs, ranking))
+            yield model_outputs
 
     def model_run(
         self,

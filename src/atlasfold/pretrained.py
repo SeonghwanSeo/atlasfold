@@ -14,11 +14,7 @@ from atlasfold.model import (
 
 config_dict = {
     "atlasfold": monomer_config,
-    "atlasfold-base": monomer_config,
-    "atlasfold-3b-base": monomer_config,
-    "atlasfold-m": multimer_config,
     "atlasfold-multimer": multimer_config,
-    "atlasfold-3b-multimer": multimer_config,
 }
 
 
@@ -39,7 +35,7 @@ def _load_state_dict(model_path: str | Path) -> dict:
 
 
 def load_model(
-    model_name: str = "atlasfold-3b-base",
+    model_name: str = "atlasfold",
     device: torch.device | str | None = None,
     *,
     cache_dir: str | None = None,

@@ -136,13 +136,20 @@ class ProteinMultimerOutput(protein.ProteinMultimer):
         }
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
+@dataclasses.dataclass
 class MultimerFoldingOutput:
     """Outputs for one folded target."""
 
-    name: str
     outputs: dict[SampleKey, ProteinMultimerOutput]
     ranking: list[SampleKey]
+
+    @property
+    def name(self) -> str:
+        return self.outputs[next(iter(self.outputs))].name
+
+    @property
+    def length(self) -> int:
+        return self.outputs[next(iter(self.outputs))].num_residues
 
 
 class MultimerFoldingRunner:
@@ -165,7 +172,7 @@ class MultimerFoldingRunner:
         length_buckets: Sequence[int] | None = None,
     ) -> MultimerFoldingOutput:
         outputs = list(
-            self.iter_fold(
+            self.iter_fold_batch(
                 [(name, sequence)],
                 num_samples=num_samples,
                 seeds=seeds,
@@ -175,9 +182,9 @@ class MultimerFoldingRunner:
                 length_buckets=length_buckets,
             )
         )
-        return outputs[0]
+        return outputs[0][0]
 
-    def iter_fold(
+    def iter_fold_batch(
         self,
         inputs: Sequence[tuple[str, str | Sequence[str]]],
         *,
@@ -188,7 +195,7 @@ class MultimerFoldingRunner:
         mlm_prob: float = 0.15,
         length_buckets: Sequence[int] | None = None,
         max_tokens_per_batch: int = 1024,
-    ) -> Iterator[MultimerFoldingOutput]:
+    ) -> Iterator[list[MultimerFoldingOutput]]:
         seeds = [seeds] if isinstance(seeds, int) else list(seeds)
 
         if len(inputs) == 0:
@@ -211,7 +218,8 @@ class MultimerFoldingRunner:
         ):
             batch_size = len(complexes)
             batch = self._make_batch_features(complexes, bucket_length)
-            batch_outputs: list[dict[SampleKey, ProteinMultimerOutput]] = [
+
+            model_outputs: list[dict[SampleKey, ProteinMultimerOutput]] = [
                 {} for _ in range(batch_size)
             ]
             for seed_value in seeds:
@@ -225,7 +233,7 @@ class MultimerFoldingRunner:
                 )
 
                 for batch_i, complex_input in enumerate(complexes):
-                    batch_outputs[batch_i].update(
+                    model_outputs[batch_i].update(
                         self._make_outputs(
                             complex_input=complex_input,
                             out=out,
@@ -234,12 +242,13 @@ class MultimerFoldingRunner:
                             seed=seed_value,
                         )
                     )
-            for outputs in batch_outputs:
-                name = next(iter(outputs.values())).name
+            batch_outputs = []
+            for outputs in model_outputs:
                 ranking = sorted(
                     outputs.keys(), key=lambda k: outputs[k].ranking_score, reverse=True
                 )
-                yield MultimerFoldingOutput(name=name, outputs=outputs, ranking=ranking)
+                batch_outputs.append(MultimerFoldingOutput(outputs, ranking))
+            yield batch_outputs
 
     def model_run(
         self,

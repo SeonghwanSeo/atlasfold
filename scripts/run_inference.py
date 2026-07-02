@@ -1,7 +1,6 @@
 import argparse
 import json
 import logging
-import shutil
 import sys
 from pathlib import Path
 from timeit import default_timer as timer
@@ -10,7 +9,7 @@ import torch
 
 from atlasfold.data.fasta import read_fasta
 from atlasfold.model import AtlasFold, SamplingConfig
-from atlasfold.runner import FoldingRunner
+from atlasfold.runner import FoldingOutput, FoldingRunner
 
 logger = logging.getLogger("atlasfold.monomer")
 
@@ -97,12 +96,6 @@ def create_parser() -> argparse.ArgumentParser:
         help="Number of diffusion sampling steps.",
     )
     parser.add_argument(
-        "--sampling-chunk-size",
-        type=int,
-        default=None,
-        help="Optional diffusion sampling chunk size to reduce memory.",
-    )
-    parser.add_argument(
         "--max-tokens-per-batch",
         type=int,
         default=1024,
@@ -130,7 +123,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Recompute targets even when ranked outputs already exist.",
+        help="Recompute targets even when outputs already exist.",
     )
     return parser
 
@@ -235,13 +228,7 @@ def target_rank_is_complete(
         num_samples,
     ):
         return False
-    required_outputs = [
-        target_dir / f"{target_name}_ranked_model.{format}",
-        target_dir / f"{target_name}_ranked_confidence.json",
-        target_dir / f"{target_name}_summary.csv",
-        target_dir / "done.txt",
-    ]
-    return all(path.exists() for path in required_outputs)
+    return (target_dir / "done.txt").exists()
 
 
 def filter_completed_targets(
@@ -293,138 +280,67 @@ def load_model(args: argparse.Namespace):
     return model
 
 
-def build_sampling_config(args: argparse.Namespace):
-    return SamplingConfig(
-        num_steps=args.num_steps,
-        sigma_max=160.0,
-        chunk_size=args.sampling_chunk_size,
-    )
-
-
 def write_json(path: Path, payload: dict) -> None:
     with open(path, "w") as f:
         json.dump(payload, f, indent=2)
         f.write("\n")
 
 
-def load_json(path: Path) -> dict:
-    with open(path) as f:
-        return json.load(f)
-
-
-def structure_to_text(sample, format: str) -> str:
-    if format == "cif":
-        return sample.to_mmcif()
-    if format == "pdb":
-        return sample.to_pdb()
-    raise ValueError(f"Unsupported output format: {format}")
-
-
-def write_sample_outputs_for_target(
-    target_dir: Path,
-    target_name: str,
-    samples,
-    *,
+def write_outputs(
+    out_dir: Path,
+    output: FoldingOutput,
     format: str,
-) -> list[dict]:
-    target_dir.mkdir(parents=True, exist_ok=True)
+) -> dict:
+    out_dir.mkdir(parents=True, exist_ok=True)
     sample_records = []
-    for (seed, sample_idx), sample in sorted(samples.items()):
-        sample_text = structure_to_text(sample, format)
-        model_path, confidence_path = sample_output_paths(
-            target_dir,
-            target_name,
-            format,
-            seed,
-            sample_idx,
-        )
-        model_path.write_text(sample_text)
-        confidence = sample.confidence_scores
-        write_json(confidence_path, confidence)
-        sample_records.append(
-            {
-                "seed": seed,
-                "sample": sample_idx,
-                "sample_name": f"seed-{seed}_sample-{sample_idx}",
-                "score": sample.ranking_score,
-                "confidence": confidence,
-                "model_path": model_path,
-            }
-        )
-    return sample_records
+    done_path = out_dir / "done.txt"
+    if done_path.exists():
+        done_path.unlink()
 
+    if len(output.ranking) == 0:
+        raise ValueError(f"No samples to rank for target {output.name!r}.")
+    best_sample_idx: tuple[int, int] = output.ranking[0]
 
-def load_sample_records_for_target(
-    target_dir: Path,
-    target_name: str,
-    *,
-    format: str,
-    seeds: list[int],
-    num_samples: int,
-) -> list[dict]:
-    sample_records = []
-    for seed in seeds:
-        for sample_idx in range(num_samples):
-            model_path, confidence_path = sample_output_paths(
-                target_dir,
-                target_name,
-                format,
-                seed,
-                sample_idx,
-            )
-            confidence = load_json(confidence_path)
-            sample_records.append(
-                {
-                    "seed": seed,
-                    "sample": sample_idx,
-                    "sample_name": f"seed-{seed}_sample-{sample_idx}",
-                    "score": float(confidence["avg_plddt"]),
-                    "confidence": confidence,
-                    "model_path": model_path,
-                }
-            )
-    return sample_records
+    for (seed, sample_idx), sample in sorted(output.outputs.items()):
+        target_name = output.name
+        sample_name = f"{target_name}_seed-{seed}_sample-{sample_idx}"
 
+        sample_text = sample.to_mmcif() if format == "cif" else sample.to_pdb()
+        confidence_scores = sample.confidence_scores
 
-def write_ranked_outputs_for_target(
-    target_dir: Path,
-    target_name: str,
-    sample_records: list[dict],
-    *,
-    format: str,
-) -> None:
-    if len(sample_records) == 0:
-        raise ValueError(f"No samples to rank for target {target_name!r}.")
+        with open(out_dir / f"{sample_name}.{format}", "w") as f:
+            f.write(sample_text)
+        with open(out_dir / f"{sample_name}_confidence.json", "w") as f:
+            json.dump(confidence_scores, f, indent=2)
 
-    best_record = max(
-        sample_records,
-        key=lambda record: (record["score"], -record["seed"], -record["sample"]),
-    )
-    shutil.copyfile(
-        best_record["model_path"],
-        target_dir / f"{target_name}_ranked_model.{format}",
-    )
-    ranked_confidence = {
-        **best_record["confidence"],
-        "seed": best_record["seed"],
-        "sample": best_record["sample"],
-        "ranked_sample": best_record["sample_name"],
-        "samples": {
-            record["sample_name"]: record["confidence"] for record in sample_records
-        },
-    }
-    write_json(
-        target_dir / f"{target_name}_ranked_confidence.json",
-        ranked_confidence,
-    )
-    with open(target_dir / f"{target_name}_summary.csv", "w") as f:
-        f.write("sample,seed,sample_index,avg_plddt,ptm\n")
+        record = {
+            "seed": seed,
+            "sample_index": sample_idx,
+            "sample_name": sample_name,
+            "avg_plddt": confidence_scores["avg_plddt"],
+            "ptm": confidence_scores["ptm"],
+        }
+        sample_records.append(record)
+
+        if (seed, sample_idx) == best_sample_idx:
+            rank_name = f"{target_name}_ranked"
+            best_record = record
+            with open(out_dir / f"{rank_name}.{format}", "w") as f:
+                f.write(sample_text)
+            with open(out_dir / f"{rank_name}_confidence.json", "w") as f:
+                json.dump(confidence_scores, f, indent=2)
+
+    with open(out_dir / f"{output.name}_summary.csv", "w") as f:
+        f.write("seed,sample_index,avg_plddt,ptm\n")
         for record in sample_records:
-            confidence = record["confidence"]
             f.write(
-                f"{record['sample_name']},{record['seed']},{record['sample']},"
-                f"{confidence['avg_plddt']:.3f},{confidence['ptm']:.3f}\n"
+                f"{record['seed']},"
+                f"{record['sample_index']},"
+                f"{record['avg_plddt']:.3f},"
+                f"{record['ptm']:.3f}\n"
             )
+    done_path.touch()
+    return best_record
 
 
 def run(args: argparse.Namespace) -> None:
@@ -452,148 +368,59 @@ def run(args: argparse.Namespace) -> None:
         logger.info("All targets are complete. Nothing to do.")
         return
 
-    pending_by_seeds: dict[tuple[int, ...], list[tuple[str, str]]] = {}
-    for name, sequence in sequences:
-        missing_seeds = [
-            seed
-            for seed in args.seed
-            if args.overwrite
-            or not seed_samples_are_complete(
-                args.out_dir / name,
-                name,
-                args.format,
-                seed,
-                args.num_samples,
-            )
-        ]
-        if missing_seeds:
-            pending_by_seeds.setdefault(tuple(missing_seeds), []).append((name, sequence))
-    pending_count = sum(
-        len(seed_sequences) for seed_sequences in pending_by_seeds.values()
-    )
-
-    runner = None
-    sampling_config = None
-    if pending_count > 0:
-        model = load_model(args)
-        runner = FoldingRunner(model)
-        sampling_config = build_sampling_config(args)
+    model = load_model(args)
+    runner = FoldingRunner(model)
+    sampling_config = SamplingConfig(num_steps=args.num_steps, chunk_size=5)
 
     logger.info(
-        "Starting batched inference: targets=%d, seeds=%s, num_samples=%d, "
-        "num_recycles=%d, stochastic=%s, "
-        "max_tokens_per_batch=%d, format=%s",
-        len(sequences),
+        "Starting monomer inference: seeds=%s, num_samples=%d, "
+        "num_recycles=%d, stochastic=%s, format=%s",
         args.seed,
         args.num_samples,
         args.num_recycles,
         args.stochastic,
-        args.max_tokens_per_batch,
         args.format,
     )
 
+    num_finished = 0
+    num_total = len(sequences)
     start = timer()
-    num_written = 0
+    batch_start = timer()
     try:
-        for seed_group, seed_sequences in pending_by_seeds.items():
-            if len(seed_sequences) == 0:
-                continue
-            if runner is None or sampling_config is None:
-                raise RuntimeError("Internal error: runner was not initialized.")
+        for outputs in runner.iter_fold_batch(
+            sequences,
+            num_samples=args.num_samples,
+            seeds=args.seed,
+            num_recycles=args.num_recycles,
+            stochastic=args.stochastic,
+            sampling_config=sampling_config,
+            length_buckets=args.length_buckets,
+            max_tokens_per_batch=args.max_tokens_per_batch,
+        ):
+            batch_elapsed = timer() - batch_start
+            time_per_target = batch_elapsed / len(outputs)
+            batch_start = timer()
 
-            logger.info(
-                "Running seeds %s for %d target(s).",
-                list(seed_group),
-                len(seed_sequences),
-            )
-            for output in runner.iter_fold(
-                seed_sequences,
-                num_samples=args.num_samples,
-                seeds=list(seed_group),
-                num_recycles=args.num_recycles,
-                stochastic=args.stochastic,
-                sampling_config=sampling_config,
-                length_buckets=args.length_buckets,
-                max_tokens_per_batch=args.max_tokens_per_batch,
-            ):
+            for output in outputs:
                 target_dir = args.out_dir / output.name
-                sample_records = write_sample_outputs_for_target(
-                    target_dir,
-                    output.name,
-                    output.outputs,
-                    format=args.format,
-                )
-                best_record = max(
-                    sample_records,
-                    key=lambda record: (
-                        record["score"],
-                        -record["seed"],
-                        -record["sample"],
-                    ),
-                )
-                num_written += 1
+                best_record = write_outputs(target_dir, output, args.format)
+                num_finished += 1
                 logger.info(
-                    "Wrote %s seeds=%s: best=%s, plddt=%.3f (%d/%d)",
+                    "Completed %s (length=%d): "
+                    "avg_plddt=%.3f, ptm=%.3f time=%.2f (%d/%d)",
                     output.name,
-                    list(seed_group),
-                    best_record["sample"],
-                    best_record["score"],
-                    num_written,
-                    pending_count,
+                    output.length,
+                    best_record["avg_plddt"],
+                    best_record["ptm"],
+                    time_per_target,
+                    num_finished,
+                    num_total,
                 )
-
-        for name, _ in sequences:
-            target_dir = args.out_dir / name
-            if not target_samples_are_complete(
-                target_dir,
-                name,
-                args.format,
-                args.seed,
-                args.num_samples,
-            ):
-                logger.info("Skipping rank for %s: not all samples are complete.", name)
-                continue
-
-            (target_dir / "done.txt").touch()
-            if not args.overwrite and target_rank_is_complete(
-                target_dir,
-                name,
-                args.format,
-                args.seed,
-                args.num_samples,
-            ):
-                logger.info("Ranked outputs for %s already exist.", name)
-                continue
-
-            sample_records = load_sample_records_for_target(
-                target_dir,
-                name,
-                format=args.format,
-                seeds=args.seed,
-                num_samples=args.num_samples,
-            )
-            write_ranked_outputs_for_target(
-                target_dir,
-                name,
-                sample_records,
-                format=args.format,
-            )
-            ranked_record = max(
-                sample_records,
-                key=lambda record: (record["score"], -record["seed"], -record["sample"]),
-            )
-            logger.info(
-                "Ranked %s: seed=%d, sample=%d, plddt=%.3f",
-                name,
-                ranked_record["seed"],
-                ranked_record["sample"],
-                ranked_record["score"],
-            )
     except RuntimeError as err:
         if "out of memory" in str(err).lower():
             logger.error(
                 "CUDA out of memory during inference. Try lowering "
-                "--max-tokens-per-batch or --sampling-chunk-size."
+                "--max-tokens-per-batch."
             )
         raise
 
