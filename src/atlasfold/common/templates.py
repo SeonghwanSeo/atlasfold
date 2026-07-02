@@ -39,7 +39,7 @@ class TemplateHit:
     release_date: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict) -> "TemplateHit":
+    def from_dict(cls, data: dict) -> TemplateHit:
         return cls(
             template_id=data["template_id"],
             index=int(data["index"]),

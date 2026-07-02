@@ -1,7 +1,5 @@
 """Preprocess RCSB mmCIF files into multimer complexes."""
 
-import msgpack
-
 import argparse
 import dataclasses
 import functools
@@ -14,6 +12,7 @@ import pathlib
 from datetime import datetime
 
 import gemmi
+import msgpack
 import numpy as np
 from scipy.spatial import cKDTree
 from scipy.spatial.distance import cdist

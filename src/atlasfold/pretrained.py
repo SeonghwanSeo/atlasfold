@@ -7,11 +7,10 @@ from atlasfold.configs.atlasfold import monomer_config
 from atlasfold.configs.atlasfold_multimer import multimer_config
 from atlasfold.model import (
     AtlasFold,
+    AtlasFold_Multimer,
     AtlasFoldConfig,
     AtlasFoldMultimerConfig,
-    AtlasFold_Multimer,
 )
-
 
 config_dict = {
     "atlasfold": monomer_config,

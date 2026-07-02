@@ -7,7 +7,6 @@ from collections import defaultdict
 
 import lmdb
 import msgpack
-from tqdm import tqdm
 
 
 def parse_args():
