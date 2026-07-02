@@ -1,12 +1,18 @@
 import argparse
 import json
 import logging
+import shutil
 import sys
 from pathlib import Path
 from timeit import default_timer as timer
 
+import torch
 
-logger = logging.getLogger("atlasfold.multimer_inference")
+from atlasfold.data.fasta import read_fasta
+from atlasfold.model import AtlasFold_Multimer, SamplingConfig
+from atlasfold.runner_multimer import MultimerFoldingRunner
+
+logger = logging.getLogger("atlasfold.multimer")
 
 
 def setup_logging() -> None:
@@ -27,24 +33,18 @@ def setup_logging() -> None:
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run AtlasFold-Multimer inference on a colon-separated sequence, "
-            "for example 'SEQUENCE1:SEQUENCE2:'."
+            "Run AtlasFold-Multimer inference on a FASTA file. Each FASTA "
+            "record is treated as one complex, with ':' separating chains."
         )
-    )
-    parser.add_argument(
-        "sequence",
-        type=str,
-        nargs="?",
-        help="Colon-separated chain sequences. A trailing colon is allowed.",
     )
     parser.add_argument(
         "-i",
         "--input-fasta",
         type=Path,
-        default=None,
+        required=True,
         help=(
-            "Optional FASTA file. Each FASTA record is treated as one complex, "
-            "with ':' separating chains in the sequence."
+            "Input FASTA file. Each FASTA record is treated as one complex, "
+            "with ':' separating chains."
         ),
     )
     parser.add_argument(
@@ -62,27 +62,10 @@ def create_parser() -> argparse.ArgumentParser:
         help="Path to an AtlasFold-Multimer checkpoint.",
     )
     parser.add_argument(
-        "--name",
-        type=str,
-        default="multimer",
-        help="Target name used for output directory and structure metadata.",
-    )
-    parser.add_argument(
         "--device",
         type=str,
         default=None,
         help="Torch device. Defaults to cuda when available, otherwise cpu.",
-    )
-    parser.add_argument(
-        "--precision",
-        choices=["auto", "bf16", "fp32"],
-        default="auto",
-        help="Inference precision. auto uses bf16 on CUDA and fp32 on CPU.",
-    )
-    parser.add_argument(
-        "--no-ema",
-        action="store_true",
-        help="Do not use EMA weights from the checkpoint when available.",
     )
     parser.add_argument(
         "--no-kernel",
@@ -90,22 +73,10 @@ def create_parser() -> argparse.ArgumentParser:
         help="Disable cuequivariance kernels.",
     )
     parser.add_argument(
-        "--preset",
-        choices=["base", "high"],
-        default="base",
-        help="MultimerFoldingRunner inference preset.",
-    )
-    parser.add_argument(
         "--num-recycles",
         type=int,
         default=10,
-        help="Override the number of recycles from the preset.",
-    )
-    parser.add_argument(
-        "--mlm-prob",
-        type=float,
-        default=None,
-        help="Override the LM masking probability from the preset.",
+        help="Number of recycling iterations.",
     )
     parser.add_argument(
         "--num-samples",
@@ -116,26 +87,15 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--seed",
         type=int,
-        default=5,
-        help="Random seed for inference.",
+        nargs="+",
+        default=[1],
+        help="Random seed(s) for inference. Example: --seed 1 2 3.",
     )
     parser.add_argument(
         "--num-steps",
         type=int,
         default=200,
         help="Number of diffusion sampling steps.",
-    )
-    parser.add_argument(
-        "--sigma-max",
-        type=float,
-        default=160.0,
-        help="Maximum sigma for diffusion sampling.",
-    )
-    parser.add_argument(
-        "--sampling-chunk-size",
-        type=int,
-        default=None,
-        help="Optional diffusion sampling chunk size to reduce memory.",
     )
     parser.add_argument(
         "--max-tokens-per-batch",
@@ -157,16 +117,15 @@ def create_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--rank-by",
-        choices=["plddt", "ptm"],
-        default="plddt",
-        help="Metric used to rank samples.",
-    )
-    parser.add_argument(
         "--output-format",
         choices=["cif", "pdb"],
         default="cif",
         help="Structure file format for sample and ranked outputs.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Recompute targets even when outputs already exist.",
     )
     return parser
 
@@ -179,18 +138,6 @@ def safe_target_name(name: str) -> str:
 
 
 def load_inputs(args: argparse.Namespace) -> list[tuple[str, str]]:
-    if args.input_fasta is not None and args.sequence is not None:
-        raise ValueError(
-            "Provide either a positional sequence or --input-fasta, not both."
-        )
-
-    if args.input_fasta is None:
-        if args.sequence is None:
-            raise ValueError("Provide a colon-separated sequence or --input-fasta.")
-        return [(safe_target_name(args.name), args.sequence)]
-
-    from atlasfold.data.fasta import read_fasta
-
     if not args.input_fasta.exists():
         raise FileNotFoundError(f"Input FASTA file does not exist: {args.input_fasta}")
 
@@ -216,10 +163,126 @@ def load_inputs(args: argparse.Namespace) -> list[tuple[str, str]]:
     return inputs
 
 
-def load_model(args: argparse.Namespace):
-    import torch
+def target_is_complete(
+    target_dir: Path,
+    output_format: str,
+    seeds: list[int],
+    num_samples: int,
+) -> bool:
+    target_name = target_dir.name
+    return target_rank_is_complete(
+        target_dir,
+        target_name,
+        output_format,
+        seeds,
+        num_samples,
+    )
 
-    from atlasfold.model import AtlasFoldMultimerConfig, AtlasFold_Multimer
+
+def sample_output_paths(
+    target_dir: Path,
+    target_name: str,
+    output_format: str,
+    seed: int,
+    sample_idx: int,
+) -> tuple[Path, Path]:
+    sample_name = f"{target_name}_seed-{seed}_sample-{sample_idx}"
+    return (
+        target_dir / f"{sample_name}.{output_format}",
+        target_dir / f"{sample_name}_confidence.json",
+    )
+
+
+def seed_samples_are_complete(
+    target_dir: Path,
+    target_name: str,
+    output_format: str,
+    seed: int,
+    num_samples: int,
+) -> bool:
+    return all(
+        path.exists()
+        for sample_idx in range(num_samples)
+        for path in sample_output_paths(
+            target_dir,
+            target_name,
+            output_format,
+            seed,
+            sample_idx,
+        )
+    )
+
+
+def target_samples_are_complete(
+    target_dir: Path,
+    target_name: str,
+    output_format: str,
+    seeds: list[int],
+    num_samples: int,
+) -> bool:
+    return all(
+        seed_samples_are_complete(
+            target_dir,
+            target_name,
+            output_format,
+            seed,
+            num_samples,
+        )
+        for seed in seeds
+    )
+
+
+def target_rank_is_complete(
+    target_dir: Path,
+    target_name: str,
+    output_format: str,
+    seeds: list[int],
+    num_samples: int,
+) -> bool:
+    if not target_samples_are_complete(
+        target_dir,
+        target_name,
+        output_format,
+        seeds,
+        num_samples,
+    ):
+        return False
+    required_outputs = [
+        target_dir / f"{target_name}_ranked_model.{output_format}",
+        target_dir / f"{target_name}_ranked_confidence.json",
+        target_dir / f"{target_name}_summary.csv",
+        target_dir / "done.txt",
+    ]
+    return all(path.exists() for path in required_outputs)
+
+
+def estimate_num_residues(sequence: str) -> int:
+    return sum(len("".join(part.split())) for part in sequence.split(":") if part.strip())
+
+
+def filter_completed_inputs(
+    inputs: list[tuple[str, str]],
+    out_dir: Path,
+    output_format: str,
+    seeds: list[int],
+    num_samples: int,
+    overwrite: bool,
+) -> list[tuple[str, str]]:
+    if overwrite:
+        return inputs
+
+    filtered = [
+        (name, sequence)
+        for name, sequence in inputs
+        if not target_is_complete(out_dir / name, output_format, seeds, num_samples)
+    ]
+    num_skipped = len(inputs) - len(filtered)
+    if num_skipped > 0:
+        logger.info("Skipping %d completed target(s).", num_skipped)
+    return filtered
+
+
+def load_model(args: argparse.Namespace):
 
     if not args.checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint file does not exist: {args.checkpoint}")
@@ -231,9 +294,7 @@ def load_model(args: argparse.Namespace):
         if torch.cuda.is_available()
         else "cpu"
     )
-    precision = args.precision
-    if precision == "auto":
-        precision = "bf16" if device.type == "cuda" else "fp32"
+    precision = "bf16" if device.type == "cuda" else "fp32"
     dtype = torch.bfloat16 if precision == "bf16" else torch.float32
 
     logger.info(
@@ -247,16 +308,11 @@ def load_model(args: argparse.Namespace):
         state_dict = {
             k.removeprefix("model."): v for k, v in checkpoint["state_dict"].items()
         }
-        if not args.no_ema and "ema" in checkpoint and "params" in checkpoint["ema"]:
-            state_dict.update(checkpoint["ema"]["params"])
-            logger.info("Using EMA weights from checkpoint.")
     else:
         state_dict = {k.removeprefix("model."): v for k, v in checkpoint.items()}
 
-    config = AtlasFoldMultimerConfig(lm_path=None)
     model = AtlasFold_Multimer.from_pretrained(
         state_dict=state_dict,
-        config=config,
         device=device,
         dtype=dtype,
     )
@@ -265,32 +321,21 @@ def load_model(args: argparse.Namespace):
 
 
 def build_sampling_config(args: argparse.Namespace):
-    from atlasfold.model import SamplingConfig
-
     return SamplingConfig(
         num_steps=args.num_steps,
-        sigma_max=args.sigma_max,
-        chunk_size=args.sampling_chunk_size,
+        chunk_size=5,
     )
-
-
-def get_sample_scores(samples, rank_by: str) -> dict[str, float]:
-    scores: dict[str, float] = {}
-    for sample_idx, sample in enumerate(samples):
-        sample_name = f"sample_{sample_idx}"
-        if rank_by == "plddt":
-            scores[sample_name] = float(sample.plddt.mean() * 100)
-        elif rank_by == "ptm":
-            scores[sample_name] = float(sample.ptm)
-        else:
-            raise ValueError(f"Unsupported rank_by metric: {rank_by}")
-    return scores
 
 
 def write_json(path: Path, payload: dict) -> None:
     with open(path, "w") as f:
         json.dump(payload, f, indent=2)
         f.write("\n")
+
+
+def load_json(path: Path) -> dict:
+    with open(path) as f:
+        return json.load(f)
 
 
 def structure_to_text(sample, output_format: str) -> str:
@@ -301,107 +346,255 @@ def structure_to_text(sample, output_format: str) -> str:
     raise ValueError(f"Unsupported output format: {output_format}")
 
 
-def write_best_output(
+def get_ranking_score(confidence: dict) -> float:
+    if "complex" in confidence:
+        confidence = confidence["complex"]
+    if "ranking_score" in confidence:
+        return float(confidence["ranking_score"])
+    return 0.8 * float(confidence.get("iptm", 0.0)) + 0.2 * float(confidence["ptm"])
+
+
+def get_complex_confidence(confidence: dict) -> dict:
+    if "complex" in confidence:
+        return confidence["complex"]
+    return confidence
+
+
+def write_sample_outputs(
     out_dir: Path,
     target_name: str,
     samples,
     *,
-    rank_by: str,
     output_format: str,
-    seed: int,
-) -> None:
+):
     out_dir.mkdir(parents=True, exist_ok=True)
-    scores = get_sample_scores(samples, rank_by)
-    ranked_order = sorted(
-        scores,
-        key=lambda sample_name: (-scores[sample_name], int(sample_name.split("_")[1])),
+    for (seed, sample_idx), sample in sorted(samples.items()):
+        sample_text = structure_to_text(sample, output_format)
+        model_path, confidence_path = sample_output_paths(
+            out_dir,
+            target_name,
+            output_format,
+            seed,
+            sample_idx,
+        )
+        model_path.write_text(sample_text)
+        write_json(confidence_path, sample.confidence_scores)
+
+
+def load_sample_records(
+    out_dir: Path,
+    target_name: str,
+    *,
+    output_format: str,
+    seeds: list[int],
+    num_samples: int,
+) -> list[dict]:
+    sample_records = []
+    for seed in seeds:
+        for sample_idx in range(num_samples):
+            model_path, confidence_path = sample_output_paths(
+                out_dir,
+                target_name,
+                output_format,
+                seed,
+                sample_idx,
+            )
+            confidence = load_json(confidence_path)
+            sample_records.append(
+                {
+                    "seed": seed,
+                    "sample": sample_idx,
+                    "sample_name": f"seed-{seed}_sample-{sample_idx}",
+                    "score": get_ranking_score(confidence),
+                    "confidence": confidence,
+                    "model_path": model_path,
+                }
+            )
+    return sample_records
+
+
+def write_ranked_outputs(
+    out_dir: Path,
+    target_name: str,
+    sample_records: list[dict],
+    *,
+    output_format: str,
+) -> None:
+    if len(sample_records) == 0:
+        raise ValueError(f"No samples to rank for target {target_name!r}.")
+
+    best_record = max(
+        sample_records,
+        key=lambda record: (record["score"], -record["seed"], -record["sample"]),
     )
-    best_sample_name = ranked_order[0]
-    best_sample_idx = int(best_sample_name.split("_")[1])
-    best_sample = samples[best_sample_idx]
-    (out_dir / f"{target_name}_model.{output_format}").write_text(
-        structure_to_text(best_sample, output_format)
+    shutil.copyfile(
+        best_record["model_path"],
+        out_dir / f"{target_name}_ranked_model.{output_format}",
     )
 
-    write_json(
-        out_dir / f"{target_name}_confidence.json",
-        {
-            "name": best_sample.name,
-            "sample": best_sample_idx,
-            "seed": seed,
-            "num_chains": best_sample.num_chains,
-            "num_residues": best_sample.num_residues,
-            "avg_plddt": float(best_sample.plddt.mean() * 100),
-            "ptm": float(best_sample.ptm),
-            "ranking_metric": rank_by,
-            "ranking_score": scores[best_sample_name],
-            "ranking_scores": scores,
-            "ranking_order": ranked_order,
+    ranked_confidence = {
+        **best_record["confidence"],
+        "seed": best_record["seed"],
+        "sample": best_record["sample"],
+        "ranked_sample": best_record["sample_name"],
+        "samples": {
+            record["sample_name"]: record["confidence"] for record in sample_records
         },
-    )
+    }
+    write_json(out_dir / f"{target_name}_ranked_confidence.json", ranked_confidence)
+
+    with open(out_dir / f"{target_name}_summary.csv", "w") as f:
+        f.write("sample,seed,sample_index,avg_plddt,ptm,iptm,ranking_score\n")
+        for record in sample_records:
+            confidence = get_complex_confidence(record["confidence"])
+            f.write(
+                f"{record['sample_name']},{record['seed']},{record['sample']},"
+                f"{confidence['avg_plddt']:.3f},{confidence['ptm']:.3f},"
+                f"{confidence.get('iptm', 0.0):.3f},"
+                f"{confidence.get('ranking_score', record['score']):.3f}\n"
+            )
 
 
 def run(args: argparse.Namespace) -> None:
     setup_logging()
-
-    import torch
-
-    from atlasfold.runner_multimer import MultimerFoldingRunner, parse_multimer_sequence
-
-    if hasattr(torch, "set_float32_matmul_precision"):
-        torch.set_float32_matmul_precision("high")
-
     inputs = load_inputs(args)
-    parsed_inputs = [
-        (name, parse_multimer_sequence(sequence)) for name, sequence in inputs
-    ]
-    num_residues = [sum(len(seq) for seq in sequences) for _, sequences in parsed_inputs]
+    num_residues = [estimate_num_residues(sequence) for _, sequence in inputs]
     logger.info(
         "Loaded %d multimer target(s). Residue range: %d-%d.",
-        len(parsed_inputs),
+        len(inputs),
         min(num_residues),
         max(num_residues),
     )
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    model = load_model(args)
-    runner = MultimerFoldingRunner(model)
-    sampling_config = build_sampling_config(args)
+    inputs = filter_completed_inputs(
+        inputs,
+        args.out_dir,
+        args.output_format,
+        args.seed,
+        args.num_samples,
+        args.overwrite,
+    )
+    if len(inputs) == 0:
+        logger.info("All targets are complete. Nothing to do.")
+        return
+
+    pending_by_seeds: dict[tuple[int, ...], list[tuple[str, str]]] = {}
+    for name, sequence in inputs:
+        missing_seeds = [
+            seed
+            for seed in args.seed
+            if args.overwrite
+            or not seed_samples_are_complete(
+                args.out_dir / name,
+                name,
+                args.output_format,
+                seed,
+                args.num_samples,
+            )
+        ]
+        if missing_seeds:
+            pending_by_seeds.setdefault(tuple(missing_seeds), []).append((name, sequence))
+    pending_count = sum(len(seed_inputs) for seed_inputs in pending_by_seeds.values())
+
+    runner = None
+    sampling_config = None
+    if pending_count > 0:
+        model = load_model(args)
+        runner = MultimerFoldingRunner(model)
+        sampling_config = build_sampling_config(args)
 
     logger.info(
-        "Starting multimer inference: num_samples=%d, preset=%s, rank_by=%s, "
-        "output_format=%s",
+        "Starting multimer inference: seeds=%s, num_samples=%d, "
+        "num_recycles=%d, output_format=%s",
+        args.seed,
         args.num_samples,
-        args.preset,
-        args.rank_by,
+        args.num_recycles,
         args.output_format,
     )
 
     start = timer()
-    outputs = runner.fold_batch(
-        parsed_inputs,
-        num_samples=args.num_samples,
-        preset=args.preset,
-        seed=args.seed,
-        num_recycles=args.num_recycles,
-        mlm_prob=args.mlm_prob,
-        sampling_config=sampling_config,
-        length_buckets=args.length_buckets,
-        max_tokens_per_batch=args.max_tokens_per_batch,
-    )
-    for (target_name, _), samples in zip(parsed_inputs, outputs, strict=True):
-        write_best_output(
-            args.out_dir,
+    for seed_group, seed_inputs in pending_by_seeds.items():
+        if len(seed_inputs) == 0:
+            continue
+        if runner is None or sampling_config is None:
+            raise RuntimeError("Internal error: runner was not initialized.")
+
+        logger.info(
+            "Running seeds %s for %d target(s).",
+            list(seed_group),
+            len(seed_inputs),
+        )
+        for output in runner.iter_fold(
+            seed_inputs,
+            num_samples=args.num_samples,
+            seeds=list(seed_group),
+            num_recycles=args.num_recycles,
+            sampling_config=sampling_config,
+            length_buckets=args.length_buckets,
+            max_tokens_per_batch=args.max_tokens_per_batch,
+        ):
+            write_sample_outputs(
+                args.out_dir / output.name,
+                output.name,
+                output.outputs,
+                output_format=args.output_format,
+            )
+
+    for target_name, _ in inputs:
+        target_dir = args.out_dir / target_name
+        if not target_samples_are_complete(
+            target_dir,
             target_name,
-            samples,
-            rank_by=args.rank_by,
+            args.output_format,
+            args.seed,
+            args.num_samples,
+        ):
+            logger.info(
+                "Skipping rank for %s: not all samples are complete.",
+                target_name,
+            )
+            continue
+
+        (target_dir / "done.txt").touch()
+        if not args.overwrite and target_rank_is_complete(
+            target_dir,
+            target_name,
+            args.output_format,
+            args.seed,
+            args.num_samples,
+        ):
+            logger.info("Ranked outputs for %s already exist.", target_name)
+            continue
+
+        sample_records = load_sample_records(
+            target_dir,
+            target_name,
             output_format=args.output_format,
-            seed=args.seed,
+            seeds=args.seed,
+            num_samples=args.num_samples,
+        )
+        write_ranked_outputs(
+            target_dir,
+            target_name,
+            sample_records,
+            output_format=args.output_format,
+        )
+        ranked_record = max(
+            sample_records,
+            key=lambda record: (record["score"], -record["seed"], -record["sample"]),
+        )
+        logger.info(
+            "Ranked %s: seed=%d, sample=%d, ptm=%.3f",
+            target_name,
+            ranked_record["seed"],
+            ranked_record["sample"],
+            ranked_record["score"],
         )
     elapsed = timer() - start
     logger.info(
         "Finished %d target(s) in %.1fs.",
-        len(parsed_inputs),
+        len(inputs),
         elapsed,
     )
 
@@ -413,4 +606,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    torch.set_float32_matmul_precision("highest")
     main()

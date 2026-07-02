@@ -1,12 +1,18 @@
 import argparse
 import json
 import logging
+import shutil
 import sys
 from pathlib import Path
 from timeit import default_timer as timer
 
+import torch
 
-logger = logging.getLogger("atlasfold.inference")
+from atlasfold.data.fasta import read_fasta
+from atlasfold.model import AtlasFold, SamplingConfig
+from atlasfold.runner import FoldingRunner
+
+logger = logging.getLogger("atlasfold.monomer")
 
 
 def setup_logging() -> None:
@@ -50,33 +56,10 @@ def create_parser() -> argparse.ArgumentParser:
         help="Path to an AtlasFold checkpoint.",
     )
     parser.add_argument(
-        "--lm-name",
-        type=str,
-        default="atlaslm-3b",
-        help="AtlasLM model name used to construct the AtlasFold config.",
-    )
-    parser.add_argument(
-        "--lm-path",
-        type=str,
-        default=None,
-        help="Optional local path to AtlasLM weights.",
-    )
-    parser.add_argument(
         "--device",
         type=str,
         default=None,
         help="Torch device. Defaults to cuda when available, otherwise cpu.",
-    )
-    parser.add_argument(
-        "--precision",
-        choices=["auto", "bf16", "fp32"],
-        default="auto",
-        help="Inference precision. auto uses bf16 on CUDA and fp32 on CPU.",
-    )
-    parser.add_argument(
-        "--no-ema",
-        action="store_true",
-        help="Do not use EMA weights from the checkpoint when available.",
     )
     parser.add_argument(
         "--no-kernel",
@@ -84,22 +67,15 @@ def create_parser() -> argparse.ArgumentParser:
         help="Disable cuequivariance kernels.",
     )
     parser.add_argument(
-        "--preset",
-        choices=["base", "high", "stochastic"],
-        default="base",
-        help="FoldingRunner inference preset.",
-    )
-    parser.add_argument(
         "--num-recycles",
         type=int,
-        default=None,
-        help="Override the number of recycles from the preset.",
+        default=4,
+        help="Number of recycling iterations.",
     )
     parser.add_argument(
-        "--mlm-prob",
-        type=float,
-        default=None,
-        help="Override the MLM masking probability from the preset.",
+        "--stochastic",
+        action="store_true",
+        help="Use stochastic LM features during all recycling iterations.",
     )
     parser.add_argument(
         "--num-samples",
@@ -110,20 +86,15 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--seed",
         type=int,
-        default=1,
-        help="Random seed for inference.",
+        nargs="+",
+        default=[1],
+        help="Random seed(s) for inference. Example: --seed 1 2 3.",
     )
     parser.add_argument(
         "--num-steps",
         type=int,
-        default=100,
+        default=25,
         help="Number of diffusion sampling steps.",
-    )
-    parser.add_argument(
-        "--sigma-max",
-        type=float,
-        default=160.0,
-        help="Maximum sigma for diffusion sampling.",
     )
     parser.add_argument(
         "--sampling-chunk-size",
@@ -151,13 +122,7 @@ def create_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--rank-by",
-        choices=["plddt", "ptm"],
-        default="plddt",
-        help="Metric used to rank samples for each input sequence.",
-    )
-    parser.add_argument(
-        "--output-format",
+        "--format",
         choices=["cif", "pdb"],
         default="cif",
         help="Structure file format for sample and ranked outputs.",
@@ -179,8 +144,6 @@ def normalize_target_name(header: str) -> str:
 
 
 def load_sequences(input_fasta: Path) -> list[tuple[str, str]]:
-    from atlasfold.data.fasta import read_fasta
-
     if not input_fasta.exists():
         raise FileNotFoundError(f"Input FASTA file does not exist: {input_fasta}")
 
@@ -206,17 +169,87 @@ def load_sequences(input_fasta: Path) -> list[tuple[str, str]]:
     return sorted(sequences, key=lambda item: (len(item[1]), item[0]))
 
 
-def target_is_complete(target_dir: Path, output_format: str) -> bool:
+def target_is_complete(
+    target_dir: Path,
+    format: str,
+    seeds: list[int],
+    num_samples: int,
+) -> bool:
+    target_name = target_dir.name
+    return target_rank_is_complete(target_dir, target_name, format, seeds, num_samples)
+
+
+def sample_output_paths(
+    target_dir: Path,
+    target_name: str,
+    format: str,
+    seed: int,
+    sample_idx: int,
+) -> tuple[Path, Path]:
+    sample_name = f"{target_name}_seed-{seed}_sample-{sample_idx}"
     return (
-        (target_dir / "ranking_debug.json").exists()
-        and (target_dir / f"ranked_0.{output_format}").exists()
+        target_dir / f"{sample_name}.{format}",
+        target_dir / f"{sample_name}_confidence.json",
     )
+
+
+def seed_samples_are_complete(
+    target_dir: Path,
+    target_name: str,
+    format: str,
+    seed: int,
+    num_samples: int,
+) -> bool:
+    return all(
+        path.exists()
+        for sample_idx in range(num_samples)
+        for path in sample_output_paths(target_dir, target_name, format, seed, sample_idx)
+    )
+
+
+def target_samples_are_complete(
+    target_dir: Path,
+    target_name: str,
+    format: str,
+    seeds: list[int],
+    num_samples: int,
+) -> bool:
+    return all(
+        seed_samples_are_complete(target_dir, target_name, format, seed, num_samples)
+        for seed in seeds
+    )
+
+
+def target_rank_is_complete(
+    target_dir: Path,
+    target_name: str,
+    format: str,
+    seeds: list[int],
+    num_samples: int,
+) -> bool:
+    if not target_samples_are_complete(
+        target_dir,
+        target_name,
+        format,
+        seeds,
+        num_samples,
+    ):
+        return False
+    required_outputs = [
+        target_dir / f"{target_name}_ranked_model.{format}",
+        target_dir / f"{target_name}_ranked_confidence.json",
+        target_dir / f"{target_name}_summary.csv",
+        target_dir / "done.txt",
+    ]
+    return all(path.exists() for path in required_outputs)
 
 
 def filter_completed_targets(
     sequences: list[tuple[str, str]],
     out_dir: Path,
-    output_format: str,
+    format: str,
+    seeds: list[int],
+    num_samples: int,
     overwrite: bool,
 ) -> list[tuple[str, str]]:
     if overwrite:
@@ -225,7 +258,7 @@ def filter_completed_targets(
     filtered = [
         (name, sequence)
         for name, sequence in sequences
-        if not target_is_complete(out_dir / name, output_format)
+        if not target_is_complete(out_dir / name, format, seeds, num_samples)
     ]
     num_skipped = len(sequences) - len(filtered)
     if num_skipped > 0:
@@ -234,21 +267,17 @@ def filter_completed_targets(
 
 
 def load_model(args: argparse.Namespace):
-    import torch
-
-    from atlasfold.model import AtlasFold, AtlasFoldConfig
-
     if not args.checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint file does not exist: {args.checkpoint}")
 
     device = torch.device(
-        args.device if args.device is not None else "cuda"
+        args.device
+        if args.device is not None
+        else "cuda"
         if torch.cuda.is_available()
         else "cpu"
     )
-    precision = args.precision
-    if precision == "auto":
-        precision = "bf16" if device.type == "cuda" else "fp32"
+    precision = "bf16" if device.type == "cuda" else "fp32"
     dtype = torch.bfloat16 if precision == "bf16" else torch.float32
 
     logger.info(
@@ -257,49 +286,19 @@ def load_model(args: argparse.Namespace):
         device,
         precision,
     )
-    checkpoint = torch.load(args.checkpoint, map_location="cpu")
-    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-        state_dict = {
-            k.removeprefix("model."): v for k, v in checkpoint["state_dict"].items()
-        }
-        if not args.no_ema and "ema" in checkpoint and "params" in checkpoint["ema"]:
-            state_dict.update(checkpoint["ema"]["params"])
-            logger.info("Using EMA weights from checkpoint.")
-    else:
-        state_dict = {k.removeprefix("model."): v for k, v in checkpoint.items()}
+    state_dict = torch.load(args.checkpoint, map_location="cpu")
 
-    config = AtlasFoldConfig(lm_name=args.lm_name, lm_path=args.lm_path)
-    model = AtlasFold.from_pretrained(
-        state_dict=state_dict,
-        config=config,
-        device=device,
-        dtype=dtype,
-    )
+    model = AtlasFold.from_pretrained(state_dict=state_dict, device=device, dtype=dtype)
     model.set_forward_flags(use_cuequiv_kernels=not args.no_kernel)
     return model
 
 
 def build_sampling_config(args: argparse.Namespace):
-    from atlasfold.model import SamplingConfig
-
     return SamplingConfig(
         num_steps=args.num_steps,
-        sigma_max=args.sigma_max,
+        sigma_max=160.0,
         chunk_size=args.sampling_chunk_size,
     )
-
-
-def get_sample_scores(samples, rank_by: str) -> dict[str, float]:
-    scores: dict[str, float] = {}
-    for sample_idx, sample in enumerate(samples):
-        sample_name = f"sample_{sample_idx}"
-        if rank_by == "plddt":
-            scores[sample_name] = float(sample.plddt.mean() * 100)
-        elif rank_by == "ptm":
-            scores[sample_name] = float(sample.ptm)
-        else:
-            raise ValueError(f"Unsupported rank_by metric: {rank_by}")
-    return scores
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -308,76 +307,128 @@ def write_json(path: Path, payload: dict) -> None:
         f.write("\n")
 
 
-def structure_to_text(sample, output_format: str) -> str:
-    if output_format == "cif":
+def load_json(path: Path) -> dict:
+    with open(path) as f:
+        return json.load(f)
+
+
+def structure_to_text(sample, format: str) -> str:
+    if format == "cif":
         return sample.to_mmcif()
-    if output_format == "pdb":
+    if format == "pdb":
         return sample.to_pdb()
-    raise ValueError(f"Unsupported output format: {output_format}")
+    raise ValueError(f"Unsupported output format: {format}")
 
 
-def write_outputs_for_target(
+def write_sample_outputs_for_target(
     target_dir: Path,
+    target_name: str,
     samples,
     *,
-    rank_by: str,
-    output_format: str,
-    seed: int,
-) -> None:
+    format: str,
+) -> list[dict]:
     target_dir.mkdir(parents=True, exist_ok=True)
-
-    sample_texts: dict[str, str] = {}
-    scores = get_sample_scores(samples, rank_by)
-
-    for sample_idx, sample in enumerate(samples):
-        sample_name = f"sample_{sample_idx}"
-        sample_text = structure_to_text(sample, output_format)
-        sample_texts[sample_name] = sample_text
-        (target_dir / f"{sample_name}.{output_format}").write_text(sample_text)
-
-        avg_plddt = float(sample.plddt.mean() * 100)
-        write_json(
-            target_dir / f"confidence_{sample_name}.json",
+    sample_records = []
+    for (seed, sample_idx), sample in sorted(samples.items()):
+        sample_text = structure_to_text(sample, format)
+        model_path, confidence_path = sample_output_paths(
+            target_dir,
+            target_name,
+            format,
+            seed,
+            sample_idx,
+        )
+        model_path.write_text(sample_text)
+        confidence = sample.confidence_scores
+        write_json(confidence_path, confidence)
+        sample_records.append(
             {
-                "name": sample.name,
-                "sample": sample_idx,
                 "seed": seed,
-                "length": len(sample.sequence),
-                "avg_plddt": avg_plddt,
-                "ptm": float(sample.ptm),
-                "ranking_metric": rank_by,
-                "ranking_score": scores[sample_name],
-            },
+                "sample": sample_idx,
+                "sample_name": f"seed-{seed}_sample-{sample_idx}",
+                "score": sample.ranking_score,
+                "confidence": confidence,
+                "model_path": model_path,
+            }
         )
+    return sample_records
 
-    ranked_order = sorted(
-        scores,
-        key=lambda sample_name: (-scores[sample_name], int(sample_name.split("_")[1])),
+
+def load_sample_records_for_target(
+    target_dir: Path,
+    target_name: str,
+    *,
+    format: str,
+    seeds: list[int],
+    num_samples: int,
+) -> list[dict]:
+    sample_records = []
+    for seed in seeds:
+        for sample_idx in range(num_samples):
+            model_path, confidence_path = sample_output_paths(
+                target_dir,
+                target_name,
+                format,
+                seed,
+                sample_idx,
+            )
+            confidence = load_json(confidence_path)
+            sample_records.append(
+                {
+                    "seed": seed,
+                    "sample": sample_idx,
+                    "sample_name": f"seed-{seed}_sample-{sample_idx}",
+                    "score": float(confidence["avg_plddt"]),
+                    "confidence": confidence,
+                    "model_path": model_path,
+                }
+            )
+    return sample_records
+
+
+def write_ranked_outputs_for_target(
+    target_dir: Path,
+    target_name: str,
+    sample_records: list[dict],
+    *,
+    format: str,
+) -> None:
+    if len(sample_records) == 0:
+        raise ValueError(f"No samples to rank for target {target_name!r}.")
+
+    best_record = max(
+        sample_records,
+        key=lambda record: (record["score"], -record["seed"], -record["sample"]),
     )
-    for rank_idx, sample_name in enumerate(ranked_order):
-        (target_dir / f"ranked_{rank_idx}.{output_format}").write_text(
-            sample_texts[sample_name]
-        )
-
-    metric_label = "plddts" if rank_by == "plddt" else "ptms"
-    write_json(
-        target_dir / "ranking_debug.json",
-        {
-            metric_label: scores,
-            "order": ranked_order,
+    shutil.copyfile(
+        best_record["model_path"],
+        target_dir / f"{target_name}_ranked_model.{format}",
+    )
+    ranked_confidence = {
+        **best_record["confidence"],
+        "seed": best_record["seed"],
+        "sample": best_record["sample"],
+        "ranked_sample": best_record["sample_name"],
+        "samples": {
+            record["sample_name"]: record["confidence"] for record in sample_records
         },
+    }
+    write_json(
+        target_dir / f"{target_name}_ranked_confidence.json",
+        ranked_confidence,
     )
+    with open(target_dir / f"{target_name}_summary.csv", "w") as f:
+        f.write("sample,seed,sample_index,avg_plddt,ptm\n")
+        for record in sample_records:
+            confidence = record["confidence"]
+            f.write(
+                f"{record['sample_name']},{record['seed']},{record['sample']},"
+                f"{confidence['avg_plddt']:.3f},{confidence['ptm']:.3f}\n"
+            )
 
 
 def run(args: argparse.Namespace) -> None:
     setup_logging()
-
-    import torch
-
-    from atlasfold.runner import FoldingRunner
-
-    if hasattr(torch, "set_float32_matmul_precision"):
-        torch.set_float32_matmul_precision("high")
 
     sequences = load_sequences(args.input_fasta)
     logger.info(
@@ -392,71 +443,152 @@ def run(args: argparse.Namespace) -> None:
     sequences = filter_completed_targets(
         sequences,
         args.out_dir,
-        args.output_format,
+        args.format,
+        args.seed,
+        args.num_samples,
         args.overwrite,
     )
     if len(sequences) == 0:
         logger.info("All targets are complete. Nothing to do.")
         return
 
-    model = load_model(args)
-    runner = FoldingRunner(model)
-    sampling_config = build_sampling_config(args)
+    pending_by_seeds: dict[tuple[int, ...], list[tuple[str, str]]] = {}
+    for name, sequence in sequences:
+        missing_seeds = [
+            seed
+            for seed in args.seed
+            if args.overwrite
+            or not seed_samples_are_complete(
+                args.out_dir / name,
+                name,
+                args.format,
+                seed,
+                args.num_samples,
+            )
+        ]
+        if missing_seeds:
+            pending_by_seeds.setdefault(tuple(missing_seeds), []).append((name, sequence))
+    pending_count = sum(
+        len(seed_sequences) for seed_sequences in pending_by_seeds.values()
+    )
+
+    runner = None
+    sampling_config = None
+    if pending_count > 0:
+        model = load_model(args)
+        runner = FoldingRunner(model)
+        sampling_config = build_sampling_config(args)
 
     logger.info(
-        "Starting batched inference: targets=%d, num_samples=%d, preset=%s, "
-        "rank_by=%s, max_tokens_per_batch=%d, output_format=%s",
+        "Starting batched inference: targets=%d, seeds=%s, num_samples=%d, "
+        "num_recycles=%d, stochastic=%s, "
+        "max_tokens_per_batch=%d, format=%s",
         len(sequences),
+        args.seed,
         args.num_samples,
-        args.preset,
-        args.rank_by,
+        args.num_recycles,
+        args.stochastic,
         args.max_tokens_per_batch,
-        args.output_format,
+        args.format,
     )
 
     start = timer()
     num_written = 0
     try:
-        for batch_output in runner.iter_fold_batches(
-            sequences,
-            num_samples=args.num_samples,
-            preset=args.preset,
-            seed=args.seed,
-            num_recycles=args.num_recycles,
-            mlm_prob=args.mlm_prob,
-            sampling_config=sampling_config,
-            length_buckets=args.length_buckets,
-            max_tokens_per_batch=args.max_tokens_per_batch,
-        ):
-            for (_, name, sequence), samples in zip(
-                batch_output.inputs, batch_output.outputs, strict=True
+        for seed_group, seed_sequences in pending_by_seeds.items():
+            if len(seed_sequences) == 0:
+                continue
+            if runner is None or sampling_config is None:
+                raise RuntimeError("Internal error: runner was not initialized.")
+
+            logger.info(
+                "Running seeds %s for %d target(s).",
+                list(seed_group),
+                len(seed_sequences),
+            )
+            for output in runner.iter_fold(
+                seed_sequences,
+                num_samples=args.num_samples,
+                seeds=list(seed_group),
+                num_recycles=args.num_recycles,
+                stochastic=args.stochastic,
+                sampling_config=sampling_config,
+                length_buckets=args.length_buckets,
+                max_tokens_per_batch=args.max_tokens_per_batch,
             ):
-                target_dir = args.out_dir / name
-                write_outputs_for_target(
+                target_dir = args.out_dir / output.name
+                sample_records = write_sample_outputs_for_target(
                     target_dir,
-                    samples,
-                    rank_by=args.rank_by,
-                    output_format=args.output_format,
-                    seed=args.seed,
+                    output.name,
+                    output.outputs,
+                    format=args.format,
                 )
-                scores = get_sample_scores(samples, args.rank_by)
-                best_score = max(scores.values())
-                best_sample = max(scores, key=scores.get)
+                best_record = max(
+                    sample_records,
+                    key=lambda record: (
+                        record["score"],
+                        -record["seed"],
+                        -record["sample"],
+                    ),
+                )
                 num_written += 1
                 logger.info(
-                    "Wrote %s: length=%d, bucket=%d, batch=%d/%d, "
-                    "best=%s, %s=%.4f (%d/%d).",
-                    name,
-                    len(sequence),
-                    batch_output.bucket_length,
-                    batch_output.batch_index,
-                    batch_output.num_batches,
-                    best_sample,
-                    args.rank_by,
-                    best_score,
+                    "Wrote %s seeds=%s: best=%s, plddt=%.3f (%d/%d)",
+                    output.name,
+                    list(seed_group),
+                    best_record["sample"],
+                    best_record["score"],
                     num_written,
-                    len(sequences),
+                    pending_count,
                 )
+
+        for name, _ in sequences:
+            target_dir = args.out_dir / name
+            if not target_samples_are_complete(
+                target_dir,
+                name,
+                args.format,
+                args.seed,
+                args.num_samples,
+            ):
+                logger.info("Skipping rank for %s: not all samples are complete.", name)
+                continue
+
+            (target_dir / "done.txt").touch()
+            if not args.overwrite and target_rank_is_complete(
+                target_dir,
+                name,
+                args.format,
+                args.seed,
+                args.num_samples,
+            ):
+                logger.info("Ranked outputs for %s already exist.", name)
+                continue
+
+            sample_records = load_sample_records_for_target(
+                target_dir,
+                name,
+                format=args.format,
+                seeds=args.seed,
+                num_samples=args.num_samples,
+            )
+            write_ranked_outputs_for_target(
+                target_dir,
+                name,
+                sample_records,
+                format=args.format,
+            )
+            ranked_record = max(
+                sample_records,
+                key=lambda record: (record["score"], -record["seed"], -record["sample"]),
+            )
+            logger.info(
+                "Ranked %s: seed=%d, sample=%d, plddt=%.3f",
+                name,
+                ranked_record["seed"],
+                ranked_record["sample"],
+                ranked_record["score"],
+            )
     except RuntimeError as err:
         if "out of memory" in str(err).lower():
             logger.error(
@@ -481,4 +613,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    torch.set_float32_matmul_precision("highest")
     main()

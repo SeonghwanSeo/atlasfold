@@ -205,7 +205,6 @@ class AtlasFold_Multimer(torch.nn.Module):
         batch: dict[str, torch.Tensor],
         mode: str = "full",
         num_samples: int = 3,
-        compute_pae: bool = True,
         return_representations: bool = False,
         # Advanced options
         mlm_prob: float | None = None,
@@ -269,9 +268,6 @@ class AtlasFold_Multimer(torch.nn.Module):
             The number of recycling steps.
         sampling_config : SamplingConfig
             The configuration for the diffusion sampling process.
-        compute_pae : bool
-            Whether to compute the predicted aligned error (PAE) and
-            predicted TM-score (pTM).
         return_representations : bool
             Whether to return the single and pair representations.
 
@@ -333,18 +329,22 @@ class AtlasFold_Multimer(torch.nn.Module):
             out["plddt"] = confidence_metrics.compute_plddt(
                 **confidence_out["plddt"], mask=mask
             )
-            if "pde" in confidence_out:
-                out["pde"] = confidence_metrics.compute_pde(
-                    **confidence_out["pde"], mask=mask
-                )
-            if compute_pae and "pae" in confidence_out:
-                out["pae"] = confidence_metrics.compute_pae(
-                    **confidence_out["pae"], mask=mask
-                )
-                out["ptm"] = confidence_metrics.compute_ptm(
-                    **confidence_out["pae"], mask=mask
-                )
-                # TODO: add iptm and related
+            out["pde"] = confidence_metrics.compute_pde(
+                **confidence_out["pde"], mask=mask
+            )
+            out["pae_logits"] = confidence_out["pae"]["logits"]
+            out["pae_bin_centers"] = confidence_out["pae"]["bin_centers"]
+            out["pae"] = confidence_metrics.compute_pae(
+                **confidence_out["pae"], mask=mask
+            )
+            out["ptm"] = confidence_metrics.compute_ptm(
+                **confidence_out["pae"], mask=mask
+            )
+            out["iptm"] = confidence_metrics.compute_iptm(
+                **confidence_out["pae"],
+                asym_id=batch["asym_id"],
+                mask=mask,
+            )
         del mask
 
         # Remove batch dimension if the input was not originally batched

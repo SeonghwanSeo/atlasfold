@@ -4,10 +4,18 @@ from collections.abc import Iterator, Sequence
 
 import numpy as np
 import torch
-from tqdm import tqdm
 
-from atlasfold.common import featurize, protein
+from atlasfold.common import featurize, protein, residue_constants
 from atlasfold.model import AtlasFold, SamplingConfig
+
+SampleKey = tuple[int, int]
+
+
+def _sanitize_sequence(sequence: str) -> str:
+    sequence = "".join(sequence.split()).upper()
+    return "".join(
+        aa if aa in residue_constants.restype_orders else "X" for aa in sequence
+    )
 
 
 @contextlib.contextmanager
@@ -31,17 +39,14 @@ def autocast_context(device: torch.device):
         yield
 
 
-def default(value, default_value):
-    """Return the value if it is not None, otherwise return the default value."""
-    return value if value is not None else default_value
-
-
 @dataclasses.dataclass(kw_only=True)
 class ProteinOutput(protein.Protein):
     """A data structure representing a predicted 3D protein structure"""
 
     name: str
     sequence: str
+    seed: int | None = None
+    sample_index: int | None = None
     coordinates: np.ndarray  # [L, 14, 3]
     b_factors: np.ndarray  # [L,] or [L, 14]
     plddt: np.ndarray  # [L]
@@ -65,16 +70,29 @@ class ProteinOutput(protein.Protein):
             )
         assert self.residue_index is None
 
+    @property
+    def avg_plddt(self) -> float:
+        return float(self.plddt.mean() * 100)
+
+    @property
+    def ranking_score(self) -> float:
+        return self.avg_plddt
+
+    @property
+    def confidence_scores(self) -> dict[str, float]:
+        return {
+            "avg_plddt": self.avg_plddt,
+            "ptm": float(self.ptm),
+        }
+
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class FoldBatchOutput:
-    """Outputs from one concrete batched model call."""
+class FoldingOutput:
+    """Outputs for one folded target."""
 
-    bucket_length: int
-    batch_index: int
-    num_batches: int
-    inputs: list[tuple[int, str, str]]
-    outputs: list[list[ProteinOutput]]
+    name: str
+    outputs: dict[SampleKey, ProteinOutput]
+    ranking: list[SampleKey]
 
 
 class FoldingRunner:
@@ -92,214 +110,95 @@ class FoldingRunner:
         sequence: str,
         *,
         num_samples: int = 1,
-        preset: str = "base",
-        seed: int = 1,
-        num_recycles: int | None = None,
-        mlm_prob: float | None = None,
+        seeds: int | Sequence[int] = 1,
+        num_recycles: int = 4,
+        mlm_prob: float = 0.15,
+        stochastic: bool = False,
         sampling_config: SamplingConfig | None = None,
         length_buckets: Sequence[int] | None = None,
-    ) -> list[ProteinOutput]:
-        return self.fold_batch(
-            [(name, sequence)],
-            num_samples=num_samples,
-            preset=preset,
-            seed=seed,
-            num_recycles=num_recycles,
-            mlm_prob=mlm_prob,
-            sampling_config=sampling_config,
-            length_buckets=length_buckets,
-        )[0]
+    ) -> FoldingOutput:
+        outputs = list(
+            self.iter_fold(
+                [(name, sequence)],
+                num_samples=num_samples,
+                seeds=seeds,
+                num_recycles=num_recycles,
+                mlm_prob=mlm_prob,
+                stochastic=stochastic,
+                sampling_config=sampling_config,
+                length_buckets=length_buckets,
+            )
+        )
+        return outputs[0]
 
-    def fold_batch(
+    def iter_fold(
         self,
         inputs: Sequence[tuple[str, str]],
         *,
         num_samples: int = 1,
-        preset: str = "base",
-        seed: int = 1,
-        num_recycles: int | None = None,
-        mlm_prob: float | None = None,
+        seeds: int | Sequence[int] = 1,
+        num_recycles: int = 4,
+        mlm_prob: float = 0.15,
+        stochastic: bool = False,
         sampling_config: SamplingConfig | None = None,
         length_buckets: Sequence[int] | None = None,
         max_tokens_per_batch: int = 1024,
-        disable_tqdm: bool = False,
-    ) -> list[list[ProteinOutput]]:
-        """Fold a list of sequences using bucketed batched inference.
-
-        By default, residue budgets use ``featurize.DEFAULT_BUCKETS``:
-        32, 64, 128, 192, 256, 384, 512, 640, 768, ...
-        ``max_tokens_per_batch`` caps ``batch_size * residue_budget`` for each
-        model call.
-
-        The returned list has the same order as ``inputs``. Each element is the
-        list of ``num_samples`` predictions for the corresponding input.
-        """
-        inputs = list(inputs)
-        outputs: list[list[ProteinOutput] | None] = [None] * len(inputs)
-
-        for batch_output in self.iter_fold_batches(
-            inputs,
-            num_samples=num_samples,
-            preset=preset,
-            seed=seed,
-            num_recycles=num_recycles,
-            mlm_prob=mlm_prob,
-            sampling_config=sampling_config,
-            length_buckets=length_buckets,
-            max_tokens_per_batch=max_tokens_per_batch,
-            disable_tqdm=disable_tqdm,
-        ):
-            for (input_idx, _, _), sample_outputs in zip(
-                batch_output.inputs, batch_output.outputs, strict=True
-            ):
-                outputs[input_idx] = sample_outputs
-
-        completed_outputs = []
-        for output in outputs:
-            if output is None:
-                raise RuntimeError("Some batched folding outputs were not produced.")
-            completed_outputs.append(output)
-        return completed_outputs
-
-    def iter_fold_batches(
-        self,
-        inputs: Sequence[tuple[str, str]],
-        *,
-        num_samples: int = 1,
-        preset: str = "base",
-        seed: int = 1,
-        num_recycles: int | None = None,
-        mlm_prob: float | None = None,
-        sampling_config: SamplingConfig | None = None,
-        length_buckets: Sequence[int] | None = None,
-        max_tokens_per_batch: int = 1024,
-        disable_tqdm: bool = False,
-    ) -> Iterator[FoldBatchOutput]:
-        """Yield predictions for each token-budgeted model-call batch."""
+    ) -> Iterator[FoldingOutput]:
+        """Yield predictions for each target."""
+        seeds = [seeds] if isinstance(seeds, int) else list(seeds)
         inputs = list(inputs)
         if len(inputs) == 0:
-            return
+            raise ValueError("No inputs provided.")
+        if len(seeds) == 0:
+            raise ValueError("No seeds provided.")
         if num_samples <= 0:
             raise ValueError(f"num_samples must be positive, got {num_samples}.")
         if max_tokens_per_batch <= 0:
             raise ValueError(
                 f"max_tokens_per_batch must be positive, got {max_tokens_per_batch}."
             )
+        if sampling_config is None:
+            sampling_config = SamplingConfig(num_steps=25, sigma_max=160)
 
-        settings = self._get_run_settings(
-            preset=preset,
-            num_recycles=num_recycles,
-            mlm_prob=mlm_prob,
-            sampling_config=sampling_config,
-        )
+        normalized_inputs = self._normalize_inputs(inputs)
+        bucketed_inputs = self._bucket_inputs(normalized_inputs, length_buckets)
+        for bucket_length, chunk in self._iter_batch(
+            bucketed_inputs,
+            max_tokens_per_batch,
+        ):
+            sequences = [sequence for _, sequence in chunk]
+            feat = self._make_batch_features(sequences, bucket_length)
 
-        bucketed_inputs = self._bucket_inputs(inputs, length_buckets)
-        batch_specs = self._make_batch_specs(bucketed_inputs, max_tokens_per_batch)
-
-        total_count = len(inputs)
-        curr_count = 0
-        with tqdm(
-            batch_specs,
-            desc="Folding",
-            disable=disable_tqdm,
-            unit="batch",
-        ) as pbar:
-            num_batches = len(batch_specs)
-            for batch_idx, (bucket_length, chunk) in enumerate(pbar, start=1):
-                pbar.set_postfix(
-                    {
-                        "bucket": bucket_length,
-                        "batch_size": len(chunk),
-                        "progress": f"{curr_count}/{total_count}",
-                    }
-                )
-                sequences = [sequence for _, _, sequence in chunk]
-                feat = self._make_batch_features(sequences, bucket_length)
-
+            batch_outputs: list[dict[SampleKey, ProteinOutput]] = [{} for _ in chunk]
+            for seed_value in seeds:
                 out = self.model_run(
                     feat,
-                    seed=seed,
+                    seed=seed_value,
                     num_samples=num_samples,
-                    **settings,
+                    num_recycles=num_recycles,
+                    mlm_prob=mlm_prob,
+                    stochastic=stochastic,
+                    sampling_config=sampling_config,
                 )
 
-                batch_outputs = [
-                    self._make_protein_outputs(
-                        name=name,
-                        sequence=sequence,
-                        out=out,
-                        batch_idx=batch_item_idx,
-                        num_samples=num_samples,
+                for batch_item_idx, (name, sequence) in enumerate(chunk):
+                    batch_outputs[batch_item_idx].update(
+                        self._make_outputs(
+                            name=name,
+                            sequence=sequence,
+                            out=out,
+                            batch_idx=batch_item_idx,
+                            num_samples=num_samples,
+                            seed=seed_value,
+                        )
                     )
-                    for batch_item_idx, (_, name, sequence) in enumerate(chunk)
-                ]
-                curr_count += len(chunk)
-                pbar.set_postfix(
-                    {
-                        "bucket": bucket_length,
-                        "batch_size": len(chunk),
-                        "progress": f"{curr_count}/{total_count}",
-                    }
+
+            for outputs in batch_outputs:
+                name = next(iter(outputs.values())).name
+                ranking = sorted(
+                    outputs.keys(), key=lambda k: outputs[k].ranking_score, reverse=True
                 )
-                yield FoldBatchOutput(
-                    bucket_length=bucket_length,
-                    batch_index=batch_idx,
-                    num_batches=num_batches,
-                    inputs=chunk,
-                    outputs=batch_outputs,
-                )
-
-    @staticmethod
-    def _make_batch_specs(
-        bucketed_inputs: dict[int, list[tuple[int, str, str]]],
-        max_tokens_per_batch: int,
-    ) -> list[tuple[int, list[tuple[int, str, str]]]]:
-        batch_specs: list[tuple[int, list[tuple[int, str, str]]]] = []
-        for bucket_length in sorted(bucketed_inputs):
-            bucket_items = bucketed_inputs[bucket_length]
-            batch_size = max(1, max_tokens_per_batch // bucket_length)
-            for start in range(0, len(bucket_items), batch_size):
-                batch_specs.append(
-                    (bucket_length, bucket_items[start : start + batch_size])
-                )
-        return batch_specs
-
-    def _get_run_settings(
-        self,
-        *,
-        preset: str,
-        num_recycles: int | None,
-        mlm_prob: float | None,
-        sampling_config: SamplingConfig | None,
-    ) -> dict:
-        if preset not in ["base", "high", "stochastic"]:
-            raise ValueError(f"Invalid preset: {preset}")
-
-        settings = self.get_preset_setting(preset)
-        settings["num_recycles"] = default(num_recycles, settings["num_recycles"])
-        settings["mlm_prob"] = default(mlm_prob, settings["mlm_prob"])
-        settings["sampling_config"] = default(
-            sampling_config, settings["sampling_config"]
-        )
-        return settings
-
-    def get_preset_setting(self, preset: str) -> dict:
-        num_recycles = 4
-        mlm_prob = 0.15
-        # TODO: add auto-scaling for num_steps and sigma_max based on sequence length
-        sampling_cfg = SamplingConfig(num_steps=100, sigma_max=160)
-        stochastic = False
-        if preset == "high":
-            num_recycles = 8
-        elif preset == "stochastic":
-            stochastic = True
-
-        return {
-            "num_recycles": num_recycles,
-            "mlm_prob": mlm_prob,
-            "sampling_config": sampling_cfg,
-            "stochastic": stochastic,
-        }
+                yield FoldingOutput(name=name, outputs=outputs, ranking=ranking)
 
     def model_run(
         self,
@@ -330,24 +229,43 @@ class FoldingRunner:
             )
         return {k: v.cpu().float().numpy() for k, v in out.items()}
 
+    @staticmethod
+    def _normalize_inputs(
+        inputs: Sequence[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        normalized: list[tuple[str, str]] = []
+        for name, sequence in inputs:
+            sequence = _sanitize_sequence(sequence)
+            if len(sequence) == 0:
+                raise ValueError(f"Input ({name}) has an empty sequence.")
+            normalized.append((name, sequence))
+        return normalized
+
     @classmethod
     def _bucket_inputs(
         cls,
         inputs: Sequence[tuple[str, str]],
         length_buckets: Sequence[int] | None,
-    ) -> dict[int, list[tuple[int, str, str]]]:
-        bucketed_inputs: dict[int, list[tuple[int, str, str]]] = {}
-        for input_idx, (name, sequence) in enumerate(inputs):
-            if len(sequence) == 0:
-                raise ValueError(f"Input {input_idx} ({name!r}) has an empty sequence.")
-            bucket_length = cls.get_length_bucket(len(sequence), length_buckets)
-            bucketed_inputs.setdefault(bucket_length, []).append(
-                (input_idx, name, sequence)
-            )
+    ) -> dict[int, list[tuple[str, str]]]:
+        bucketed_inputs: dict[int, list[tuple[str, str]]] = {}
+        for name, sequence in inputs:
+            bucket_length = cls._get_length_bucket(len(sequence), length_buckets)
+            bucketed_inputs.setdefault(bucket_length, []).append((name, sequence))
         return bucketed_inputs
 
     @staticmethod
-    def get_length_bucket(
+    def _iter_batch(
+        bucketed_inputs: dict[int, list[tuple[str, str]]],
+        max_tokens_per_batch: int,
+    ) -> Iterator[tuple[int, list[tuple[str, str]]]]:
+        for bucket_length in sorted(bucketed_inputs):
+            bucket_items = bucketed_inputs[bucket_length]
+            batch_size = max(1, max_tokens_per_batch // bucket_length)
+            for start in range(0, len(bucket_items), batch_size):
+                yield bucket_length, bucket_items[start : start + batch_size]
+
+    @staticmethod
+    def _get_length_bucket(
         length: int,
         length_buckets: Sequence[int] | None = None,
     ) -> int:
@@ -383,22 +301,23 @@ class FoldingRunner:
         bucket_length: int,
     ) -> dict[str, np.ndarray]:
         feats = [
-            cls.pad_to_length(featurize.featurize(sequence), bucket_length)
+            cls._pad_to_length(featurize.featurize(sequence), bucket_length)
             for sequence in sequences
         ]
         return {k: np.stack([feat[k] for feat in feats], axis=0) for k in feats[0]}
 
     @staticmethod
-    def _make_protein_outputs(
+    def _make_outputs(
         *,
         name: str,
         sequence: str,
         out: dict[str, np.ndarray],
         batch_idx: int,
         num_samples: int,
-    ) -> list[ProteinOutput]:
+        seed: int,
+    ) -> dict[SampleKey, ProteinOutput]:
         length = len(sequence)
-        samples = []
+        samples = {}
         for sample_idx in range(num_samples):
             coords = out["sample_coords"][batch_idx, sample_idx, :length]
             plddt = out["plddt"][batch_idx, sample_idx, :length]
@@ -409,17 +328,19 @@ class FoldingRunner:
             sample = ProteinOutput(
                 name=name,
                 sequence=sequence,
+                seed=seed,
+                sample_index=sample_idx,
                 coordinates=coords,
                 b_factors=b_factor,
                 plddt=plddt,
                 pae=pae,
                 ptm=ptm,
             )
-            samples.append(sample)
+            samples[(seed, sample_idx)] = sample
         return samples
 
     @staticmethod
-    def pad_to_length(
+    def _pad_to_length(
         feat: dict[str, np.ndarray],
         length: int,
     ) -> dict[str, np.ndarray]:
@@ -453,8 +374,8 @@ class FoldingRunner:
         return new_feat
 
     @staticmethod
-    def pad(feat: dict[str, np.ndarray], multiple_of: int = 32) -> dict[str, np.ndarray]:
+    def _pad(feat: dict[str, np.ndarray], multiple_of: int = 32) -> dict[str, np.ndarray]:
         """Pad the input features to the specified length."""
         length = feat["aatype_int"].shape[0]
         pad_length = ((length + multiple_of - 1) // multiple_of) * multiple_of
-        return FoldingRunner.pad_to_length(feat, pad_length)
+        return FoldingRunner._pad_to_length(feat, pad_length)

@@ -143,7 +143,7 @@ class Protein:
         return cls.create(name, sequence, coordinates, b_factors, residue_index)
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(kw_only=True)
 class ProteinMultimer:
     """A data structure representing a protein complex"""
 

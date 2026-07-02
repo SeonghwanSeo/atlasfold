@@ -1,13 +1,15 @@
-from collections.abc import Iterator, Sequence
 import dataclasses
+import functools
+from collections import defaultdict
+from collections.abc import Iterator, Sequence
 
 import numpy as np
 import torch
-from tqdm import tqdm
 
 from atlasfold.common import featurize, protein, residue_constants
 from atlasfold.model import AtlasFold_Multimer, SamplingConfig
-from atlasfold.runner import autocast_context, default, seed_context
+from atlasfold.model.utils import confidence_metrics
+from atlasfold.runner import SampleKey, autocast_context, seed_context
 
 
 def _sanitize_sequence(sequence: str) -> str:
@@ -15,24 +17,6 @@ def _sanitize_sequence(sequence: str) -> str:
     return "".join(
         aa if aa in residue_constants.restype_orders else "X" for aa in sequence
     )
-
-
-def parse_multimer_sequence(sequence: str) -> list[str]:
-    """Parse a colon-separated multimer sequence string.
-
-    A trailing colon is allowed, e.g. ``AAA:BBB:``.
-    """
-    parts = [part.strip() for part in sequence.split(":")]
-    while parts and parts[-1] == "":
-        parts.pop()
-    if not parts:
-        raise ValueError("At least one chain sequence is required.")
-    if any(part == "" for part in parts):
-        raise ValueError(
-            "Empty chain sequence found. Use one colon between chains and only "
-            "optional trailing colons."
-        )
-    return [_sanitize_sequence(part) for part in parts]
 
 
 def _chain_ids(num_chains: int) -> list[str]:
@@ -49,57 +33,116 @@ def _chain_ids(num_chains: int) -> list[str]:
     return chain_ids
 
 
+@dataclasses.dataclass(kw_only=True)
 class ProteinMultimerOutput(protein.ProteinMultimer):
     """A predicted protein complex with confidence scores."""
 
+    name: str
+    chains: list[protein.Protein]
+    seed: int | None = None
+    sample_index: int | None = None
     plddt: np.ndarray
     pae: np.ndarray
+    pde: np.ndarray
     ptm: float
+    iptm: float
+    chain_ptm: list[float] = dataclasses.field(default_factory=list)
+    interface_iptm: dict[tuple[int, int], float] = dataclasses.field(default_factory=dict)
 
-    def __init__(
-        self,
-        *,
-        name: str,
-        chains: list[protein.Protein],
-        plddt: np.ndarray,
-        pae: np.ndarray,
-        ptm: float,
-        entity_ids: list[int] | None = None,
-        asym_ids: list[int] | None = None,
-        sym_ids: list[int] | None = None,
-    ) -> None:
-        super().__init__(
-            name=name,
-            chains=chains,
-            entity_ids=entity_ids or [],
-            asym_ids=asym_ids or [],
-            sym_ids=sym_ids or [],
-        )
+    def __post_init__(self) -> None:
+        super().__post_init__()
         num_residues = self.num_residues
-        if plddt.shape != (num_residues,):
+        if self.plddt.shape != (num_residues,):
             raise ValueError(
-                f"Invalid pLDDT shape: {plddt.shape}. "
-                f"Expected ({num_residues},)."
+                f"Invalid pLDDT shape: {self.plddt.shape}. Expected ({num_residues},)."
             )
-        if pae.shape != (num_residues, num_residues):
+        if self.pae.shape != (num_residues, num_residues):
             raise ValueError(
-                f"Invalid PAE shape: {pae.shape}. "
+                f"Invalid PAE shape: {self.pae.shape}. "
                 f"Expected ({num_residues}, {num_residues})."
             )
-        self.plddt = plddt
-        self.pae = pae
-        self.ptm = ptm
+        if self.pde.shape != (num_residues, num_residues):
+            raise ValueError(
+                f"Invalid PDE shape: {self.pde.shape}. "
+                f"Expected ({num_residues}, {num_residues})."
+            )
+        if len(self.chain_ptm) != self.num_chains:
+            raise ValueError(
+                f"Invalid chain pTM length: {len(self.chain_ptm)}. "
+                f"Expected {self.num_chains}."
+            )
+        missing_interface_iptm = {
+            (chain_i, chain_j)
+            for chain_i in range(self.num_chains)
+            for chain_j in range(chain_i + 1, self.num_chains)
+            if (chain_i, chain_j) not in self.interface_iptm
+        }
+        if missing_interface_iptm:
+            raise ValueError(
+                f"Missing interface ipTM for chain pairs: {missing_interface_iptm}."
+            )
+
+    @property
+    def avg_plddt(self) -> float:
+        return self.plddt.mean().item() * 100
+
+    @property
+    def avg_pde(self) -> float:
+        return self.pde.mean().item()
+
+    @property
+    def ranking_score(self) -> float:
+        return 0.8 * self.iptm + 0.2 * float(self.ptm)
+
+    @functools.cached_property
+    def confidence_scores(self) -> dict:
+        complex_scores = {
+            "avg_plddt": self.avg_plddt,
+            "avg_pde": self.avg_pde,
+            "ptm": float(self.ptm),
+            "iptm": self.iptm,
+            "ranking_score": self.ranking_score,
+        }
+
+        chain_scores: dict[str, dict] = {}
+        chain_names = []
+        start = 0
+        for chain_idx, chain in enumerate(self.chains):
+            end = start + chain.num_residues
+            chain_mask = np.zeros(self.num_residues, dtype=bool)
+            chain_mask[start:end] = True
+            pair_mask = chain_mask[:, None] & chain_mask[None, :]
+            chain_scores[chain.name] = {
+                "avg_plddt": self.plddt[chain_mask].mean().item() * 100,
+                "avg_pde": self.pde[pair_mask].mean().item(),
+                "ptm": self.chain_ptm[chain_idx],
+            }
+            chain_names.append(chain.name)
+            start = end
+
+        interface_scores: dict[str, dict] = {}
+        for chain_i, chain_name_i in enumerate(chain_names):
+            for chain_j, chain_name_j in enumerate(
+                chain_names[chain_i + 1 :], chain_i + 1
+            ):
+                interface_scores[f"{chain_name_i}-{chain_name_j}"] = {
+                    "iptm": self.interface_iptm[(chain_i, chain_j)],
+                }
+
+        return {
+            "complex": complex_scores,
+            "chains": chain_scores,
+            "interfaces": interface_scores,
+        }
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class MultimerFoldBatchOutput:
-    """Outputs from one concrete batched multimer model call."""
+class MultimerFoldingOutput:
+    """Outputs for one folded target."""
 
-    bucket_length: int
-    batch_index: int
-    num_batches: int
-    inputs: list[tuple[int, str, list[str]]]
-    outputs: list[list[ProteinMultimerOutput]]
+    name: str
+    outputs: dict[SampleKey, ProteinMultimerOutput]
+    ranking: list[SampleKey]
 
 
 class MultimerFoldingRunner:
@@ -115,211 +158,88 @@ class MultimerFoldingRunner:
         sequence: str | Sequence[str],
         *,
         num_samples: int = 1,
-        preset: str = "base",
-        seed: int = 1,
-        num_recycles: int | None = None,
-        mlm_prob: float | None = None,
+        seeds: int | Sequence[int] = 1,
+        num_recycles: int = 10,
         sampling_config: SamplingConfig | None = None,
+        mlm_prob: float = 0.15,
         length_buckets: Sequence[int] | None = None,
-    ) -> list[ProteinMultimerOutput]:
-        return self.fold_batch(
-            [(name, sequence)],
-            num_samples=num_samples,
-            preset=preset,
-            seed=seed,
-            num_recycles=num_recycles,
-            mlm_prob=mlm_prob,
-            sampling_config=sampling_config,
-            length_buckets=length_buckets,
-        )[0]
+    ) -> MultimerFoldingOutput:
+        outputs = list(
+            self.iter_fold(
+                [(name, sequence)],
+                num_samples=num_samples,
+                seeds=seeds,
+                num_recycles=num_recycles,
+                mlm_prob=mlm_prob,
+                sampling_config=sampling_config,
+                length_buckets=length_buckets,
+            )
+        )
+        return outputs[0]
 
-    def fold_batch(
+    def iter_fold(
         self,
         inputs: Sequence[tuple[str, str | Sequence[str]]],
         *,
         num_samples: int = 1,
-        preset: str = "base",
-        seed: int = 1,
-        num_recycles: int | None = None,
-        mlm_prob: float | None = None,
+        seeds: int | Sequence[int] = 1,
+        num_recycles: int = 10,
         sampling_config: SamplingConfig | None = None,
+        mlm_prob: float = 0.15,
         length_buckets: Sequence[int] | None = None,
         max_tokens_per_batch: int = 1024,
-        disable_tqdm: bool = False,
-    ) -> list[list[ProteinMultimerOutput]]:
-        inputs = self._normalize_inputs(inputs)
-        outputs: list[list[ProteinMultimerOutput] | None] = [None] * len(inputs)
+    ) -> Iterator[MultimerFoldingOutput]:
+        seeds = [seeds] if isinstance(seeds, int) else list(seeds)
 
-        for batch_output in self.iter_fold_batches(
-            [(name, sequences) for _, name, sequences in inputs],
-            num_samples=num_samples,
-            preset=preset,
-            seed=seed,
-            num_recycles=num_recycles,
-            mlm_prob=mlm_prob,
-            sampling_config=sampling_config,
-            length_buckets=length_buckets,
-            max_tokens_per_batch=max_tokens_per_batch,
-            disable_tqdm=disable_tqdm,
-        ):
-            for (input_idx, _, _), sample_outputs in zip(
-                batch_output.inputs, batch_output.outputs, strict=True
-            ):
-                outputs[input_idx] = sample_outputs
-
-        completed_outputs = []
-        for output in outputs:
-            if output is None:
-                raise RuntimeError("Some batched folding outputs were not produced.")
-            completed_outputs.append(output)
-        return completed_outputs
-
-    def iter_fold_batches(
-        self,
-        inputs: Sequence[tuple[str, str | Sequence[str]]],
-        *,
-        num_samples: int = 1,
-        preset: str = "base",
-        seed: int = 1,
-        num_recycles: int | None = None,
-        mlm_prob: float | None = None,
-        sampling_config: SamplingConfig | None = None,
-        length_buckets: Sequence[int] | None = None,
-        max_tokens_per_batch: int = 1024,
-        disable_tqdm: bool = False,
-    ) -> Iterator[MultimerFoldBatchOutput]:
-        normalized_inputs = self._normalize_inputs(inputs)
-        if len(normalized_inputs) == 0:
-            return
+        if len(inputs) == 0:
+            raise ValueError("No inputs provided.")
+        if len(seeds) == 0:
+            raise ValueError("No seeds provided.")
         if num_samples <= 0:
             raise ValueError(f"num_samples must be positive, got {num_samples}.")
         if max_tokens_per_batch <= 0:
             raise ValueError(
                 f"max_tokens_per_batch must be positive, got {max_tokens_per_batch}."
             )
+        if sampling_config is None:
+            sampling_config = SamplingConfig(num_steps=200, sigma_max=160)
 
-        settings = self._get_run_settings(
-            preset=preset,
-            num_recycles=num_recycles,
-            mlm_prob=mlm_prob,
-            sampling_config=sampling_config,
-        )
+        normalized_inputs = self._normalize_inputs(inputs)
         bucketed_inputs = self._bucket_inputs(normalized_inputs, length_buckets)
-        batch_specs = self._make_batch_specs(bucketed_inputs, max_tokens_per_batch)
-
-        total_count = len(normalized_inputs)
-        curr_count = 0
-        with tqdm(
-            batch_specs,
-            desc="Folding multimers",
-            disable=disable_tqdm,
-            unit="batch",
-        ) as pbar:
-            num_batches = len(batch_specs)
-            for batch_idx, (bucket_length, chunk) in enumerate(pbar, start=1):
-                pbar.set_postfix(
-                    {
-                        "bucket": bucket_length,
-                        "batch_size": len(chunk),
-                        "progress": f"{curr_count}/{total_count}",
-                    }
-                )
-                complexes = [
-                    protein.ProteinMultimer.get_empty(name, sequences)
-                    for _, name, sequences in chunk
-                ]
-                feat = self._make_batch_features(complexes, bucket_length)
+        for bucket_length, complexes in self._iter_batch(
+            bucketed_inputs, max_tokens_per_batch
+        ):
+            batch_size = len(complexes)
+            batch = self._make_batch_features(complexes, bucket_length)
+            batch_outputs: list[dict[SampleKey, ProteinMultimerOutput]] = [
+                {} for _ in range(batch_size)
+            ]
+            for seed_value in seeds:
                 out = self.model_run(
-                    feat,
-                    seed=seed,
+                    batch,
+                    seed=seed_value,
                     num_samples=num_samples,
-                    **settings,
+                    num_recycles=num_recycles,
+                    mlm_prob=mlm_prob,
+                    sampling_config=sampling_config,
                 )
-                batch_outputs = [
-                    self._make_multimer_outputs(
-                        complex_input=complex_input,
-                        out=out,
-                        batch_idx=batch_item_idx,
-                        num_samples=num_samples,
+
+                for batch_i, complex_input in enumerate(complexes):
+                    batch_outputs[batch_i].update(
+                        self._make_outputs(
+                            complex_input=complex_input,
+                            out=out,
+                            batch_idx=batch_i,
+                            num_samples=num_samples,
+                            seed=seed_value,
+                        )
                     )
-                    for batch_item_idx, complex_input in enumerate(complexes)
-                ]
-                curr_count += len(chunk)
-                pbar.set_postfix(
-                    {
-                        "bucket": bucket_length,
-                        "batch_size": len(chunk),
-                        "progress": f"{curr_count}/{total_count}",
-                    }
+            for outputs in batch_outputs:
+                name = next(iter(outputs.values())).name
+                ranking = sorted(
+                    outputs.keys(), key=lambda k: outputs[k].ranking_score, reverse=True
                 )
-                yield MultimerFoldBatchOutput(
-                    bucket_length=bucket_length,
-                    batch_index=batch_idx,
-                    num_batches=num_batches,
-                    inputs=chunk,
-                    outputs=batch_outputs,
-                )
-
-    @staticmethod
-    def _normalize_inputs(
-        inputs: Sequence[tuple[str, str | Sequence[str]]],
-    ) -> list[tuple[int, str, list[str]]]:
-        normalized = []
-        for input_idx, (name, sequence) in enumerate(inputs):
-            if isinstance(sequence, str):
-                sequences = parse_multimer_sequence(sequence)
-            else:
-                sequences = [_sanitize_sequence(seq) for seq in sequence]
-            if any(len(seq) == 0 for seq in sequences):
-                raise ValueError(f"Input {input_idx} ({name!r}) has an empty chain.")
-            normalized.append((input_idx, name, sequences))
-        return normalized
-
-    @staticmethod
-    def _make_batch_specs(
-        bucketed_inputs: dict[int, list[tuple[int, str, list[str]]]],
-        max_tokens_per_batch: int,
-    ) -> list[tuple[int, list[tuple[int, str, list[str]]]]]:
-        batch_specs: list[tuple[int, list[tuple[int, str, list[str]]]]] = []
-        for bucket_length in sorted(bucketed_inputs):
-            bucket_items = bucketed_inputs[bucket_length]
-            batch_size = max(1, max_tokens_per_batch // bucket_length)
-            for start in range(0, len(bucket_items), batch_size):
-                batch_specs.append(
-                    (bucket_length, bucket_items[start : start + batch_size])
-                )
-        return batch_specs
-
-    def _get_run_settings(
-        self,
-        *,
-        preset: str,
-        num_recycles: int | None,
-        mlm_prob: float | None,
-        sampling_config: SamplingConfig | None,
-    ) -> dict:
-        if preset not in ["base", "high"]:
-            raise ValueError(f"Invalid preset for multimer inference: {preset}")
-
-        settings = self.get_preset_setting(preset)
-        settings["num_recycles"] = default(num_recycles, settings["num_recycles"])
-        settings["mlm_prob"] = default(mlm_prob, settings["mlm_prob"])
-        settings["sampling_config"] = default(
-            sampling_config, settings["sampling_config"]
-        )
-        return settings
-
-    def get_preset_setting(self, preset: str) -> dict:
-        num_recycles = 4
-        mlm_prob = 0.15
-        sampling_cfg = SamplingConfig(num_steps=100, sigma_max=160)
-        if preset == "high":
-            num_recycles = 8
-        return {
-            "num_recycles": num_recycles,
-            "mlm_prob": mlm_prob,
-            "sampling_config": sampling_cfg,
-        }
+                yield MultimerFoldingOutput(name=name, outputs=outputs, ranking=ranking)
 
     def model_run(
         self,
@@ -348,25 +268,56 @@ class MultimerFoldingRunner:
             )
         return {k: v.cpu().float().numpy() for k, v in out.items()}
 
+    @staticmethod
+    def _normalize_inputs(
+        inputs: Sequence[tuple[str, str | Sequence[str]]],
+    ) -> list[tuple[str, list[str]]]:
+        normalized: list[tuple[str, list[str]]] = []
+        for name, sequence in inputs:
+            if isinstance(sequence, str):
+                sequences = [
+                    _sanitize_sequence(seq) for seq in sequence.split(":") if seq.strip()
+                ]
+            else:
+                sequences = [_sanitize_sequence(seq) for seq in sequence]
+            if any(len(seq) == 0 for seq in sequences):
+                raise ValueError(f"Input ({name}) has an empty chain.")
+            normalized.append((name, sequences))
+        return normalized
+
     @classmethod
     def _bucket_inputs(
         cls,
-        inputs: Sequence[tuple[int, str, list[str]]],
+        inputs: Sequence[tuple[str, list[str]]],
         length_buckets: Sequence[int] | None,
-    ) -> dict[int, list[tuple[int, str, list[str]]]]:
-        bucketed_inputs: dict[int, list[tuple[int, str, list[str]]]] = {}
-        for input_idx, name, sequences in inputs:
+    ) -> dict[int, list[tuple[str, list[str]]]]:
+        bucketed_inputs: dict[int, list[tuple[str, list[str]]]] = defaultdict(list)
+        for name, sequences in inputs:
             length = sum(len(seq) for seq in sequences)
             if length == 0:
-                raise ValueError(f"Input {input_idx} ({name!r}) has no residues.")
-            bucket_length = cls.get_length_bucket(length, length_buckets)
-            bucketed_inputs.setdefault(bucket_length, []).append(
-                (input_idx, name, sequences)
-            )
+                raise ValueError(f"Input {name} has no residues.")
+            bucket_length = cls._get_length_bucket(length, length_buckets)
+            bucketed_inputs[bucket_length].append((name, sequences))
         return bucketed_inputs
 
+    def _iter_batch(
+        self,
+        bucketed_inputs: dict[int, list[tuple[str, list[str]]]],
+        max_tokens_per_batch: int,
+    ) -> Iterator[tuple[int, list[protein.ProteinMultimer]]]:
+        for bucket_length in sorted(bucketed_inputs):
+            bucket_items = bucketed_inputs[bucket_length]
+            batch_size = max(1, max_tokens_per_batch // bucket_length)
+            for start in range(0, len(bucket_items), batch_size):
+                chunk = bucket_items[start : start + batch_size]
+                complexes = [
+                    protein.ProteinMultimer.get_empty(name, sequences)
+                    for name, sequences in chunk
+                ]
+                yield bucket_length, complexes
+
     @staticmethod
-    def get_length_bucket(
+    def _get_length_bucket(
         length: int,
         length_buckets: Sequence[int] | None = None,
     ) -> int:
@@ -408,31 +359,41 @@ class MultimerFoldingRunner:
         ]
         lm_length = max(feat["lm.input_ids"].shape[0] for feat in feats)
         feats = [
-            cls.pad_to_lengths(feat, residue_length=bucket_length, lm_length=lm_length)
+            cls._pad_to_lengths(feat, residue_length=bucket_length, lm_length=lm_length)
             for feat in feats
         ]
         return {k: np.stack([feat[k] for feat in feats], axis=0) for k in feats[0]}
 
     @staticmethod
-    def _make_multimer_outputs(
+    def _make_outputs(
         *,
         complex_input: protein.ProteinMultimer,
         out: dict[str, np.ndarray],
         batch_idx: int,
         num_samples: int,
-    ) -> list[ProteinMultimerOutput]:
+        seed: int,
+    ) -> dict[SampleKey, ProteinMultimerOutput]:
         chain_lengths = [len(chain.sequence) for chain in complex_input.chains]
         total_length = sum(chain_lengths)
         chain_ids = _chain_ids(len(chain_lengths))
-        samples = []
+        chain_ranges = []
+        start = 0
+        for chain_length in chain_lengths:
+            end = start + chain_length
+            chain_ranges.append((start, end))
+            start = end
+        samples = {}
 
         for sample_idx in range(num_samples):
             coords = out["sample_coords"][batch_idx, sample_idx, :total_length]
             plddt = out["plddt"][batch_idx, sample_idx, :total_length]
             pae = out["pae"][batch_idx, sample_idx, :total_length, :total_length]
+            pde = out["pde"][batch_idx, sample_idx, :total_length, :total_length]
             ptm = float(out["ptm"][batch_idx, sample_idx].item())
+            iptm = float(out["iptm"][batch_idx, sample_idx].item())
 
-            chains = []
+            # Create Protein objects for each chain in the complex
+            chains: list[protein.Protein] = []
             start = 0
             for chain_id, chain_sequence, chain_length in zip(
                 chain_ids,
@@ -451,22 +412,63 @@ class MultimerFoldingRunner:
                 )
                 start = end
 
-            samples.append(
-                ProteinMultimerOutput(
-                    name=complex_input.name,
-                    chains=chains,
-                    entity_ids=complex_input.entity_ids,
-                    asym_ids=complex_input.asym_ids,
-                    sym_ids=complex_input.sym_ids,
-                    plddt=plddt,
-                    pae=pae,
-                    ptm=ptm,
+            pae_logits = torch.as_tensor(
+                out["pae_logits"][batch_idx, sample_idx, :total_length, :total_length]
+            )
+            pae_bin_centers = torch.as_tensor(out["pae_bin_centers"])
+
+            chain_ptm: list[float] = []
+            for start, end in chain_ranges:
+                chain_mask = torch.ones(end - start, dtype=torch.bool)
+                chain_ptm.append(
+                    confidence_metrics.compute_ptm(
+                        pae_logits[start:end, start:end],
+                        pae_bin_centers,
+                        chain_mask,
+                    ).item()
                 )
+
+            interface_iptm_dict: dict[tuple[int, int], float] = {}
+            for chain_i, (start_i, end_i) in enumerate(chain_ranges):
+                for chain_j, (start_j, end_j) in enumerate(
+                    chain_ranges[chain_i + 1 :], chain_i + 1
+                ):
+                    residue_idx = list(range(start_i, end_i)) + list(
+                        range(start_j, end_j)
+                    )
+                    interface_logits = pae_logits[residue_idx][:, residue_idx]
+                    interface_asym_id = torch.cat(
+                        [
+                            torch.zeros(end_i - start_i, dtype=torch.long),
+                            torch.ones(end_j - start_j, dtype=torch.long),
+                        ]
+                    )
+                    interface_mask = torch.ones(len(residue_idx), dtype=torch.bool)
+                    interface_iptm = confidence_metrics.compute_iptm(
+                        interface_logits,
+                        pae_bin_centers,
+                        interface_asym_id,
+                        interface_mask,
+                    ).item()
+                    interface_iptm_dict[(chain_i, chain_j)] = interface_iptm
+
+            samples[(seed, sample_idx)] = ProteinMultimerOutput(
+                name=complex_input.name,
+                chains=chains,
+                seed=seed,
+                sample_index=sample_idx,
+                plddt=plddt,
+                pae=pae,
+                pde=pde,
+                ptm=ptm,
+                iptm=iptm,
+                chain_ptm=chain_ptm,
+                interface_iptm=interface_iptm_dict,
             )
         return samples
 
     @staticmethod
-    def pad_to_lengths(
+    def _pad_to_lengths(
         feat: dict[str, np.ndarray],
         *,
         residue_length: int,
@@ -485,7 +487,7 @@ class MultimerFoldingRunner:
             pad_len = target_length - v.shape[0]
             if pad_len < 0:
                 raise ValueError(
-                    f"Feature {k!r} has length {v.shape[0]}, which exceeds "
+                    f"Feature {k} has length {v.shape[0]}, which exceeds "
                     f"target length {target_length}."
                 )
             if pad_len == 0:
