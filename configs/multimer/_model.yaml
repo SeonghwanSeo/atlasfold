@@ -41,8 +41,6 @@ confidence_head:
   num_bins: 39
   min_dist: 3.25
   max_dist: 50.75
-  has_pae_head: true
-  has_pde_head: true
   num_plddt_bins: 50
   max_pae_error: 32.0
   num_pae_bins: 64

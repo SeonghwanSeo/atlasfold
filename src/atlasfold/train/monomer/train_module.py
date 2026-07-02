@@ -197,16 +197,6 @@ class TrainingModule(pl.LightningModule):
             for m in module_groups[group]:
                 m.requires_grad_(False)
 
-    def train(self, mode: bool = True):
-        """Override train() to set sub-modules to eval mode if frozen."""
-        out = super().train(mode)
-        module_groups = self.model.get_module_groups()
-        for group in self.modules_to_freeze:
-            for m in module_groups[group]:
-                if isinstance(m, torch.nn.Module):
-                    m.eval()
-        return out
-
     def setup_losses(self):
         """Setup loss functions for training"""
         loss_config = self.loss_config
@@ -659,7 +649,7 @@ class TrainingModule(pl.LightningModule):
         checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
-        self.load_ema_state_dict(checkpoint["ema"], strict=True)
+        self.load_ema_state_dict(checkpoint["ema"], strict=False)
 
     def load_state_dict(
         self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False

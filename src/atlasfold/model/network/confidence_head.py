@@ -161,7 +161,178 @@ class PredictedDistanceErrorHead(nn.Module):
         return self.head(z.float())  # [B, L, L, num_bins]
 
 
-class ConfidenceHead(nn.Module):
+class ConfidenceHead_Monomer(nn.Module):
+    def __init__(
+        self,
+        channel_s: int = 384,
+        channel_z: int = 128,
+        num_heads: int = 16,
+        num_tri_heads: int = 4,
+        num_blocks: int = 2,
+        dropout_z: float = 0.25,
+        # distogram bins
+        num_bins: int = 39,
+        min_dist: float = 3.25,
+        max_dist: float = 50.75,
+        # head dimensions
+        num_plddt_bins: int = 50,
+        num_pae_bins: int = 64,
+        max_pae_error: float = 32.0,
+        # for train
+        blocks_per_ckpt: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.embed_aa = LinearNoBias(21, channel_z)
+
+        # Prepare pair representation with distogram features
+        self.num_bins: int = num_bins
+        self.min_dist: float = min_dist
+        self.max_dist: float = max_dist
+        self.linear_distogram = LinearNoBias(num_bins, channel_z, init="default")
+
+        # Attention stack for confidence prediction
+        self.single_stack: PairStack = PairStack(
+            channel_s=channel_s,
+            channel_z=channel_z,
+            num_heads_attn=num_heads,
+            num_heads_tri_attn=num_tri_heads,
+            dropout_z=dropout_z,
+            num_blocks=num_blocks,
+            single_to_pair=False,
+            pair_to_pair=True,
+            pair_to_single=True,
+            blocks_per_ckpt=blocks_per_ckpt,
+        )
+        self.num_plddt_bins: int = num_plddt_bins
+        self.plddt_head = PredictedLDDTHead(channel_s, num_plddt_bins)
+        self.experimentally_resolved_head = ExperimentallyResolvedHead(channel_s)
+
+        self.pair_stack: PairStack = PairStack(
+            channel_s=channel_s,
+            channel_z=channel_z,
+            num_heads_attn=num_heads,
+            num_heads_tri_attn=num_tri_heads,
+            dropout_z=dropout_z,
+            num_blocks=num_blocks,
+            single_to_pair=False,
+            pair_to_pair=True,
+            pair_to_single=False,
+            blocks_per_ckpt=blocks_per_ckpt,
+        )
+        self.num_pae_bins: int = num_pae_bins
+        self.max_pae_error: float = max_pae_error
+        self.pae_head = PredictedAlignedErrorHead(channel_z, num_pae_bins)
+
+    def forward(
+        self,
+        batch: dict[str, torch.Tensor],
+        s: torch.Tensor,
+        z: torch.Tensor,
+        x_pred: torch.Tensor,
+        use_cuequiv_kernels: bool = False,
+    ) -> dict[str, dict[str, torch.Tensor]]:
+        """Forward pass of confidence head module.
+
+        Parameters
+        ----------
+        batch : dict[str, torch.Tensor]
+            The input batch.
+        s : torch.Tensor
+            The single representation, shape [B, L, c_s].
+        z : torch.Tensor
+            The pair representation, shape [B, L, L, c_z].
+        x_pred: torch.Tensor
+            The predicted coordinates, shape (B, N, L, 14, 3).
+        use_cuequiv_kernels : bool, optional
+            Whether to use cuEQUIV kernels, by default False.
+
+        Returns
+        -------
+        plddt_logits: torch.Tensor
+            The predicted local distance difference test (lDDT-Calpha) logits,
+            shape [B, N, L, num_plddt_bins].
+        experimentally_resolved_logits: torch.Tensor
+            The predicted resolved atom logits, shape [B, N, L, 37].
+        pae_logits: torch.Tensor
+            The predicted aligned error (PAE) logits, shape [B, N, L, L, num_pae_bins].
+        """
+        # Detach the inputs to prevent gradients from flowing into the trunk
+        s, z, x_pred = map(lambda x: x.detach(), (s, z, x_pred))
+
+        # Cast the inputs to the appropriate dtype
+        device = s.device
+        dtype = get_context_dtype(device.type)
+        s, z = s.to(dtype), z.to(dtype)
+
+        aa_emb = self.embed_aa(batch["aatype"])  # [B, L, c_z]
+        z = z + aa_emb[:, :, None, :] + aa_emb[:, None, :, :]
+
+        # Prepare the mask
+        mask = batch["seq_mask"]  # [B, L]
+
+        # Distogram boundaries
+        distogram_boundaries = torch.linspace(
+            self.min_dist, self.max_dist, self.num_bins - 1, device=device
+        )
+
+        def compute_confidences_single(
+            s: torch.Tensor,
+            z: torch.Tensor,
+            mask: torch.Tensor,
+            coords: torch.Tensor,
+        ) -> dict[str, torch.Tensor]:
+            # Clone the representations to avoid in-place modifications
+            s = s.clone()
+
+            # Prepare pair representation with distogram features
+            # Since z is updated with distogram features, we don't need to clone it
+            cbeta_idx = batch["pseudo_beta"]  # [B, L]
+            distogram = get_distogram(coords, cbeta_idx, distogram_boundaries)
+            z = z + self.linear_distogram(distogram.to(z.dtype))  # [B, L, L, c_z]
+
+            # Run the stack
+            _s, _ = self.single_stack(s, z.clone(), mask, use_cuequiv_kernels)
+            _, _z = self.pair_stack(None, z.clone(), mask, use_cuequiv_kernels)
+            s, z = _s.float(), _z.float()
+            del _s, _z
+
+            # Compute the confidence logits
+            logits = {}
+            with torch.autocast(device.type, enabled=False):
+                logits["plddt"] = self.plddt_head(s)
+                logits["experimentally_resolved"] = self.experimentally_resolved_head(s)
+                logits["pae"] = self.pae_head(z)
+            return logits
+
+        B, N, L, _, _ = x_pred.shape
+        if N == 1:
+            logits = compute_confidences_single(s, z, mask, x_pred[:, 0])
+            plddt_logits = logits["plddt"].unsqueeze(1)
+            exp_resolved_logits = logits["experimentally_resolved"].unsqueeze(1)
+            pae_logits = logits["pae"].unsqueeze(1)
+        else:
+            plddt_logits = torch.zeros(B, N, L, self.num_plddt_bins, device=device)
+            exp_resolved_logits = torch.zeros(B, N, L, 37, device=device)
+            pae_logits = torch.zeros(B, N, L, L, self.num_pae_bins, device=device)
+            for i in range(N):
+                logits = compute_confidences_single(s, z, mask, x_pred[:, i])
+                plddt_logits[:, i] = logits["plddt"]
+                exp_resolved_logits[:, i] = logits["experimentally_resolved"]
+                pae_logits[:, i] = logits["pae"]
+
+        out: dict[str, dict[str, torch.Tensor]] = {}
+        out["experimentally_resolved"] = {"logits": exp_resolved_logits}
+        plddt_bin_centers = get_bin_centers(0.0, 1.0, self.num_plddt_bins, device=device)
+        out["plddt"] = {"logits": plddt_logits, "bin_centers": plddt_bin_centers}
+        pae_bin_centers = get_bin_centers(
+            0.0, self.max_pae_error, self.num_pae_bins, device=device
+        )
+        out["pae"] = {"logits": pae_logits, "bin_centers": pae_bin_centers}
+
+        return out
+
+
+class ConfidenceHead_Multimer(nn.Module):
     def __init__(
         self,
         channel_s: int = 384,
@@ -170,9 +341,6 @@ class ConfidenceHead(nn.Module):
         num_tri_heads: int = 4,
         num_blocks: int = 4,
         dropout_z: float = 0.25,
-        # heads
-        has_pae_head: bool = True,
-        has_pde_head: bool = True,
         # distogram bins
         num_bins: int = 39,
         min_dist: float = 3.25,
@@ -213,21 +381,20 @@ class ConfidenceHead(nn.Module):
             blocks_per_ckpt=blocks_per_ckpt,
         )
 
-        self.has_pae_head: bool = has_pae_head
-        self.has_pde_head: bool = has_pde_head
-
+        # plddt
         self.num_plddt_bins: int = num_plddt_bins
         self.plddt_head = PredictedLDDTHead(channel_s, num_plddt_bins)
         self.experimentally_resolved_head = ExperimentallyResolvedHead(channel_s)
 
-        if self.has_pae_head:
-            self.num_pae_bins: int = num_pae_bins
-            self.max_pae_error: float = max_pae_error
-            self.pae_head = PredictedAlignedErrorHead(channel_z, num_pae_bins)
-        if self.has_pde_head:
-            self.num_pde_bins: int = num_pde_bins
-            self.max_pde_error: float = max_pde_error
-            self.pde_head = PredictedDistanceErrorHead(channel_z, num_pde_bins)
+        # pae
+        self.num_pae_bins: int = num_pae_bins
+        self.max_pae_error: float = max_pae_error
+        self.pae_head = PredictedAlignedErrorHead(channel_z, num_pae_bins)
+
+        # pde
+        self.num_pde_bins: int = num_pde_bins
+        self.max_pde_error: float = max_pde_error
+        self.pde_head = PredictedDistanceErrorHead(channel_z, num_pde_bins)
 
     def forward(
         self,
@@ -267,7 +434,7 @@ class ConfidenceHead(nn.Module):
         # Detach the inputs to prevent gradients from flowing into the trunk
         s, z, x_pred = map(lambda x: x.detach(), (s, z, x_pred))
 
-        # Get the device and dtype for computations
+        # Cast the inputs to the appropriate dtype
         device = s.device
         dtype = get_context_dtype(device.type)
         s, z = s.to(dtype, copy=True), z.to(dtype, copy=True)
@@ -281,10 +448,7 @@ class ConfidenceHead(nn.Module):
         mask = batch["seq_mask"]  # [B, L]
 
         distogram_boundaries = torch.linspace(
-            self.min_dist,
-            self.max_dist,
-            self.num_bins - 1,
-            device=device,
+            self.min_dist, self.max_dist, self.num_bins - 1, device=device
         )
 
         def compute_confidences_single(
@@ -293,10 +457,11 @@ class ConfidenceHead(nn.Module):
             mask: torch.Tensor,
             coords: torch.Tensor,
         ) -> dict[str, torch.Tensor]:
+            # Clone the representations to avoid in-place modifications
             s = s.clone()
-            z = z.clone()
 
             # Prepare pair representation with distogram features
+            # Since z is updated with distogram features, we don't need to clone it
             cbeta_idx = batch["pseudo_beta"]  # [B, L]
             distogram = get_distogram(coords, cbeta_idx, distogram_boundaries)
             z = z + self.linear_distogram(distogram.to(z.dtype))  # [B, L, L, c_z]
@@ -308,13 +473,10 @@ class ConfidenceHead(nn.Module):
             # Compute the confidence logits
             logits = {}
             with torch.autocast(device.type, enabled=False):
-                s = s.float()
                 logits["plddt"] = self.plddt_head(s)
                 logits["experimentally_resolved"] = self.experimentally_resolved_head(s)
-                if self.has_pae_head:
-                    logits["pae"] = self.pae_head(z)
-                if self.has_pde_head:
-                    logits["pde"] = self.pde_head(z)
+                logits["pae"] = self.pae_head(z)
+                logits["pde"] = self.pde_head(z)
             return logits
 
         B, N, L, _, _ = x_pred.shape
@@ -322,40 +484,32 @@ class ConfidenceHead(nn.Module):
             logits = compute_confidences_single(s, z, mask, x_pred[:, 0])
             plddt_logits = logits["plddt"].unsqueeze(1)
             exp_resolved_logits = logits["experimentally_resolved"].unsqueeze(1)
-            if self.has_pae_head:
-                pae_logits = logits["pae"].unsqueeze(1)
-            if self.has_pde_head:
-                pde_logits = logits["pde"].unsqueeze(1)
+            pae_logits = logits["pae"].unsqueeze(1)
+            pde_logits = logits["pde"].unsqueeze(1)
         else:
             plddt_logits = torch.zeros(B, N, L, self.num_plddt_bins, device=device)
             exp_resolved_logits = torch.zeros(B, N, L, 37, device=device)
-            if self.has_pae_head:
-                pae_logits = torch.zeros(B, N, L, L, self.num_pae_bins, device=device)
-            if self.has_pde_head:
-                pde_logits = torch.zeros(B, N, L, L, self.num_pde_bins, device=device)
+            pae_logits = torch.zeros(B, N, L, L, self.num_pae_bins, device=device)
+            pde_logits = torch.zeros(B, N, L, L, self.num_pde_bins, device=device)
 
             for i in range(N):
                 logits = compute_confidences_single(s, z, mask, x_pred[:, i])
                 plddt_logits[:, i] = logits["plddt"]
                 exp_resolved_logits[:, i] = logits["experimentally_resolved"]
-                if self.has_pae_head:
-                    pae_logits[:, i] = logits["pae"]
-                if self.has_pde_head:
-                    pde_logits[:, i] = logits["pde"]
+                pae_logits[:, i] = logits["pae"]
+                pde_logits[:, i] = logits["pde"]
 
         out: dict[str, dict[str, torch.Tensor]] = {}
         out["experimentally_resolved"] = {"logits": exp_resolved_logits}
         plddt_bin_centers = get_bin_centers(0.0, 1.0, self.num_plddt_bins, device=device)
         out["plddt"] = {"logits": plddt_logits, "bin_centers": plddt_bin_centers}
-        if self.has_pae_head:
-            pae_bin_centers = get_bin_centers(
-                0.0, self.max_pae_error, self.num_pae_bins, device=device
-            )
-            out["pae"] = {"logits": pae_logits, "bin_centers": pae_bin_centers}
-        if self.has_pde_head:
-            pde_bin_centers = get_bin_centers(
-                0.0, self.max_pde_error, self.num_pde_bins, device=device
-            )
-            out["pde"] = {"logits": pde_logits, "bin_centers": pde_bin_centers}
+        pae_bin_centers = get_bin_centers(
+            0.0, self.max_pae_error, self.num_pae_bins, device=device
+        )
+        out["pae"] = {"logits": pae_logits, "bin_centers": pae_bin_centers}
+        pde_bin_centers = get_bin_centers(
+            0.0, self.max_pde_error, self.num_pde_bins, device=device
+        )
+        out["pde"] = {"logits": pde_logits, "bin_centers": pde_bin_centers}
 
         return out

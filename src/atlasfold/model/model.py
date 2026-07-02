@@ -53,18 +53,14 @@ class ConfidenceHeadConfig:
     num_heads: int = 16
     num_tri_heads: int = 4
     dropout_z: float = 0.25
-    num_blocks: int = 4
+    num_blocks: int = 2
     num_bins: int = 39
     min_dist: float = 3.25
     max_dist: float = 50.75
     # heads
-    has_pae_head: bool = True
-    has_pde_head: bool = False
+    num_plddt_bins: int = 50
     max_pae_error: float = 32.0
     num_pae_bins: int = 64
-    max_pde_error: float = 32.0
-    num_pde_bins: int = 64
-    num_plddt_bins: int = 50
     blocks_per_ckpt: int | None = None
 
 
@@ -202,7 +198,7 @@ class AtlasFold(torch.nn.Module):
         )
 
         # === Confidence prediction head === #
-        self.confidence_head = confidence_head.ConfidenceHead(
+        self.confidence_head = confidence_head.ConfidenceHead_Monomer(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
             **dataclasses.asdict(cfg.confidence_head),
