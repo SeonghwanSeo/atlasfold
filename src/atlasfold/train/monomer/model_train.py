@@ -45,12 +45,7 @@ class AtlasFoldForTrain(AtlasFold):
             "distogram_head": [self.distogram_head],
             "diffusion_head": [self.diffusion_head],
             "confidence_head": [self.confidence_head],
-            "pde_head": [self.confidence_head.pde_head]
-            if hasattr(self.confidence_head, "pde_head")
-            else [],
-            "pae_head": [self.confidence_head.pae_head]
-            if hasattr(self.confidence_head, "pae_head")
-            else [],
+            "pae_head": [self.confidence_head.pae_head],
         }
 
     def get_module_group_names(self) -> dict[str, list[str]]:
@@ -79,12 +74,7 @@ class AtlasFoldForTrain(AtlasFold):
             "distogram_head": ["distogram_head"],
             "diffusion_head": ["diffusion_head"],
             "confidence_head": ["confidence_head"],
-            "pde_head": ["confidence_head.pde_head"]
-            if hasattr(self.confidence_head, "pde_head")
-            else [],
-            "pae_head": ["confidence_head.pae_head"]
-            if hasattr(self.confidence_head, "pae_head")
-            else [],
+            "pae_head": ["confidence_head.pae_head"],
         }
 
     # ==================================================

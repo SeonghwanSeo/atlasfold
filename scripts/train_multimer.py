@@ -234,6 +234,7 @@ def train(args: argparse.Namespace) -> None:
 
     cfg = parse_config(args)
     trainer = build_trainer(cfg, args.debug)
+    is_global_zero = trainer.is_global_zero
 
     pl.seed_everything(cfg.train.seed, workers=True, verbose=False)
 
@@ -259,9 +260,37 @@ def train(args: argparse.Namespace) -> None:
         ckpt = torch.load(args.resume_from_checkpoint, map_location="cpu")
 
         if cfg.train.init_from_ema:
+            live_weights = ckpt["state_dict"]
             ema_weights = {k: v for k, v in ckpt["ema"]["params"].items()}
             ema_weights = {f"model.{k}": v for k, v in ema_weights.items()}
-            ckpt["state_dict"].update(ema_weights)
+
+            module_group_names = model_module.model.get_module_group_names()
+
+            keys_to_replace = []
+            for module_name in cfg.train.init_from_ema:
+                assert module_name in module_group_names, (
+                    f"Module '{module_name}' not found in model. "
+                    f"Available moduels: {module_group_names}"
+                )
+                for submodule in module_group_names[module_name]:
+                    module_to_replace = f"model.{submodule}"
+                    keys_to_replace.append(module_to_replace)
+            keys_to_replace = tuple(keys_to_replace)
+            if is_global_zero:
+                logging.info(
+                    f"Replacing the following modules with EMA weights: {keys_to_replace}"
+                )
+
+            is_replaced = []
+            for k, v in ema_weights.items():
+                if not k.startswith(keys_to_replace):
+                    continue
+                is_replaced.append(k)
+                live_weights[k] = v
+            if is_global_zero:
+                logging.info(
+                    f"Replaced {len(is_replaced)} keys with EMA weights: {is_replaced}"
+                )
 
         model_module.load_state_dict(ckpt["state_dict"], strict=True)
         if "ema" in ckpt:

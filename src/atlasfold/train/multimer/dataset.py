@@ -224,7 +224,7 @@ class LMDBDataset(torch.utils.data.Dataset):
         else:
             with io.BytesIO(npz_bytes) as f:
                 prot = MonomerDataPipeline.load(f)
-            compl = protein.ProteinMultimer(prot.name, [prot])
+            compl = protein.ProteinMultimer(name=prot.name, chains=[prot])
         return compl
 
     def fetch_template(self, key: str) -> protein.Protein:
