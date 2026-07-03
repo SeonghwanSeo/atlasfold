@@ -57,7 +57,7 @@ class MultimerDataPipeline:
                 for i in range(num_chains)
             ]
 
-        return protein.ProteinMultimer(name, chains)
+        return protein.ProteinMultimer(name=name, chains=chains)
 
 
 def pad_input(
