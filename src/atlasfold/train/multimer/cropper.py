@@ -11,10 +11,12 @@ class MultimerCropper:
         prob_spatial: float = 0.4,
         prob_interface_spatial: float = 0.4,
         prob_contiguous: float = 0.2,
+        max_contiguous_chains: int = 10,
     ):
         self.prob_spatial: float = prob_spatial
         self.prob_interface_spatial: float = prob_interface_spatial
         self.prob_contiguous: float = prob_contiguous
+        self.max_contiguous_chains: int = max_contiguous_chains
 
     def crop(
         self,
@@ -74,16 +76,23 @@ class MultimerCropper:
             chain_starts[asym_id] = st
             st += chain_sizes[asym_id]
 
-        # Randomly permute the chain order
+        # Randomly pick an anchor chain, then keep only nearby chain candidates.
+        chain_centers = self._get_chain_centers(compl)
         selected_asym_ids = rng.permutation(asym_ids)
+        anchor_asym_id = selected_asym_ids[0]
+        selected_asym_ids = self._select_nearby_contiguous_chains(
+            selected_asym_ids,
+            anchor_asym_id,
+            asym_ids,
+            chain_centers,
+        )
 
         # Line 1
         n_added: int = 0
         # Line 2
         n_remaining: int = sum(chain_sizes[asym_id] for asym_id in selected_asym_ids)
         is_selected: dict[int, np.ndarray] = {
-            asym_id: np.zeros(chain_sizes[asym_id], dtype=bool)
-            for asym_id in selected_asym_ids
+            asym_id: np.zeros(chain_sizes[asym_id], dtype=bool) for asym_id in asym_ids
         }
 
         # Line 3-13
@@ -122,6 +131,65 @@ class MultimerCropper:
             indices_list.append(np.where(is_selected[asym_id])[0])
 
         return indices_list
+
+    @staticmethod
+    def _get_chain_centers(
+        compl: protein.ProteinMultimer,
+    ) -> list[np.ndarray | None]:
+        chain_centers = []
+        for chain in compl.chains:
+            ca_coords = chain.coordinates[:, 1, :]
+            ca_mask = np.isfinite(ca_coords).all(axis=-1)
+            if np.any(ca_mask):
+                chain_centers.append(ca_coords[ca_mask].mean(axis=0))
+            else:
+                chain_centers.append(None)
+        return chain_centers
+
+    def _select_nearby_contiguous_chains(
+        self,
+        selected_asym_ids: np.ndarray,
+        anchor_asym_id: int,
+        asym_ids: list[int],
+        chain_centers: list[np.ndarray | None],
+    ) -> np.ndarray:
+        max_chains = self.max_contiguous_chains
+        if len(selected_asym_ids) <= max_chains:
+            return selected_asym_ids
+
+        asym_to_chain_idx = {
+            asym_id: chain_idx for chain_idx, asym_id in enumerate(asym_ids)
+        }
+        anchor_center = chain_centers[asym_to_chain_idx[anchor_asym_id]]
+        if anchor_center is None:
+            return selected_asym_ids[:max_chains]
+
+        perm_order = {
+            asym_id: order for order, asym_id in enumerate(selected_asym_ids.tolist())
+        }
+        chain_distances = []
+        for asym_id in selected_asym_ids:
+            chain_idx = asym_to_chain_idx[asym_id]
+            if asym_id == anchor_asym_id:
+                distance = 0.0
+            else:
+                center = chain_centers[chain_idx]
+                if center is not None:
+                    distance = float(np.linalg.norm(anchor_center - center))
+                else:
+                    distance = float("inf")
+            chain_distances.append((distance, perm_order[asym_id], asym_id))
+
+        nearest_asym_ids = {
+            asym_id
+            for _, _, asym_id in sorted(chain_distances, key=lambda x: (x[0], x[1]))[
+                :max_chains
+            ]
+        }
+        return np.asarray(
+            [asym_id for asym_id in selected_asym_ids if asym_id in nearest_asym_ids],
+            dtype=selected_asym_ids.dtype,
+        )
 
     def _crop_spatial(
         self,
