@@ -11,12 +11,14 @@ class MultimerCropper:
         prob_spatial: float = 0.4,
         prob_interface_spatial: float = 0.4,
         prob_contiguous: float = 0.2,
-        max_contiguous_chains: int = 10,
+        max_contiguous_chains: int = 6,
+        min_cropped_chain_length: int = 4,
     ):
         self.prob_spatial: float = prob_spatial
         self.prob_interface_spatial: float = prob_interface_spatial
         self.prob_contiguous: float = prob_contiguous
         self.max_contiguous_chains: int = max_contiguous_chains
+        self.min_cropped_chain_length: int = min_cropped_chain_length
 
     def crop(
         self,
@@ -55,7 +57,16 @@ class MultimerCropper:
             indices_list = self._crop_interface_spatial(
                 compl, m, max_length, bias_chain_id, rng
             )
-        return [np.sort(indices) for indices in indices_list]
+
+        # Filter out chain fragments that are too short
+        min_length = self.min_cropped_chain_length
+        processed = []
+        for indices in indices_list:
+            indices = np.sort(indices)
+            if 0 < len(indices) < min_length:
+                indices = np.array([], dtype=indices.dtype)
+            processed.append(indices)
+        return processed
 
     def _crop_contiguous(
         self,
