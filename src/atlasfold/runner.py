@@ -1,6 +1,7 @@
 import contextlib
 import dataclasses
 from collections.abc import Iterator, Sequence
+from typing import TypeAlias
 
 import numpy as np
 import torch
@@ -9,6 +10,18 @@ from atlasfold.common import featurize, protein, residue_constants
 from atlasfold.model import AtlasFold, SamplingConfig
 
 SampleKey = tuple[int, int]
+
+
+@dataclasses.dataclass(frozen=True)
+class FoldingInput:
+    """Input for one monomer folding target."""
+
+    name: str
+    sequence: str
+    chain_id: str = "A"
+
+
+FoldingInputLike: TypeAlias = FoldingInput | tuple[str, str]
 
 
 def _sanitize_sequence(sequence: str) -> str:
@@ -114,6 +127,7 @@ class FoldingRunner:
         name: str,
         sequence: str,
         *,
+        chain_id: str | None = None,
         num_samples: int = 1,
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 4,
@@ -124,7 +138,7 @@ class FoldingRunner:
     ) -> FoldingOutput:
         outputs = list(
             self.iter_fold_batch(
-                [(name, sequence)],
+                [FoldingInput(name, sequence, chain_id or "A")],
                 num_samples=num_samples,
                 seeds=seeds,
                 num_recycles=num_recycles,
@@ -138,7 +152,7 @@ class FoldingRunner:
 
     def iter_fold_batch(
         self,
-        inputs: Sequence[tuple[str, str]],
+        inputs: Sequence[FoldingInputLike],
         *,
         num_samples: int = 1,
         seeds: int | Sequence[int] = 1,
@@ -171,7 +185,7 @@ class FoldingRunner:
             bucketed_inputs,
             max_tokens_per_batch,
         ):
-            sequences = [sequence for _, sequence in chunk]
+            sequences = [item.sequence for item in chunk]
             feat = self._make_batch_features(sequences, bucket_length)
 
             batch_outputs: list[dict[SampleKey, ProteinOutput]] = [{} for _ in chunk]
@@ -186,11 +200,12 @@ class FoldingRunner:
                     sampling_config=sampling_config,
                 )
 
-                for batch_item_idx, (name, sequence) in enumerate(chunk):
+                for batch_item_idx, item in enumerate(chunk):
                     batch_outputs[batch_item_idx].update(
                         self._make_outputs(
-                            name=name,
-                            sequence=sequence,
+                            name=item.name,
+                            sequence=item.sequence,
+                            chain_id=item.chain_id,
                             out=out,
                             batch_idx=batch_item_idx,
                             num_samples=num_samples,
@@ -237,33 +252,44 @@ class FoldingRunner:
 
     @staticmethod
     def _normalize_inputs(
-        inputs: Sequence[tuple[str, str]],
-    ) -> list[tuple[str, str]]:
-        normalized: list[tuple[str, str]] = []
-        for name, sequence in inputs:
-            sequence = _sanitize_sequence(sequence)
+        inputs: Sequence[FoldingInputLike],
+    ) -> list[FoldingInput]:
+        normalized: list[FoldingInput] = []
+        for item in inputs:
+            if isinstance(item, FoldingInput):
+                name = item.name
+                sequence = item.sequence
+                chain_id = item.chain_id
+            else:
+                name, sequence = item
+                chain_id = "A"
+
+            chain_id = str(chain_id).strip()
+            sequence = _sanitize_sequence(str(sequence))
             if len(sequence) == 0:
                 raise ValueError(f"Input ({name}) has an empty sequence.")
-            normalized.append((name, sequence))
+            if not chain_id:
+                raise ValueError(f"Input ({name}) has an empty chain ID.")
+            normalized.append(FoldingInput(str(name), sequence, chain_id))
         return normalized
 
     @classmethod
     def _bucket_inputs(
         cls,
-        inputs: Sequence[tuple[str, str]],
+        inputs: Sequence[FoldingInput],
         length_buckets: Sequence[int] | None,
-    ) -> dict[int, list[tuple[str, str]]]:
-        bucketed_inputs: dict[int, list[tuple[str, str]]] = {}
-        for name, sequence in inputs:
-            bucket_length = cls._get_length_bucket(len(sequence), length_buckets)
-            bucketed_inputs.setdefault(bucket_length, []).append((name, sequence))
+    ) -> dict[int, list[FoldingInput]]:
+        bucketed_inputs: dict[int, list[FoldingInput]] = {}
+        for item in inputs:
+            bucket_length = cls._get_length_bucket(len(item.sequence), length_buckets)
+            bucketed_inputs.setdefault(bucket_length, []).append(item)
         return bucketed_inputs
 
     @staticmethod
     def _iter_batch(
-        bucketed_inputs: dict[int, list[tuple[str, str]]],
+        bucketed_inputs: dict[int, list[FoldingInput]],
         max_tokens_per_batch: int,
-    ) -> Iterator[tuple[int, list[tuple[str, str]]]]:
+    ) -> Iterator[tuple[int, list[FoldingInput]]]:
         for bucket_length in sorted(bucketed_inputs):
             bucket_items = bucketed_inputs[bucket_length]
             batch_size = max(1, max_tokens_per_batch // bucket_length)
@@ -317,6 +343,7 @@ class FoldingRunner:
         *,
         name: str,
         sequence: str,
+        chain_id: str,
         out: dict[str, np.ndarray],
         batch_idx: int,
         num_samples: int,
@@ -334,6 +361,7 @@ class FoldingRunner:
             sample = ProteinOutput(
                 name=name,
                 sequence=sequence,
+                chain_id=chain_id,
                 seed=seed,
                 sample_index=sample_idx,
                 coordinates=coords,

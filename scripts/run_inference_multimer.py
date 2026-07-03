@@ -9,7 +9,11 @@ import torch
 
 from atlasfold.data.fasta import read_fasta
 from atlasfold.model import AtlasFold_Multimer, SamplingConfig
-from atlasfold.runner_multimer import MultimerFoldingOutput, MultimerFoldingRunner
+from atlasfold.runner_multimer import (
+    MultimerFoldingOutput,
+    MultimerFoldingRunner,
+    MultimerInput,
+)
 
 logger = logging.getLogger("atlasfold.multimer")
 
@@ -78,6 +82,12 @@ def create_parser() -> argparse.ArgumentParser:
         help="Number of recycling iterations.",
     )
     parser.add_argument(
+        "--mlm-prob",
+        type=float,
+        default=0.15,
+        help="LM masking probability used during recycling.",
+    )
+    parser.add_argument(
         "--num-samples",
         type=int,
         default=5,
@@ -122,6 +132,14 @@ def create_parser() -> argparse.ArgumentParser:
         help="Structure file format for sample and ranked outputs.",
     )
     parser.add_argument(
+        "--use-fasta-chain-ids",
+        action="store_true",
+        help=(
+            "Read optional chain_ids=... metadata from FASTA headers. "
+            "The IDs must match ':'-separated chains in order."
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Recompute targets even when outputs already exist.",
@@ -136,20 +154,94 @@ def safe_target_name(name: str) -> str:
     return safe_name
 
 
-def load_inputs(args: argparse.Namespace) -> list[tuple[str, str]]:
+def parse_fasta_header(
+    header: str,
+    use_fasta_chain_ids: bool,
+) -> tuple[str, list[str] | None]:
+    fields = header.split()
+    if len(fields) == 0:
+        raise ValueError(f"Invalid FASTA header: {header!r}")
+
+    name = safe_target_name(fields[0])
+    chain_ids = None
+    if use_fasta_chain_ids:
+        for field in fields[1:]:
+            key, sep, value = field.partition("=")
+            if not sep or key != "chain_ids":
+                raise ValueError(
+                    f"Invalid FASTA header for {name}: {header!r}. When "
+                    "--use-fasta-chain-ids is set, multimer headers may only "
+                    "contain the target name and chain_ids=..."
+                )
+            if chain_ids is not None:
+                raise ValueError(f"FASTA header for {name} has multiple chain ID fields.")
+            chain_ids = [chain_id.strip() for chain_id in value.split(",")]
+
+    return name, chain_ids
+
+
+def validate_chain_ids(
+    target_name: str,
+    sequences: list[str],
+    chain_ids: list[str] | None,
+    format: str,
+) -> None:
+    if chain_ids is None:
+        return
+
+    if len(chain_ids) != len(sequences):
+        raise ValueError(
+            f"FASTA target {target_name} has {len(sequences)} chains but "
+            f"{len(chain_ids)} chain IDs."
+        )
+    if any(not chain_id for chain_id in chain_ids):
+        raise ValueError(f"FASTA target {target_name} has an empty chain ID.")
+    if len(set(chain_ids)) != len(chain_ids):
+        raise ValueError(
+            f"FASTA target {target_name} chain IDs must be unique: {chain_ids}"
+        )
+
+    reserved_chars = {",", ":", "="}
+    for chain_id in chain_ids:
+        if any(char.isspace() or char in reserved_chars for char in chain_id):
+            raise ValueError(
+                f"FASTA target {target_name} has invalid chain ID {chain_id!r}. "
+                "Chain IDs cannot contain whitespace, ',', ':', or '='."
+            )
+        if format == "pdb" and len(chain_id) != 1:
+            raise ValueError(
+                f"FASTA target {target_name} uses chain ID {chain_id!r}, but PDB "
+                "output requires one-character chain IDs. Use --format cif or "
+                "shorter chain IDs."
+            )
+
+
+def split_chain_sequences(sequence: str) -> list[str]:
+    sequences = [part for part in sequence.split(":") if part.strip()]
+    if len(sequences) == 0:
+        raise ValueError("FASTA target has no non-empty chains.")
+    return sequences
+
+
+def load_inputs(
+    args: argparse.Namespace,
+) -> list[MultimerInput]:
     if not args.input_fasta.exists():
         raise FileNotFoundError(f"Input FASTA file does not exist: {args.input_fasta}")
 
-    inputs = [
-        (safe_target_name(header.split()[0]), sequence)
-        for header, sequence in read_fasta(args.input_fasta)
-    ]
+    inputs: list[MultimerInput] = []
+    for header, sequence in read_fasta(args.input_fasta):
+        name, chain_ids = parse_fasta_header(header, args.use_fasta_chain_ids)
+        sequences = split_chain_sequences(sequence)
+        validate_chain_ids(name, sequences, chain_ids, args.format)
+        inputs.append(MultimerInput(name, sequences, chain_ids))
     if len(inputs) == 0:
         raise ValueError(f"No sequences found in FASTA file: {args.input_fasta}")
 
     seen: set[str] = set()
     duplicates: list[str] = []
-    for name, _ in inputs:
+    for item in inputs:
+        name = item.name
         if name in seen:
             duplicates.append(name)
         seen.add(name)
@@ -249,25 +341,25 @@ def target_rank_is_complete(
     return (target_dir / "done.txt").exists()
 
 
-def estimate_num_residues(sequence: str) -> int:
-    return sum(len("".join(part.split())) for part in sequence.split(":") if part.strip())
+def estimate_num_residues(sequence: list[str]) -> int:
+    return sum(len("".join(part.split())) for part in sequence if part.strip())
 
 
 def filter_completed_inputs(
-    inputs: list[tuple[str, str]],
+    inputs: list[MultimerInput],
     out_dir: Path,
     format: str,
     seeds: list[int],
     num_samples: int,
     overwrite: bool,
-) -> list[tuple[str, str]]:
+) -> list[MultimerInput]:
     if overwrite:
         return inputs
 
     filtered = [
-        (name, sequence)
-        for name, sequence in inputs
-        if not target_is_complete(out_dir / name, format, seeds, num_samples)
+        item
+        for item in inputs
+        if not target_is_complete(out_dir / item.name, format, seeds, num_samples)
     ]
     num_skipped = len(inputs) - len(filtered)
     if num_skipped > 0:
@@ -389,7 +481,7 @@ def write_outputs(
 def run(args: argparse.Namespace) -> None:
     setup_logging()
     inputs = load_inputs(args)
-    num_residues = [estimate_num_residues(sequence) for _, sequence in inputs]
+    num_residues = [estimate_num_residues(item.sequence) for item in inputs]
     logger.info(
         "Loaded %d multimer target(s). Residue range: %d-%d.",
         len(inputs),
@@ -413,13 +505,16 @@ def run(args: argparse.Namespace) -> None:
     model = load_model(args)
     runner = MultimerFoldingRunner(model)
     sampling_config = SamplingConfig(num_steps=args.num_steps, chunk_size=5)
+    mlm_prob = getattr(args, "mlm_prob", 0.15)
 
     logger.info(
         "Starting multimer inference: seeds=%s, num_samples=%d, "
-        "num_recycles=%d, format=%s",
+        "num_recycles=%d, mlm_prob=%s, num_steps=%d, format=%s",
         args.seed,
         args.num_samples,
         args.num_recycles,
+        mlm_prob,
+        args.num_steps,
         args.format,
     )
 
@@ -432,6 +527,7 @@ def run(args: argparse.Namespace) -> None:
         num_samples=args.num_samples,
         seeds=args.seed,
         num_recycles=args.num_recycles,
+        mlm_prob=mlm_prob,
         sampling_config=sampling_config,
         length_buckets=args.length_buckets,
         max_tokens_per_batch=args.max_tokens_per_batch,

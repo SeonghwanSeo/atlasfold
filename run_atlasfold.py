@@ -4,12 +4,14 @@ from pathlib import Path
 MODEL_DEFAULTS = {
     "monomer": {
         "num_recycles": 4,
+        "mlm_prob": 0.15,
         "num_samples": 5,
         "num_steps": 25,
         "max_tokens_per_batch": 1024,
     },
     "multimer": {
         "num_recycles": 10,
+        "mlm_prob": 0.15,
         "num_samples": 5,
         "num_steps": 200,
         "max_tokens_per_batch": 1024,
@@ -124,6 +126,14 @@ def create_parser() -> argparse.ArgumentParser:
         help="Structure file format for sample and ranked outputs.",
     )
     parser.add_argument(
+        "--use-fasta-chain-ids",
+        action="store_true",
+        help=(
+            "Read optional chain_id=... metadata for monomer inference or "
+            "chain_ids=... metadata for multimer inference from FASTA headers."
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Recompute targets even when outputs already exist.",
@@ -182,6 +192,7 @@ def print_run_settings(
                 source_name="format",
             )
         )
+    print(f"  use_fasta_chain_ids={resolved_args.use_fasta_chain_ids}")
     print(
         format_setting(user_args, resolved_args, "num_recycles", label="  num_recycles")
     )
@@ -220,6 +231,7 @@ def build_monomer_args(args: argparse.Namespace) -> argparse.Namespace:
         max_tokens_per_batch=resolve_default(args, "max_tokens_per_batch"),
         length_buckets=args.length_buckets,
         format=resolve_default(args, "format"),
+        use_fasta_chain_ids=args.use_fasta_chain_ids,
         overwrite=args.overwrite,
     )
 
@@ -243,6 +255,7 @@ def build_multimer_args(args: argparse.Namespace) -> argparse.Namespace:
         max_tokens_per_batch=resolve_default(args, "max_tokens_per_batch"),
         length_buckets=args.length_buckets,
         format=resolve_default(args, "format"),
+        use_fasta_chain_ids=args.use_fasta_chain_ids,
         overwrite=args.overwrite,
     )
 

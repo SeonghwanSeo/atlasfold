@@ -9,7 +9,7 @@ import torch
 
 from atlasfold.data.fasta import read_fasta
 from atlasfold.model import AtlasFold, SamplingConfig
-from atlasfold.runner import FoldingOutput, FoldingRunner
+from atlasfold.runner import FoldingInput, FoldingOutput, FoldingRunner
 
 logger = logging.getLogger("atlasfold.monomer")
 
@@ -72,6 +72,12 @@ def create_parser() -> argparse.ArgumentParser:
         help="Number of recycling iterations.",
     )
     parser.add_argument(
+        "--mlm-prob",
+        type=float,
+        default=0.15,
+        help="LM masking probability used during recycling.",
+    )
+    parser.add_argument(
         "--stochastic",
         action="store_true",
         help="Use stochastic LM features during all recycling iterations.",
@@ -121,6 +127,14 @@ def create_parser() -> argparse.ArgumentParser:
         help="Structure file format for sample and ranked outputs.",
     )
     parser.add_argument(
+        "--use-fasta-chain-ids",
+        action="store_true",
+        help=(
+            "Read optional chain_id=... metadata from FASTA headers. When set, "
+            "headers may only contain the target name and chain_id=..."
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Recompute targets even when outputs already exist.",
@@ -129,27 +143,92 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 def normalize_target_name(header: str) -> str:
-    name = header.split()[0]
+    fields = header.split()
+    if len(fields) == 0:
+        raise ValueError(f"Invalid FASTA header: {header!r}")
+    name = fields[0]
     safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
     if not safe_name:
         raise ValueError(f"Invalid FASTA header: {header!r}")
     return safe_name
 
 
-def load_sequences(input_fasta: Path) -> list[tuple[str, str]]:
+def parse_fasta_header(
+    header: str,
+    *,
+    use_fasta_chain_ids: bool,
+) -> tuple[str, str | None]:
+    fields = header.split()
+    if len(fields) == 0:
+        raise ValueError(f"Invalid FASTA header: {header!r}")
+
+    name = normalize_target_name(header)
+    chain_id = None
+    if use_fasta_chain_ids:
+        for field in fields[1:]:
+            key, sep, value = field.partition("=")
+            if not sep or key != "chain_id":
+                raise ValueError(
+                    f"Invalid FASTA header for {name}: {header!r}. When "
+                    "--use-fasta-chain-ids is set, monomer headers may only "
+                    "contain the target name and chain_id=..."
+                )
+            if chain_id is not None:
+                raise ValueError(f"FASTA header for {name} has multiple chain ID fields.")
+            chain_id = value.strip()
+
+    return name, chain_id
+
+
+def validate_chain_id(
+    target_name: str,
+    chain_id: str | None,
+    format: str,
+) -> None:
+    if chain_id is None:
+        return
+
+    if not chain_id:
+        raise ValueError(f"FASTA target {target_name} has an empty chain ID.")
+
+    reserved_chars = {",", ":", "="}
+    if any(char.isspace() or char in reserved_chars for char in chain_id):
+        raise ValueError(
+            f"FASTA target {target_name} has invalid chain ID {chain_id!r}. "
+            "Chain IDs cannot contain whitespace, ',', ':', or '='."
+        )
+    if format == "pdb" and len(chain_id) != 1:
+        raise ValueError(
+            f"FASTA target {target_name} uses chain ID {chain_id!r}, but PDB "
+            "output requires one-character chain IDs. Use --format cif or "
+            "a shorter chain ID."
+        )
+
+
+def load_sequences(
+    input_fasta: Path,
+    *,
+    use_fasta_chain_ids: bool = False,
+    format: str = "cif",
+) -> list[FoldingInput]:
     if not input_fasta.exists():
         raise FileNotFoundError(f"Input FASTA file does not exist: {input_fasta}")
 
-    sequences = [
-        (normalize_target_name(header), sequence)
-        for header, sequence in read_fasta(input_fasta)
-    ]
+    sequences: list[FoldingInput] = []
+    for header, sequence in read_fasta(input_fasta):
+        name, chain_id = parse_fasta_header(
+            header,
+            use_fasta_chain_ids=use_fasta_chain_ids,
+        )
+        validate_chain_id(name, chain_id, format)
+        sequences.append(FoldingInput(name, sequence, chain_id or "A"))
     if len(sequences) == 0:
         raise ValueError(f"No sequences found in FASTA file: {input_fasta}")
 
     seen: set[str] = set()
     duplicates: list[str] = []
-    for name, _ in sequences:
+    for item in sequences:
+        name = item.name
         if name in seen:
             duplicates.append(name)
         seen.add(name)
@@ -159,7 +238,7 @@ def load_sequences(input_fasta: Path) -> list[tuple[str, str]]:
             f"Duplicates: {sorted(set(duplicates))}"
         )
 
-    return sorted(sequences, key=lambda item: (len(item[1]), item[0]))
+    return sorted(sequences, key=lambda item: (len(item.sequence), item.name))
 
 
 def target_is_complete(
@@ -232,20 +311,20 @@ def target_rank_is_complete(
 
 
 def filter_completed_targets(
-    sequences: list[tuple[str, str]],
+    sequences: list[FoldingInput],
     out_dir: Path,
     format: str,
     seeds: list[int],
     num_samples: int,
     overwrite: bool,
-) -> list[tuple[str, str]]:
+) -> list[FoldingInput]:
     if overwrite:
         return sequences
 
     filtered = [
-        (name, sequence)
-        for name, sequence in sequences
-        if not target_is_complete(out_dir / name, format, seeds, num_samples)
+        item
+        for item in sequences
+        if not target_is_complete(out_dir / item.name, format, seeds, num_samples)
     ]
     num_skipped = len(sequences) - len(filtered)
     if num_skipped > 0:
@@ -346,13 +425,17 @@ def write_outputs(
 def run(args: argparse.Namespace) -> None:
     setup_logging()
 
-    sequences = load_sequences(args.input_fasta)
+    sequences = load_sequences(
+        args.input_fasta,
+        use_fasta_chain_ids=getattr(args, "use_fasta_chain_ids", False),
+        format=args.format,
+    )
     logger.info(
         "Loaded %d sequences from %s. Length range: %d-%d.",
         len(sequences),
         args.input_fasta,
-        len(sequences[0][1]),
-        len(sequences[-1][1]),
+        len(sequences[0].sequence),
+        len(sequences[-1].sequence),
     )
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -371,13 +454,16 @@ def run(args: argparse.Namespace) -> None:
     model = load_model(args)
     runner = FoldingRunner(model)
     sampling_config = SamplingConfig(num_steps=args.num_steps, chunk_size=5)
+    mlm_prob = getattr(args, "mlm_prob", 0.15)
 
     logger.info(
         "Starting monomer inference: seeds=%s, num_samples=%d, "
-        "num_recycles=%d, stochastic=%s, format=%s",
+        "num_recycles=%d, mlm_prob=%s, num_steps=%d, stochastic=%s, format=%s",
         args.seed,
         args.num_samples,
         args.num_recycles,
+        mlm_prob,
+        args.num_steps,
         args.stochastic,
         args.format,
     )
@@ -392,6 +478,7 @@ def run(args: argparse.Namespace) -> None:
             num_samples=args.num_samples,
             seeds=args.seed,
             num_recycles=args.num_recycles,
+            mlm_prob=mlm_prob,
             stochastic=args.stochastic,
             sampling_config=sampling_config,
             length_buckets=args.length_buckets,

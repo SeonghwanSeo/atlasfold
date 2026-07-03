@@ -9,6 +9,20 @@ from typing_extensions import Self
 from atlasfold.common import file_io, residue_constants
 
 
+def _default_chain_ids(num_chains: int) -> list[str]:
+    chain_ids = []
+    for i in range(num_chains):
+        chain_id = ""
+        n = i
+        while True:
+            chain_id = chr(ord("A") + (n % 26)) + chain_id
+            n //= 26
+            if n == 0:
+                break
+        chain_ids.append(chain_id)
+    return chain_ids
+
+
 @dataclasses.dataclass(kw_only=True)
 class Protein:
     """A data structure representing a 3D protein structure"""
@@ -18,6 +32,7 @@ class Protein:
     coordinates: np.ndarray  # [L, 14, 3]
     b_factors: np.ndarray  # [L, 14]
     residue_index: np.ndarray | None = None  # [L], optional residue index
+    chain_id: str = "A"
 
     def __post_init__(self):
         """Validate the input data."""
@@ -49,13 +64,17 @@ class Protein:
         return len(self.sequence)
 
     @classmethod
-    def get_empty(cls, name: str, sequence: str) -> Self:
+    def get_empty(cls, name: str, sequence: str, chain_id: str = "A") -> Self:
         """Create an empty structure with NaN coordinates."""
         L = len(sequence)
         coordinates = np.full((L, 14, 3), np.nan, dtype=np.float32)
         b_factors = np.full((L, 14), np.nan, dtype=np.float32)
         return cls(
-            name=name, sequence=sequence, coordinates=coordinates, b_factors=b_factors
+            name=name,
+            sequence=sequence,
+            coordinates=coordinates,
+            b_factors=b_factors,
+            chain_id=chain_id,
         )
 
     @classmethod
@@ -66,6 +85,7 @@ class Protein:
         coordinates: np.ndarray,
         b_factors: np.ndarray,
         residue_index: np.ndarray | None = None,
+        chain_id: str = "A",
     ) -> Self:
         """Create a Protein instance with the given data."""
         return cls(
@@ -74,6 +94,7 @@ class Protein:
             coordinates=coordinates,
             b_factors=b_factors,
             residue_index=residue_index,
+            chain_id=chain_id,
         )
 
     @property
@@ -89,7 +110,8 @@ class Protein:
 
     def to_gemmi_structure(self) -> gemmi.Structure:
         cinfo = file_io.ChainInfo(
-            chain_id="A",
+            label_asym_id="A",
+            auth_asym_id=self.chain_id,
             entity_id=1,
             sequence=self.sequence,
             coordinates=self.coordinates,
@@ -140,7 +162,14 @@ class Protein:
         coordinates = np.stack(coords_list, axis=0)  # [L, 14, 3]
         b_factors = np.stack(biso_list, axis=0)  # [L, 14]
         residue_index = np.array(res_idx_list, dtype=np.int32)  # [L,]
-        return cls.create(name, sequence, coordinates, b_factors, residue_index)
+        return cls.create(
+            name,
+            sequence,
+            coordinates,
+            b_factors,
+            residue_index,
+            chain_id=str(raw_chain.name),
+        )
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -215,20 +244,10 @@ class ProteinMultimer:
         check_length(sym_ids, "sym_ids")
 
         if chain_ids is None:
-            # Generate chain IDs as A, B, C, ..., Z, AA, AB, ...
-            chain_ids = []
-            for i in range(len(sequence)):
-                chain_id = ""
-                n = i
-                while True:
-                    chain_id = chr(ord("A") + (n % 26)) + chain_id
-                    n //= 26
-                    if n == 0:
-                        break
-                chain_ids.append(chain_id)
+            chain_ids = _default_chain_ids(len(sequence))
 
         chains = [
-            Protein.get_empty(chain_id, seq)
+            Protein.get_empty(chain_id, seq, chain_id=chain_id)
             for chain_id, seq in zip(chain_ids, sequence, strict=True)
         ]
         return cls(
@@ -275,14 +294,18 @@ class ProteinMultimer:
         return file_io.to_mmcif(self.to_gemmi_structure())
 
     def to_gemmi_structure(self) -> gemmi.Structure:
+        label_asym_ids = _default_chain_ids(len(self.chains))
         cinfos = [
             file_io.ChainInfo(
-                chain_id=c.name,
+                label_asym_id=label_asym_id,
+                auth_asym_id=c.name,
                 entity_id=eid,
                 sequence=c.sequence,
                 coordinates=c.coordinates,
                 b_factors=c.b_factors,
             )
-            for eid, c in zip(self.entity_ids, self.chains, strict=True)
+            for label_asym_id, eid, c in zip(
+                label_asym_ids, self.entity_ids, self.chains, strict=True
+            )
         ]
         return file_io.to_gemmi_structure(self.name, cinfos)

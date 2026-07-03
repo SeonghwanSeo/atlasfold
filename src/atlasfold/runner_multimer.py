@@ -12,25 +12,20 @@ from atlasfold.model.utils import confidence_metrics
 from atlasfold.runner import SampleKey, autocast_context, seed_context
 
 
+@dataclasses.dataclass(frozen=True)
+class MultimerInput:
+    """Input for one multimer folding target."""
+
+    name: str
+    sequence: list[str]
+    chain_ids: list[str] | None = None
+
+
 def _sanitize_sequence(sequence: str) -> str:
     sequence = "".join(sequence.split()).upper()
     return "".join(
         aa if aa in residue_constants.restype_orders else "X" for aa in sequence
     )
-
-
-def _chain_ids(num_chains: int) -> list[str]:
-    chain_ids = []
-    for i in range(num_chains):
-        chain_id = ""
-        n = i
-        while True:
-            chain_id = chr(ord("A") + (n % 26)) + chain_id
-            n //= 26
-            if n == 0:
-                break
-        chain_ids.append(chain_id)
-    return chain_ids
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -153,7 +148,7 @@ class MultimerFoldingOutput:
 
 
 class MultimerFoldingRunner:
-    """Run AtlasFold-Multimer inference on colon-separated chain sequences."""
+    """Run AtlasFold-Multimer inference on pre-split chain sequences."""
 
     def __init__(self, model: AtlasFold_Multimer):
         self.model: AtlasFold_Multimer = model
@@ -162,7 +157,7 @@ class MultimerFoldingRunner:
     def fold(
         self,
         name: str,
-        sequence: str | Sequence[str],
+        sequence: list[str],
         *,
         num_samples: int = 1,
         seeds: int | Sequence[int] = 1,
@@ -173,7 +168,7 @@ class MultimerFoldingRunner:
     ) -> MultimerFoldingOutput:
         outputs = list(
             self.iter_fold_batch(
-                [(name, sequence)],
+                [MultimerInput(name, sequence)],
                 num_samples=num_samples,
                 seeds=seeds,
                 num_recycles=num_recycles,
@@ -186,7 +181,7 @@ class MultimerFoldingRunner:
 
     def iter_fold_batch(
         self,
-        inputs: Sequence[tuple[str, str | Sequence[str]]],
+        inputs: Sequence[MultimerInput],
         *,
         num_samples: int = 1,
         seeds: int | Sequence[int] = 1,
@@ -279,39 +274,58 @@ class MultimerFoldingRunner:
 
     @staticmethod
     def _normalize_inputs(
-        inputs: Sequence[tuple[str, str | Sequence[str]]],
-    ) -> list[tuple[str, list[str]]]:
-        normalized: list[tuple[str, list[str]]] = []
-        for name, sequence in inputs:
-            if isinstance(sequence, str):
-                sequences = [
-                    _sanitize_sequence(seq) for seq in sequence.split(":") if seq.strip()
-                ]
-            else:
-                sequences = [_sanitize_sequence(seq) for seq in sequence]
+        inputs: Sequence[MultimerInput],
+    ) -> list[MultimerInput]:
+        normalized: list[MultimerInput] = []
+        for item in inputs:
+            if not isinstance(item.sequence, list):
+                raise TypeError(
+                    "MultimerFoldingRunner expects pre-split chain sequences. "
+                    "Pass a list[str]."
+                )
+            sequences = [_sanitize_sequence(seq) for seq in item.sequence]
             if any(len(seq) == 0 for seq in sequences):
-                raise ValueError(f"Input ({name}) has an empty chain.")
-            normalized.append((name, sequences))
+                raise ValueError(f"Input ({item.name}) has an empty chain.")
+            chain_ids = None
+            if item.chain_ids is not None:
+                if isinstance(item.chain_ids, str):
+                    raise ValueError(
+                        f"Input ({item.name}) chain_ids must be a sequence of IDs, "
+                        "not a string."
+                    )
+                chain_ids = [str(chain_id).strip() for chain_id in item.chain_ids]
+                if len(chain_ids) != len(sequences):
+                    raise ValueError(
+                        f"Input ({item.name}) has {len(sequences)} chains but "
+                        f"{len(chain_ids)} chain IDs."
+                    )
+                if any(not chain_id for chain_id in chain_ids):
+                    raise ValueError(f"Input ({item.name}) has an empty chain ID.")
+                if len(set(chain_ids)) != len(chain_ids):
+                    raise ValueError(
+                        f"Input ({item.name}) chain IDs must be unique: {chain_ids}"
+                    )
+            normalized.append(MultimerInput(str(item.name), sequences, chain_ids))
         return normalized
 
     @classmethod
     def _bucket_inputs(
         cls,
-        inputs: Sequence[tuple[str, list[str]]],
+        inputs: Sequence[MultimerInput],
         length_buckets: Sequence[int] | None,
-    ) -> dict[int, list[tuple[str, list[str]]]]:
-        bucketed_inputs: dict[int, list[tuple[str, list[str]]]] = defaultdict(list)
-        for name, sequences in inputs:
-            length = sum(len(seq) for seq in sequences)
+    ) -> dict[int, list[MultimerInput]]:
+        bucketed_inputs: dict[int, list[MultimerInput]] = defaultdict(list)
+        for item in inputs:
+            length = sum(len(seq) for seq in item.sequence)
             if length == 0:
-                raise ValueError(f"Input {name} has no residues.")
+                raise ValueError(f"Input {item.name} has no residues.")
             bucket_length = cls._get_length_bucket(length, length_buckets)
-            bucketed_inputs[bucket_length].append((name, sequences))
+            bucketed_inputs[bucket_length].append(item)
         return bucketed_inputs
 
     def _iter_batch(
         self,
-        bucketed_inputs: dict[int, list[tuple[str, list[str]]]],
+        bucketed_inputs: dict[int, list[MultimerInput]],
         max_tokens_per_batch: int,
     ) -> Iterator[tuple[int, list[protein.ProteinMultimer]]]:
         for bucket_length in sorted(bucketed_inputs):
@@ -320,8 +334,12 @@ class MultimerFoldingRunner:
             for start in range(0, len(bucket_items), batch_size):
                 chunk = bucket_items[start : start + batch_size]
                 complexes = [
-                    protein.ProteinMultimer.get_empty(name, sequences)
-                    for name, sequences in chunk
+                    protein.ProteinMultimer.get_empty(
+                        item.name,
+                        item.sequence,
+                        chain_ids=item.chain_ids,
+                    )
+                    for item in chunk
                 ]
                 yield bucket_length, complexes
 
@@ -384,7 +402,7 @@ class MultimerFoldingRunner:
     ) -> dict[SampleKey, ProteinMultimerOutput]:
         chain_lengths = [len(chain.sequence) for chain in complex_input.chains]
         total_length = sum(chain_lengths)
-        chain_ids = _chain_ids(len(chain_lengths))
+        chain_ids = [chain.name for chain in complex_input.chains]
         chain_ranges = []
         start = 0
         for chain_length in chain_lengths:
