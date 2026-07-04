@@ -5,16 +5,12 @@ MODEL_DEFAULTS = {
     "monomer": {
         "num_recycles": 4,
         "mlm_prob": 0.15,
-        "num_samples": 5,
-        "num_steps": 25,
-        "max_tokens_per_batch": 1024,
+        "num_steps": 20,
     },
     "multimer": {
         "num_recycles": 10,
         "mlm_prob": 0.15,
-        "num_samples": 5,
         "num_steps": 200,
-        "max_tokens_per_batch": 1024,
     },
 }
 
@@ -57,6 +53,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--device",
         type=str,
         default=None,
+        choices=["cpu", "cuda"],
         help="Torch device. Defaults to cuda when available, otherwise cpu.",
     )
     parser.add_argument(
@@ -84,7 +81,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--num-samples",
         type=int,
-        default=None,
+        default=5,
         help="Number of diffusion samples to generate.",
     )
     parser.add_argument(
@@ -101,15 +98,15 @@ def create_parser() -> argparse.ArgumentParser:
         help="Number of diffusion sampling steps. Defaults depend on --model.",
     )
     parser.add_argument(
-        "--sampling-chunk-size",
-        type=int,
-        default=None,
-        help="Optional diffusion sampling chunk size to reduce memory.",
+        "--format",
+        choices=["cif", "pdb"],
+        default="cif",
+        help="Structure file format for sample and ranked outputs.",
     )
     parser.add_argument(
         "--max-tokens-per-batch",
         type=int,
-        default=None,
+        default=1024,
         help="Maximum bucketed residue tokens per model call.",
     )
     parser.add_argument(
@@ -118,12 +115,6 @@ def create_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=None,
         help="Optional explicit residue buckets.",
-    )
-    parser.add_argument(
-        "--format",
-        choices=["cif", "pdb"],
-        default="cif",
-        help="Structure file format for sample and ranked outputs.",
     )
     parser.add_argument(
         "--use-fasta-chain-ids",
@@ -141,96 +132,64 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def resolve_default(args: argparse.Namespace, name: str):
-    value = getattr(args, name)
-    if value is not None:
-        return value
-    return MODEL_DEFAULTS[args.model][name]
+def print_run_settings(args: argparse.Namespace) -> None:
+    seed = " ".join(str(item) for item in args.seed)
+    length_buckets = (
+        " ".join(str(item) for item in args.length_buckets)
+        if args.length_buckets is not None
+        else None
+    )
 
-
-def format_value(value) -> str:
-    if isinstance(value, list):
-        return " ".join(str(item) for item in value)
-    return str(value)
-
-
-def format_setting(
-    user_args: argparse.Namespace,
-    resolved_args: argparse.Namespace,
-    name: str,
-    *,
-    label: str | None = None,
-    source_name: str | None = None,
-) -> str:
-    label = label or name
-    source_name = source_name or name
-    source = "default" if getattr(user_args, source_name) is None else "user"
-    value = getattr(resolved_args, name)
-    return f"{label}={format_value(value)} ({source})"
-
-
-def print_run_settings(
-    user_args: argparse.Namespace,
-    resolved_args: argparse.Namespace,
-) -> None:
     print("AtlasFold run settings")
-    print(f"  model={user_args.model}")
-    print(f"  checkpoint={resolved_args.checkpoint}")
-    print(f"  out_dir={resolved_args.out_dir}")
-    if user_args.model == "monomer":
-        print(f"  input_fasta={resolved_args.input_fasta}")
-        print(format_setting(user_args, resolved_args, "format", label="  format"))
-        print(f"  stochastic={resolved_args.stochastic}")
-    else:
-        print(f"  input_fasta={resolved_args.input_fasta}")
-        print(
-            format_setting(
-                user_args,
-                resolved_args,
-                "format",
-                label="  format",
-                source_name="format",
-            )
-        )
-    print(f"  use_fasta_chain_ids={resolved_args.use_fasta_chain_ids}")
-    print(
-        format_setting(user_args, resolved_args, "num_recycles", label="  num_recycles")
-    )
-    print(format_setting(user_args, resolved_args, "mlm_prob", label="  mlm_prob"))
-    print(format_setting(user_args, resolved_args, "num_samples", label="  num_samples"))
-    print(format_setting(user_args, resolved_args, "seed", label="  seed"))
-    print(format_setting(user_args, resolved_args, "num_steps", label="  num_steps"))
-    print(
-        format_setting(
-            user_args,
-            resolved_args,
-            "max_tokens_per_batch",
-            label="  max_tokens_per_batch",
-        )
-    )
-    print(f"  sampling_chunk_size={resolved_args.sampling_chunk_size}")
-    print(f"  length_buckets={format_value(resolved_args.length_buckets)}")
-    print(f"  overwrite={resolved_args.overwrite}")
+    print(f"  model={args.model}")
+    print(f"  input_fasta={args.input_fasta}")
+    print(f"  out_dir={args.out_dir}")
+    print(f"  checkpoint={args.checkpoint}")
+    print(f"  device={args.device}")
+    print(f"  format={args.format}")
+    print(f"  use_fasta_chain_ids={args.use_fasta_chain_ids}")
+    print(f"  num_recycles={args.num_recycles}")
+    print(f"  mlm_prob={args.mlm_prob}")
+    print(f"  num_samples={args.num_samples}")
+    print(f"  seed={seed}")
+    print(f"  num_steps={args.num_steps}")
+    print(f"  max_tokens_per_batch={args.max_tokens_per_batch}")
+    print(f"  length_buckets={length_buckets}")
+    if args.model == "monomer":
+        print(f"  stochastic={args.stochastic}")
+    print(f"  overwrite={args.overwrite}")
     print()
 
 
 def build_monomer_args(args: argparse.Namespace) -> argparse.Namespace:
     return argparse.Namespace(
+        model=args.model,
         input_fasta=args.input_fasta,
         out_dir=args.out_dir,
         checkpoint=args.checkpoint,
         device=args.device,
         no_kernel=args.no_kernel,
-        num_recycles=resolve_default(args, "num_recycles"),
-        mlm_prob=resolve_default(args, "mlm_prob"),
+        num_samples=args.num_samples,
         stochastic=args.stochastic,
-        num_samples=resolve_default(args, "num_samples"),
-        seed=resolve_default(args, "seed"),
-        num_steps=resolve_default(args, "num_steps"),
-        sampling_chunk_size=args.sampling_chunk_size,
-        max_tokens_per_batch=resolve_default(args, "max_tokens_per_batch"),
+        seed=args.seed,
+        num_recycles=(
+            args.num_recycles
+            if args.num_recycles is not None
+            else MODEL_DEFAULTS["monomer"]["num_recycles"]
+        ),
+        mlm_prob=(
+            args.mlm_prob
+            if args.mlm_prob is not None
+            else MODEL_DEFAULTS["monomer"]["mlm_prob"]
+        ),
+        num_steps=(
+            args.num_steps
+            if args.num_steps is not None
+            else MODEL_DEFAULTS["monomer"]["num_steps"]
+        ),
+        format=args.format,
+        max_tokens_per_batch=args.max_tokens_per_batch,
         length_buckets=args.length_buckets,
-        format=resolve_default(args, "format"),
         use_fasta_chain_ids=args.use_fasta_chain_ids,
         overwrite=args.overwrite,
     )
@@ -241,20 +200,32 @@ def build_multimer_args(args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError("--stochastic is only supported when --model monomer.")
 
     return argparse.Namespace(
+        model=args.model,
         input_fasta=args.input_fasta,
         out_dir=args.out_dir,
         checkpoint=args.checkpoint,
         device=args.device,
         no_kernel=args.no_kernel,
-        num_recycles=resolve_default(args, "num_recycles"),
-        mlm_prob=resolve_default(args, "mlm_prob"),
-        num_samples=resolve_default(args, "num_samples"),
-        seed=resolve_default(args, "seed"),
-        num_steps=resolve_default(args, "num_steps"),
-        sampling_chunk_size=args.sampling_chunk_size,
-        max_tokens_per_batch=resolve_default(args, "max_tokens_per_batch"),
+        num_samples=args.num_samples,
+        seed=args.seed,
+        num_recycles=(
+            args.num_recycles
+            if args.num_recycles is not None
+            else MODEL_DEFAULTS["multimer"]["num_recycles"]
+        ),
+        mlm_prob=(
+            args.mlm_prob
+            if args.mlm_prob is not None
+            else MODEL_DEFAULTS["multimer"]["mlm_prob"]
+        ),
+        num_steps=(
+            args.num_steps
+            if args.num_steps is not None
+            else MODEL_DEFAULTS["multimer"]["num_steps"]
+        ),
+        format=args.format,
+        max_tokens_per_batch=args.max_tokens_per_batch,
         length_buckets=args.length_buckets,
-        format=resolve_default(args, "format"),
         use_fasta_chain_ids=args.use_fasta_chain_ids,
         overwrite=args.overwrite,
     )
@@ -265,7 +236,7 @@ def run(args: argparse.Namespace) -> None:
         from scripts import run_inference
 
         resolved_args = build_monomer_args(args)
-        print_run_settings(args, resolved_args)
+        print_run_settings(resolved_args)
         run_inference.run(resolved_args)
         return
 
@@ -273,7 +244,7 @@ def run(args: argparse.Namespace) -> None:
         from scripts import run_inference_multimer
 
         resolved_args = build_multimer_args(args)
-        print_run_settings(args, resolved_args)
+        print_run_settings(resolved_args)
         run_inference_multimer.run(resolved_args)
         return
 

@@ -20,6 +20,10 @@ class MultimerInput:
     sequence: list[str]
     chain_ids: list[str] | None = None
 
+    @property
+    def length(self) -> int:
+        return sum(len(seq) for seq in self.sequence)
+
 
 def _sanitize_sequence(sequence: str) -> str:
     sequence = "".join(sequence.split()).upper()
@@ -293,18 +297,7 @@ class MultimerFoldingRunner:
                         f"Input ({item.name}) chain_ids must be a sequence of IDs, "
                         "not a string."
                     )
-                chain_ids = [str(chain_id).strip() for chain_id in item.chain_ids]
-                if len(chain_ids) != len(sequences):
-                    raise ValueError(
-                        f"Input ({item.name}) has {len(sequences)} chains but "
-                        f"{len(chain_ids)} chain IDs."
-                    )
-                if any(not chain_id for chain_id in chain_ids):
-                    raise ValueError(f"Input ({item.name}) has an empty chain ID.")
-                if len(set(chain_ids)) != len(chain_ids):
-                    raise ValueError(
-                        f"Input ({item.name}) chain IDs must be unique: {chain_ids}"
-                    )
+                chain_ids = [str(chain_id) for chain_id in item.chain_ids]
             normalized.append(MultimerInput(str(item.name), sequences, chain_ids))
         return normalized
 

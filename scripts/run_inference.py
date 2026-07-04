@@ -98,7 +98,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--num-steps",
         type=int,
-        default=25,
+        default=20,
         help="Number of diffusion sampling steps.",
     )
     parser.add_argument(
@@ -155,7 +155,6 @@ def normalize_target_name(header: str) -> str:
 
 def parse_fasta_header(
     header: str,
-    *,
     use_fasta_chain_ids: bool,
 ) -> tuple[str, str | None]:
     fields = header.split()
@@ -175,52 +174,22 @@ def parse_fasta_header(
                 )
             if chain_id is not None:
                 raise ValueError(f"FASTA header for {name} has multiple chain ID fields.")
-            chain_id = value.strip()
+            chain_id = value
 
     return name, chain_id
 
 
-def validate_chain_id(
-    target_name: str,
-    chain_id: str | None,
-    format: str,
-) -> None:
-    if chain_id is None:
-        return
-
-    if not chain_id:
-        raise ValueError(f"FASTA target {target_name} has an empty chain ID.")
-
-    reserved_chars = {",", ":", "="}
-    if any(char.isspace() or char in reserved_chars for char in chain_id):
-        raise ValueError(
-            f"FASTA target {target_name} has invalid chain ID {chain_id!r}. "
-            "Chain IDs cannot contain whitespace, ',', ':', or '='."
-        )
-    if format == "pdb" and len(chain_id) != 1:
-        raise ValueError(
-            f"FASTA target {target_name} uses chain ID {chain_id!r}, but PDB "
-            "output requires one-character chain IDs. Use --format cif or "
-            "a shorter chain ID."
-        )
-
-
 def load_sequences(
     input_fasta: Path,
-    *,
-    use_fasta_chain_ids: bool = False,
     format: str = "cif",
+    use_fasta_chain_ids: bool = False,
 ) -> list[FoldingInput]:
     if not input_fasta.exists():
         raise FileNotFoundError(f"Input FASTA file does not exist: {input_fasta}")
 
     sequences: list[FoldingInput] = []
     for header, sequence in read_fasta(input_fasta):
-        name, chain_id = parse_fasta_header(
-            header,
-            use_fasta_chain_ids=use_fasta_chain_ids,
-        )
-        validate_chain_id(name, chain_id, format)
+        name, chain_id = parse_fasta_header(header, use_fasta_chain_ids)
         sequences.append(FoldingInput(name, sequence, chain_id or "A"))
     if len(sequences) == 0:
         raise ValueError(f"No sequences found in FASTA file: {input_fasta}")
@@ -241,97 +210,6 @@ def load_sequences(
     return sorted(sequences, key=lambda item: (len(item.sequence), item.name))
 
 
-def target_is_complete(
-    target_dir: Path,
-    format: str,
-    seeds: list[int],
-    num_samples: int,
-) -> bool:
-    target_name = target_dir.name
-    return target_rank_is_complete(target_dir, target_name, format, seeds, num_samples)
-
-
-def sample_output_paths(
-    target_dir: Path,
-    target_name: str,
-    format: str,
-    seed: int,
-    sample_idx: int,
-) -> tuple[Path, Path]:
-    sample_name = f"{target_name}_seed-{seed}_sample-{sample_idx}"
-    return (
-        target_dir / f"{sample_name}.{format}",
-        target_dir / f"{sample_name}_confidence.json",
-    )
-
-
-def seed_samples_are_complete(
-    target_dir: Path,
-    target_name: str,
-    format: str,
-    seed: int,
-    num_samples: int,
-) -> bool:
-    return all(
-        path.exists()
-        for sample_idx in range(num_samples)
-        for path in sample_output_paths(target_dir, target_name, format, seed, sample_idx)
-    )
-
-
-def target_samples_are_complete(
-    target_dir: Path,
-    target_name: str,
-    format: str,
-    seeds: list[int],
-    num_samples: int,
-) -> bool:
-    return all(
-        seed_samples_are_complete(target_dir, target_name, format, seed, num_samples)
-        for seed in seeds
-    )
-
-
-def target_rank_is_complete(
-    target_dir: Path,
-    target_name: str,
-    format: str,
-    seeds: list[int],
-    num_samples: int,
-) -> bool:
-    if not target_samples_are_complete(
-        target_dir,
-        target_name,
-        format,
-        seeds,
-        num_samples,
-    ):
-        return False
-    return (target_dir / "done.txt").exists()
-
-
-def filter_completed_targets(
-    sequences: list[FoldingInput],
-    out_dir: Path,
-    format: str,
-    seeds: list[int],
-    num_samples: int,
-    overwrite: bool,
-) -> list[FoldingInput]:
-    if overwrite:
-        return sequences
-
-    filtered = [
-        item
-        for item in sequences
-        if not target_is_complete(out_dir / item.name, format, seeds, num_samples)
-    ]
-    num_skipped = len(sequences) - len(filtered)
-    if num_skipped > 0:
-        logger.info("Skipping %d completed targets.", num_skipped)
-    return filtered
-
-
 def load_model(args: argparse.Namespace):
     if not args.checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint file does not exist: {args.checkpoint}")
@@ -343,26 +221,13 @@ def load_model(args: argparse.Namespace):
         if torch.cuda.is_available()
         else "cpu"
     )
-    precision = "bf16" if device.type == "cuda" else "fp32"
-    dtype = torch.bfloat16 if precision == "bf16" else torch.float32
 
-    logger.info(
-        "Loading checkpoint: path=%s, device=%s, precision=%s",
-        args.checkpoint,
-        device,
-        precision,
-    )
+    logger.info("Loading checkpoint: path=%s, device=%s", args.checkpoint, device)
     state_dict = torch.load(args.checkpoint, map_location="cpu")
 
-    model = AtlasFold.from_pretrained(state_dict=state_dict, device=device, dtype=dtype)
+    model = AtlasFold.from_pretrained(state_dict=state_dict, device=device)
     model.set_forward_flags(use_cuequiv_kernels=not args.no_kernel)
     return model
-
-
-def write_json(path: Path, payload: dict) -> None:
-    with open(path, "w") as f:
-        json.dump(payload, f, indent=2)
-        f.write("\n")
 
 
 def write_outputs(
@@ -425,11 +290,7 @@ def write_outputs(
 def run(args: argparse.Namespace) -> None:
     setup_logging()
 
-    sequences = load_sequences(
-        args.input_fasta,
-        use_fasta_chain_ids=getattr(args, "use_fasta_chain_ids", False),
-        format=args.format,
-    )
+    sequences = load_sequences(args.input_fasta, args.format, args.use_fasta_chain_ids)
     logger.info(
         "Loaded %d sequences from %s. Length range: %d-%d.",
         len(sequences),
@@ -438,15 +299,19 @@ def run(args: argparse.Namespace) -> None:
         len(sequences[-1].sequence),
     )
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    sequences = filter_completed_targets(
-        sequences,
-        args.out_dir,
-        args.format,
-        args.seed,
-        args.num_samples,
-        args.overwrite,
-    )
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Filter out completed targets unless --overwrite is set.
+    if not args.overwrite:
+        filtered = [
+            item for item in sequences if not (out_dir / item.name / "done.txt").exists()
+        ]
+        num_skipped = len(sequences) - len(filtered)
+        if num_skipped > 0:
+            logger.info("Skipping %d completed targets.", num_skipped)
+        sequences = filtered
+
     if len(sequences) == 0:
         logger.info("All targets are complete. Nothing to do.")
         return
@@ -454,7 +319,6 @@ def run(args: argparse.Namespace) -> None:
     model = load_model(args)
     runner = FoldingRunner(model)
     sampling_config = SamplingConfig(num_steps=args.num_steps, chunk_size=5)
-    mlm_prob = getattr(args, "mlm_prob", 0.15)
 
     logger.info(
         "Starting monomer inference: seeds=%s, num_samples=%d, "
@@ -462,7 +326,7 @@ def run(args: argparse.Namespace) -> None:
         args.seed,
         args.num_samples,
         args.num_recycles,
-        mlm_prob,
+        args.mlm_prob,
         args.num_steps,
         args.stochastic,
         args.format,
@@ -478,7 +342,7 @@ def run(args: argparse.Namespace) -> None:
             num_samples=args.num_samples,
             seeds=args.seed,
             num_recycles=args.num_recycles,
-            mlm_prob=mlm_prob,
+            mlm_prob=args.mlm_prob,
             stochastic=args.stochastic,
             sampling_config=sampling_config,
             length_buckets=args.length_buckets,
@@ -489,7 +353,7 @@ def run(args: argparse.Namespace) -> None:
             batch_start = timer()
 
             for output in outputs:
-                target_dir = args.out_dir / output.name
+                target_dir = out_dir / output.name
                 best_record = write_outputs(target_dir, output, args.format)
                 num_finished += 1
                 logger.info(

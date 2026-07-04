@@ -532,11 +532,13 @@ class AtlasFold(torch.nn.Module):
         cls,
         state_dict: dict,
         config: AtlasFoldConfig | None = None,
-        dtype: torch.dtype = torch.bfloat16,
         device: str | torch.device = "cuda",
     ) -> "AtlasFold":
         """Create an AtlasFold model from a pretrained state dict."""
         config = config if config is not None else AtlasFoldConfig()
+
+        device = torch.device(device)
+        dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
 
         # Create the model on meta device
         with torch.device("meta"):
@@ -554,6 +556,11 @@ class AtlasFold(torch.nn.Module):
         model.lm = load_model(
             config.lm_name, path=config.lm_path, device=device, dtype=dtype
         )
+
+        if dtype == torch.bfloat16:
+            model.lm = model.lm.bfloat16()
+            model.lm_stack = model.lm_stack.bfloat16()
+            model.main_stack = model.main_stack.bfloat16()
 
         # Freeze the model parameters and set to eval mode
         model.requires_grad_(False)

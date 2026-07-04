@@ -68,6 +68,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--device",
         type=str,
         default=None,
+        choices=["cpu", "cuda"],
         help="Torch device. Defaults to cuda when available, otherwise cpu.",
     )
     parser.add_argument(
@@ -175,7 +176,7 @@ def parse_fasta_header(
                 )
             if chain_ids is not None:
                 raise ValueError(f"FASTA header for {name} has multiple chain ID fields.")
-            chain_ids = [chain_id.strip() for chain_id in value.split(",")]
+            chain_ids = value.split(",")
 
     return name, chain_ids
 
@@ -184,36 +185,14 @@ def validate_chain_ids(
     target_name: str,
     sequences: list[str],
     chain_ids: list[str] | None,
-    format: str,
 ) -> None:
     if chain_ids is None:
         return
-
     if len(chain_ids) != len(sequences):
         raise ValueError(
             f"FASTA target {target_name} has {len(sequences)} chains but "
             f"{len(chain_ids)} chain IDs."
         )
-    if any(not chain_id for chain_id in chain_ids):
-        raise ValueError(f"FASTA target {target_name} has an empty chain ID.")
-    if len(set(chain_ids)) != len(chain_ids):
-        raise ValueError(
-            f"FASTA target {target_name} chain IDs must be unique: {chain_ids}"
-        )
-
-    reserved_chars = {",", ":", "="}
-    for chain_id in chain_ids:
-        if any(char.isspace() or char in reserved_chars for char in chain_id):
-            raise ValueError(
-                f"FASTA target {target_name} has invalid chain ID {chain_id!r}. "
-                "Chain IDs cannot contain whitespace, ',', ':', or '='."
-            )
-        if format == "pdb" and len(chain_id) != 1:
-            raise ValueError(
-                f"FASTA target {target_name} uses chain ID {chain_id!r}, but PDB "
-                "output requires one-character chain IDs. Use --format cif or "
-                "shorter chain IDs."
-            )
 
 
 def split_chain_sequences(sequence: str) -> list[str]:
@@ -223,9 +202,7 @@ def split_chain_sequences(sequence: str) -> list[str]:
     return sequences
 
 
-def load_inputs(
-    args: argparse.Namespace,
-) -> list[MultimerInput]:
+def load_inputs(args: argparse.Namespace) -> list[MultimerInput]:
     if not args.input_fasta.exists():
         raise FileNotFoundError(f"Input FASTA file does not exist: {args.input_fasta}")
 
@@ -233,7 +210,7 @@ def load_inputs(
     for header, sequence in read_fasta(args.input_fasta):
         name, chain_ids = parse_fasta_header(header, args.use_fasta_chain_ids)
         sequences = split_chain_sequences(sequence)
-        validate_chain_ids(name, sequences, chain_ids, args.format)
+        validate_chain_ids(name, sequences, chain_ids)
         inputs.append(MultimerInput(name, sequences, chain_ids))
     if len(inputs) == 0:
         raise ValueError(f"No sequences found in FASTA file: {args.input_fasta}")
@@ -254,140 +231,17 @@ def load_inputs(
     return inputs
 
 
-def target_is_complete(
-    target_dir: Path,
-    format: str,
-    seeds: list[int],
-    num_samples: int,
-) -> bool:
-    target_name = target_dir.name
-    return target_rank_is_complete(
-        target_dir,
-        target_name,
-        format,
-        seeds,
-        num_samples,
-    )
-
-
-def sample_output_paths(
-    target_dir: Path,
-    target_name: str,
-    format: str,
-    seed: int,
-    sample_idx: int,
-) -> tuple[Path, Path]:
-    sample_name = f"{target_name}_seed-{seed}_sample-{sample_idx}"
-    return (
-        target_dir / f"{sample_name}.{format}",
-        target_dir / f"{sample_name}_confidence.json",
-    )
-
-
-def seed_samples_are_complete(
-    target_dir: Path,
-    target_name: str,
-    format: str,
-    seed: int,
-    num_samples: int,
-) -> bool:
-    return all(
-        path.exists()
-        for sample_idx in range(num_samples)
-        for path in sample_output_paths(
-            target_dir,
-            target_name,
-            format,
-            seed,
-            sample_idx,
-        )
-    )
-
-
-def target_samples_are_complete(
-    target_dir: Path,
-    target_name: str,
-    format: str,
-    seeds: list[int],
-    num_samples: int,
-) -> bool:
-    return all(
-        seed_samples_are_complete(
-            target_dir,
-            target_name,
-            format,
-            seed,
-            num_samples,
-        )
-        for seed in seeds
-    )
-
-
-def target_rank_is_complete(
-    target_dir: Path,
-    target_name: str,
-    format: str,
-    seeds: list[int],
-    num_samples: int,
-) -> bool:
-    if not target_samples_are_complete(
-        target_dir,
-        target_name,
-        format,
-        seeds,
-        num_samples,
-    ):
-        return False
-    return (target_dir / "done.txt").exists()
-
-
-def estimate_num_residues(sequence: list[str]) -> int:
-    return sum(len("".join(part.split())) for part in sequence if part.strip())
-
-
-def filter_completed_inputs(
-    inputs: list[MultimerInput],
-    out_dir: Path,
-    format: str,
-    seeds: list[int],
-    num_samples: int,
-    overwrite: bool,
-) -> list[MultimerInput]:
-    if overwrite:
-        return inputs
-
-    filtered = [
-        item
-        for item in inputs
-        if not target_is_complete(out_dir / item.name, format, seeds, num_samples)
-    ]
-    num_skipped = len(inputs) - len(filtered)
-    if num_skipped > 0:
-        logger.info("Skipping %d completed target(s).", num_skipped)
-    return filtered
-
-
 def load_model(args: argparse.Namespace):
-
     if not args.checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint file does not exist: {args.checkpoint}")
 
-    device = torch.device(
-        args.device
-        if args.device is not None
-        else "cuda"
-        if torch.cuda.is_available()
-        else "cpu"
-    )
-    precision = "bf16" if device.type == "cuda" else "fp32"
-    dtype = torch.bfloat16 if precision == "bf16" else torch.float32
+    device_str = args.device
+    if device_str is None:
+        device_str = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device_str)
+    logger.info("Using device: %s", device)
 
-    logger.info(
-        "Loading checkpoint: path=%s, device=%s, precision=%s",
-        args.checkpoint,
-        device,
-        precision,
-    )
+    logger.info("Loading checkpoint: path=%s", args.checkpoint)
     checkpoint = torch.load(args.checkpoint, map_location="cpu")
     if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
         state_dict = {
@@ -399,16 +253,9 @@ def load_model(args: argparse.Namespace):
     model = AtlasFold_Multimer.from_pretrained(
         state_dict=state_dict,
         device=device,
-        dtype=dtype,
     )
     model.set_forward_flags(use_cuequiv_kernels=not args.no_kernel)
     return model
-
-
-def write_json(path: Path, payload: dict) -> None:
-    with open(path, "w") as f:
-        json.dump(payload, f, indent=2)
-        f.write("\n")
 
 
 def write_outputs(
@@ -481,7 +328,7 @@ def write_outputs(
 def run(args: argparse.Namespace) -> None:
     setup_logging()
     inputs = load_inputs(args)
-    num_residues = [estimate_num_residues(item.sequence) for item in inputs]
+    num_residues = [item.length for item in inputs]
     logger.info(
         "Loaded %d multimer target(s). Residue range: %d-%d.",
         len(inputs),
@@ -489,15 +336,19 @@ def run(args: argparse.Namespace) -> None:
         max(num_residues),
     )
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    inputs = filter_completed_inputs(
-        inputs,
-        args.out_dir,
-        args.format,
-        args.seed,
-        args.num_samples,
-        args.overwrite,
-    )
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Filter out completed targets unless --overwrite is set.
+    if not args.overwrite:
+        filtered = [
+            item for item in inputs if not (out_dir / item.name / "done.txt").exists()
+        ]
+        num_skipped = len(inputs) - len(filtered)
+        if num_skipped > 0:
+            logger.info("Skipping %d completed targets.", num_skipped)
+        inputs = filtered
+
     if len(inputs) == 0:
         logger.info("All targets are complete. Nothing to do.")
         return
@@ -505,7 +356,6 @@ def run(args: argparse.Namespace) -> None:
     model = load_model(args)
     runner = MultimerFoldingRunner(model)
     sampling_config = SamplingConfig(num_steps=args.num_steps, chunk_size=5)
-    mlm_prob = getattr(args, "mlm_prob", 0.15)
 
     logger.info(
         "Starting multimer inference: seeds=%s, num_samples=%d, "
@@ -513,7 +363,7 @@ def run(args: argparse.Namespace) -> None:
         args.seed,
         args.num_samples,
         args.num_recycles,
-        mlm_prob,
+        args.mlm_prob,
         args.num_steps,
         args.format,
     )
@@ -527,7 +377,7 @@ def run(args: argparse.Namespace) -> None:
         num_samples=args.num_samples,
         seeds=args.seed,
         num_recycles=args.num_recycles,
-        mlm_prob=mlm_prob,
+        mlm_prob=args.mlm_prob,
         sampling_config=sampling_config,
         length_buckets=args.length_buckets,
         max_tokens_per_batch=args.max_tokens_per_batch,
@@ -537,7 +387,7 @@ def run(args: argparse.Namespace) -> None:
         batch_start = timer()
 
         for output in outputs:
-            target_dir = args.out_dir / output.name
+            target_dir = out_dir / output.name
             best_record = write_outputs(target_dir, output, args.format)
             num_finished += 1
             logger.info(

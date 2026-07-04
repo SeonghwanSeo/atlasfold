@@ -264,12 +264,10 @@ class FoldingRunner:
                 name, sequence = item
                 chain_id = "A"
 
-            chain_id = str(chain_id).strip()
+            chain_id = str(chain_id)
             sequence = _sanitize_sequence(str(sequence))
             if len(sequence) == 0:
                 raise ValueError(f"Input ({name}) has an empty sequence.")
-            if not chain_id:
-                raise ValueError(f"Input ({name}) has an empty chain ID.")
             normalized.append(FoldingInput(str(name), sequence, chain_id))
         return normalized
 

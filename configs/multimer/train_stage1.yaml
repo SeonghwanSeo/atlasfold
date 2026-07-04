@@ -26,7 +26,7 @@ train:
         is_multimer: true
         is_distillation: false
         weight: 0.73
-        template_prob: 0.2
+        template_prob: 0.4
       - name: disordered_pdb_multimer
         is_multimer: true
         is_distillation: true
@@ -35,7 +35,12 @@ train:
       - name: long_monomers
         is_multimer: false
         is_distillation: true
-        weight: 0.25
+        weight: 0.245
+        use_templates: false
+      - name: short_monomers
+        is_multimer: false
+        is_distillation: true
+        weight: 0.005
         use_templates: false
     val_dataset:
       name: rcsb_multimer_val
@@ -47,7 +52,7 @@ train:
     train_diffusion_head: true
     train_confidence_head: true
     train_pde_head: true
-    train_pae_head: false
+    train_pae_head: true
     diffusion_batch_size: 32
 
   loss:
