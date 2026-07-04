@@ -252,7 +252,7 @@ def write_outputs(
         sample_text = sample.to_mmcif() if format == "cif" else sample.to_pdb()
         confidence_scores = sample.confidence_scores
 
-        with open(out_dir / f"{sample_name}.{format}", "w") as f:
+        with open(out_dir / f"{sample_name}_model.{format}", "w") as f:
             f.write(sample_text)
         with open(out_dir / f"{sample_name}_confidence.json", "w") as f:
             json.dump(confidence_scores, f, indent=2)
@@ -269,7 +269,7 @@ def write_outputs(
         if (seed, sample_idx) == best_sample_idx:
             rank_name = f"{target_name}_ranked"
             best_record = record
-            with open(out_dir / f"{rank_name}.{format}", "w") as f:
+            with open(out_dir / f"{rank_name}_model.{format}", "w") as f:
                 f.write(sample_text)
             with open(out_dir / f"{rank_name}_confidence.json", "w") as f:
                 json.dump(confidence_scores, f, indent=2)
