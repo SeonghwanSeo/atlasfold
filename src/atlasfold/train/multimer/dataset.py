@@ -884,7 +884,7 @@ class RCSBTrainingDataset(TrainingDataset):
 
         # Chain/Interface clustering for sampling
         chain_weights = 1.0
-        interface_weights = 4.0
+        interface_weights = 2.0
         samples: list[tuple[dict, int | tuple[int, int]]] = []
         weights: list[float] = []
         for m_dict in self.metadatas:
