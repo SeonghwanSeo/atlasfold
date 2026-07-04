@@ -43,11 +43,10 @@ def create_parser() -> argparse.ArgumentParser:
         help="Directory where predictions will be written.",
     )
     parser.add_argument(
-        "-c",
-        "--checkpoint",
+        "--model-path",
         type=Path,
         required=True,
-        help="Path to an AtlasFold checkpoint.",
+        help="Path to local AtlasFold weights.",
     )
     parser.add_argument(
         "--device",
@@ -144,7 +143,7 @@ def print_run_settings(args: argparse.Namespace) -> None:
     print(f"  model={args.model}")
     print(f"  input_fasta={args.input_fasta}")
     print(f"  out_dir={args.out_dir}")
-    print(f"  checkpoint={args.checkpoint}")
+    print(f"  model_path={args.model_path}")
     print(f"  device={args.device}")
     print(f"  format={args.format}")
     print(f"  use_fasta_chain_ids={args.use_fasta_chain_ids}")
@@ -166,7 +165,7 @@ def build_monomer_args(args: argparse.Namespace) -> argparse.Namespace:
         model=args.model,
         input_fasta=args.input_fasta,
         out_dir=args.out_dir,
-        checkpoint=args.checkpoint,
+        model_path=args.model_path,
         device=args.device,
         no_kernel=args.no_kernel,
         num_samples=args.num_samples,
@@ -203,7 +202,7 @@ def build_multimer_args(args: argparse.Namespace) -> argparse.Namespace:
         model=args.model,
         input_fasta=args.input_fasta,
         out_dir=args.out_dir,
-        checkpoint=args.checkpoint,
+        model_path=args.model_path,
         device=args.device,
         no_kernel=args.no_kernel,
         num_samples=args.num_samples,

@@ -48,11 +48,10 @@ def create_parser() -> argparse.ArgumentParser:
         help="Directory where predictions will be written.",
     )
     parser.add_argument(
-        "-c",
-        "--checkpoint",
+        "--model-path",
         type=Path,
         required=True,
-        help="Path to an AtlasFold checkpoint.",
+        help="Path to local AtlasFold weights.",
     )
     parser.add_argument(
         "--device",
@@ -210,23 +209,24 @@ def load_sequences(
     return sorted(sequences, key=lambda item: (len(item.sequence), item.name))
 
 
-def load_model(args: argparse.Namespace):
-    if not args.checkpoint.exists():
-        raise FileNotFoundError(f"Checkpoint file does not exist: {args.checkpoint}")
+def load_model(
+    model_path: str | Path,
+    device: str | torch.device | None = None,
+    disable_kernel: bool = False,
+) -> AtlasFold:
+    model_path = Path(model_path)
+    if not model_path.exists():
+        raise FileNotFoundError(f"Local weight file does not exist: {model_path}")
 
-    device = torch.device(
-        args.device
-        if args.device is not None
-        else "cuda"
-        if torch.cuda.is_available()
-        else "cpu"
-    )
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device)
 
-    logger.info("Loading checkpoint: path=%s, device=%s", args.checkpoint, device)
-    state_dict = torch.load(args.checkpoint, map_location="cpu")
+    logger.info("Loading weight path=%s, device=%s", model_path, device)
+    state_dict = torch.load(model_path, map_location="cpu")
 
     model = AtlasFold.from_pretrained(state_dict=state_dict, device=device)
-    model.set_forward_flags(use_cuequiv_kernels=not args.no_kernel)
+    model.set_forward_flags(use_cuequiv_kernels=not disable_kernel)
     return model
 
 
@@ -316,7 +316,7 @@ def run(args: argparse.Namespace) -> None:
         logger.info("All targets are complete. Nothing to do.")
         return
 
-    model = load_model(args)
+    model = load_model(args.model_path, args.device, args.no_kernel)
     runner = FoldingRunner(model)
     sampling_config = SamplingConfig(num_steps=args.num_steps, chunk_size=5)
 

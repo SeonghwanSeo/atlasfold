@@ -58,13 +58,6 @@ def create_parser() -> argparse.ArgumentParser:
         help="Directory where predictions will be written.",
     )
     parser.add_argument(
-        "-c",
-        "--checkpoint",
-        type=Path,
-        required=True,
-        help="Path to an AtlasFold-Multimer checkpoint.",
-    )
-    parser.add_argument(
         "--device",
         type=str,
         default=None,
@@ -144,6 +137,12 @@ def create_parser() -> argparse.ArgumentParser:
         "--overwrite",
         action="store_true",
         help="Recompute targets even when outputs already exist.",
+    )
+    parser.add_argument(
+        "--model-path",
+        type=Path,
+        required=True,
+        help="Path to local AtlasFold-Multimer weights.",
     )
     return parser
 
@@ -231,30 +230,29 @@ def load_inputs(args: argparse.Namespace) -> list[MultimerInput]:
     return inputs
 
 
-def load_model(args: argparse.Namespace):
-    if not args.checkpoint.exists():
-        raise FileNotFoundError(f"Checkpoint file does not exist: {args.checkpoint}")
+def load_model(
+    model_path: str | Path | None = None,
+    device: str | torch.device | None = None,
+    disable_kernel: bool = True,
+) -> AtlasFold_Multimer:
+    if model_path is None:
+        raise NotImplementedError("Model download is not implemented.")
 
-    device_str = args.device
+    model_path = Path(model_path)
+    if not model_path.exists():
+        raise FileNotFoundError(f"Local weight file does not exist: {model_path}")
+
+    device_str = device
     if device_str is None:
         device_str = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device_str)
     logger.info("Using device: %s", device)
 
-    logger.info("Loading checkpoint: path=%s", args.checkpoint)
-    checkpoint = torch.load(args.checkpoint, map_location="cpu")
-    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-        state_dict = {
-            k.removeprefix("model."): v for k, v in checkpoint["state_dict"].items()
-        }
-    else:
-        state_dict = {k.removeprefix("model."): v for k, v in checkpoint.items()}
+    logger.info("Loading weight path=%s", model_path)
+    state_dict = torch.load(model_path, map_location="cpu")
+    model = AtlasFold_Multimer.from_pretrained(state_dict, device=device)
 
-    model = AtlasFold_Multimer.from_pretrained(
-        state_dict=state_dict,
-        device=device,
-    )
-    model.set_forward_flags(use_cuequiv_kernels=not args.no_kernel)
+    model.set_forward_flags(use_cuequiv_kernels=not disable_kernel)
     return model
 
 
@@ -353,7 +351,12 @@ def run(args: argparse.Namespace) -> None:
         logger.info("All targets are complete. Nothing to do.")
         return
 
-    model = load_model(args)
+    # Load the model
+    model = load_model(args.model_path, args.device, args.no_kernel)
+    if args.no_kernel:
+        model.set_forward_flags(use_cuequiv_kernels=False)
+
+    # Set up the runner
     runner = MultimerFoldingRunner(model)
     sampling_config = SamplingConfig(num_steps=args.num_steps, chunk_size=5)
 
