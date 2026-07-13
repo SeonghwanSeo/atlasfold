@@ -1,4 +1,4 @@
-seed: 1
+seed: 4
 
 model:
   _yaml_: _model.yaml
@@ -11,11 +11,11 @@ model:
 
 train:
   _yaml_: _train_base.yaml
-  name: stage1
+  name: stage4
 
   data:
-    max_length: 256
-    max_seq_length: 512
+    max_length: 640
+    max_seq_length: 1280
     batch_size: 1
     global_batch_size: 256
 
@@ -23,23 +23,30 @@ train:
     train_datasets:
       - name: rcsb
         is_distillation: false
-        weight: 0.120
+        weight: 0.240
         sampling_strategy: ["length", "cluster"]
-      - name: disordered_pdb
+      - name: disordered_pdb_afm
         is_distillation: true
-        weight: 0.005
+        weight: 0.010
         sampling_strategy: ["length", "cluster"]
       - name: long_monomers
         is_distillation: true
-        weight: 0.865
-        sampling_strategy: ["length", "plddt"]
+        weight: 0.740
+        sampling_strategy: ["plddt"]
       - name: short_monomers
         is_distillation: true
         weight: 0.010
-        sampling_strategy: ["length", "plddt"]
+        sampling_strategy: ["plddt"]
     val_dataset:
       name: cameo_val
 
-  loss:
-    weights:
-      smooth_lddt: 1.0
+  training:
+    train_trunk: false
+
+  load_opt_state: false
+  init_from_ema: ["trunk"]
+
+  optimizer:
+    max_lr: 1e-3
+    lr_decay_factor: 1.0
+    ema_update_params: ["diffusion_head", "confidence_head."]

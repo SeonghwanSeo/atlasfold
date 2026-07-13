@@ -16,7 +16,7 @@ train:
   data:
     max_length: 512
     max_seq_length: 1024
-    batch_size: 2
+    batch_size: 1
     global_batch_size: 256
 
     data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
@@ -39,10 +39,3 @@ train:
         sampling_strategy: ["plddt"]
     val_dataset:
       name: cameo_val
-
-  training:
-    train_trunk: true
-    train_diffusion_head: true
-    train_confidence_head: true
-    train_pae_head: false
-    diffusion_batch_size: 32
