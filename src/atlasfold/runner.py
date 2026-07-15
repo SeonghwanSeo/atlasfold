@@ -52,6 +52,18 @@ def autocast_context(device: torch.device):
         yield
 
 
+def get_sampling_config(length: int) -> SamplingConfig:
+    """Return the default sampling configuration for AtlasFold."""
+    base_cfg = SamplingConfig()
+    if length <= 512:
+        base_cfg.num_steps = 20
+    elif length <= 1024:
+        base_cfg.num_steps = 30
+    else:
+        base_cfg.num_steps = 100
+    return base_cfg
+
+
 @dataclasses.dataclass(kw_only=True)
 class ProteinOutput(protein.Protein):
     """A data structure representing a predicted 3D protein structure"""
@@ -176,17 +188,16 @@ class FoldingRunner:
             raise ValueError(
                 f"max_tokens_per_batch must be positive, got {max_tokens_per_batch}."
             )
-        if sampling_config is None:
-            sampling_config = SamplingConfig(num_steps=25, sigma_max=160)
 
         normalized_inputs = self._normalize_inputs(inputs)
         bucketed_inputs = self._bucket_inputs(normalized_inputs, length_buckets)
         for bucket_length, chunk in self._iter_batch(
-            bucketed_inputs,
-            max_tokens_per_batch,
+            bucketed_inputs, max_tokens_per_batch
         ):
             sequences = [item.sequence for item in chunk]
             feat = self._make_batch_features(sequences, bucket_length)
+
+            _config = sampling_config or get_sampling_config(bucket_length)
 
             batch_outputs: list[dict[SampleKey, ProteinOutput]] = [{} for _ in chunk]
             for seed_value in seeds:
@@ -197,7 +208,7 @@ class FoldingRunner:
                     num_recycles=num_recycles,
                     mlm_prob=mlm_prob,
                     stochastic=stochastic,
-                    sampling_config=sampling_config,
+                    sampling_config=_config,
                 )
 
                 for batch_item_idx, item in enumerate(chunk):

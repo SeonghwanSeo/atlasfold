@@ -24,7 +24,7 @@ def setup_logging() -> None:
         return
 
     formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        "%(asctime)s | %(name)s | %(message)s",
         datefmt="%y/%m/%d %H:%M:%S",
     )
     console_handler = logging.StreamHandler(sys.stdout)
@@ -78,7 +78,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mlm-prob",
         type=float,
-        default=0.15,
+        default=0.20,
         help="LM masking probability used during recycling.",
     )
     parser.add_argument(
@@ -249,7 +249,7 @@ def load_model(
     logger.info("Using device: %s", device)
 
     logger.info("Loading weight path=%s", model_path)
-    state_dict = torch.load(model_path, map_location="cpu")
+    state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
     model = AtlasFold_Multimer.from_pretrained(state_dict, device=device)
 
     model.set_forward_flags(use_cuequiv_kernels=not disable_kernel)
@@ -358,7 +358,7 @@ def run(args: argparse.Namespace) -> None:
 
     # Set up the runner
     runner = MultimerFoldingRunner(model)
-    sampling_config = SamplingConfig(num_steps=args.num_steps, chunk_size=5)
+    sampling_config = SamplingConfig(num_steps=args.num_steps)
 
     logger.info(
         "Starting multimer inference: seeds=%s, num_samples=%d, "

@@ -20,7 +20,7 @@ def setup_logging() -> None:
         return
 
     formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        "%(asctime)s | %(name)s | %(message)s",
         datefmt="%y/%m/%d %H:%M:%S",
     )
     console_handler = logging.StreamHandler(sys.stdout)
@@ -84,7 +84,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--num-samples",
         type=int,
-        default=1,
+        default=5,
         help="Number of diffusion samples to generate per input sequence.",
     )
     parser.add_argument(
@@ -97,8 +97,8 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--num-steps",
         type=int,
-        default=20,
-        help="Number of diffusion sampling steps.",
+        default=None,
+        help="Number of diffusion sampling steps. If not set, uses the model default.",
     )
     parser.add_argument(
         "--max-tokens-per-batch",
@@ -318,16 +318,26 @@ def run(args: argparse.Namespace) -> None:
 
     model = load_model(args.model_path, args.device, args.no_kernel)
     runner = FoldingRunner(model)
-    sampling_config = SamplingConfig(num_steps=args.num_steps, chunk_size=5)
+
+    num_steps = args.num_steps if args.num_steps is not None else "auto"
+    if num_steps == "auto":
+        logger.info(
+            "Using automatic diffusion steps based on bucket length: "
+            "20 (L <= 512), 30 (512 < L <= 1024), 100 (L > 1024)."
+        )
+        sampling_config = None
+    else:
+        logger.info("Using fixed diffusion steps: %d.", num_steps)
+        sampling_config = SamplingConfig(num_steps=args.num_steps, chunk_size=5)
 
     logger.info(
         "Starting monomer inference: seeds=%s, num_samples=%d, "
-        "num_recycles=%d, mlm_prob=%s, num_steps=%d, stochastic=%s, format=%s",
+        "num_recycles=%d, mlm_prob=%s, num_steps=%s, stochastic=%s, format=%s",
         args.seed,
         args.num_samples,
         args.num_recycles,
         args.mlm_prob,
-        args.num_steps,
+        str(num_steps),
         args.stochastic,
         args.format,
     )

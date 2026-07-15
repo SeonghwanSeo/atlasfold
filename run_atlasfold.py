@@ -5,11 +5,11 @@ MODEL_DEFAULTS = {
     "monomer": {
         "num_recycles": 4,
         "mlm_prob": 0.15,
-        "num_steps": 20,
+        "num_steps": None,  # auto-determined based on sequence length
     },
     "multimer": {
         "num_recycles": 10,
-        "mlm_prob": 0.15,
+        "mlm_prob": 0.20,
         "num_steps": 200,
     },
 }

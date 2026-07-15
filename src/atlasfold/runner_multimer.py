@@ -24,6 +24,14 @@ class MultimerInput:
     def length(self) -> int:
         return sum(len(seq) for seq in self.sequence)
 
+    @classmethod
+    def from_sequence(
+        cls, name: str, sequence: str, chain_ids: list[str] | None = None
+    ) -> "MultimerInput":
+        """Create a MultimerInput from a single concatenated sequence."""
+        seqs = sequence.split(":")
+        return cls(name, seqs, chain_ids)
+
 
 def _sanitize_sequence(sequence: str) -> str:
     sequence = "".join(sequence.split()).upper()
@@ -161,18 +169,19 @@ class MultimerFoldingRunner:
     def fold(
         self,
         name: str,
-        sequence: list[str],
+        sequence: str | Sequence[str],
         *,
         num_samples: int = 1,
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 10,
         sampling_config: SamplingConfig | None = None,
-        mlm_prob: float = 0.15,
+        mlm_prob: float = 0.20,
         length_buckets: Sequence[int] | None = None,
     ) -> MultimerFoldingOutput:
+        sequences = sequence.split(":") if isinstance(sequence, str) else list(sequence)
         outputs = list(
             self.iter_fold_batch(
-                [MultimerInput(name, sequence)],
+                [MultimerInput(name, sequences)],
                 num_samples=num_samples,
                 seeds=seeds,
                 num_recycles=num_recycles,
@@ -191,7 +200,7 @@ class MultimerFoldingRunner:
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 10,
         sampling_config: SamplingConfig | None = None,
-        mlm_prob: float = 0.15,
+        mlm_prob: float = 0.20,
         length_buckets: Sequence[int] | None = None,
         max_tokens_per_batch: int = 1024,
     ) -> Iterator[list[MultimerFoldingOutput]]:
@@ -208,7 +217,7 @@ class MultimerFoldingRunner:
                 f"max_tokens_per_batch must be positive, got {max_tokens_per_batch}."
             )
         if sampling_config is None:
-            sampling_config = SamplingConfig(num_steps=200, sigma_max=160)
+            sampling_config = SamplingConfig(num_steps=200)
 
         normalized_inputs = self._normalize_inputs(inputs)
         bucketed_inputs = self._bucket_inputs(normalized_inputs, length_buckets)

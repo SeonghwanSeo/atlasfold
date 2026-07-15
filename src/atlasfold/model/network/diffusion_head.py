@@ -32,7 +32,7 @@ class SamplingConfig:
     step_scale: float = 1.5
 
     # Optional configurations
-    chunk_size: int | None = None  # For memory-efficient inference
+    chunk_size: int | None = 5  # If None, no chunking is applied.
 
     def get_sigmas(self) -> list[float]:
         """Get the noise schedule."""
