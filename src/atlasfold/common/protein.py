@@ -49,10 +49,6 @@ class Protein:
                     f"Invalid residue_index shape: {self.residue_index.shape}. "
                     f"Expected (L,) where L is the sequence length."
                 )
-            if not np.equal(self.residue_index, np.arange(1, L + 1)).all():
-                raise NotImplementedError(
-                    "Non-contiguous residue indices are not supported yet."
-                )
 
     def __len__(self):
         """Return the number of residues in the structure."""

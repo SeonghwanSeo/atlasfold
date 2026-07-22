@@ -7,7 +7,7 @@ seed: 1
 
 # Multi-state training
 load_opt_state: true
-init_from_ema: false
+init_from_ema: []
 
 # Compilation settings
 compile:
@@ -19,6 +19,7 @@ data:
   # Training hyperparameters
   max_length: ???
   max_seq_length: ???
+  max_contiguous_chains: 6
 
   # DataLoader
   batch_size: 1

@@ -17,6 +17,8 @@ train:
     max_length: 384
     max_seq_length: 768
     max_templates: 2
+    max_contiguous_chains: 6
+
     batch_size: 2
     global_batch_size: 256
 

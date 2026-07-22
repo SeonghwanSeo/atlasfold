@@ -2,19 +2,23 @@ seed: 3
 
 model:
   _yaml_: _model.yaml
-  template_module:
-    blocks_per_ckpt: null
   diffusion_head:
+    blocks_per_ckpt: null
+  confidence_head:
     blocks_per_ckpt: null
 
 train:
   _yaml_: _train_base.yaml
   name: stage3-768
 
+  init_from_ema: ['trunk']
+
   data:
     max_length: 768
     max_seq_length: 1536
     max_templates: 2
+    max_contiguous_chains: 8
+
     batch_size: 1
     global_batch_size: 256
 
@@ -23,7 +27,7 @@ train:
       - name: rcsb_multimer
         is_multimer: true
         is_distillation: false
-        weight: 0.490
+        weight: 0.390
         template_prob: 0.4
       - name: disordered_pdb_multimer
         is_multimer: true
@@ -33,12 +37,12 @@ train:
       - name: long_monomers
         is_multimer: false
         is_distillation: true
-        weight: 0.495
+        weight: 0.550
         use_templates: false
       - name: short_monomers
         is_multimer: false
         is_distillation: true
-        weight: 0.005
+        weight: 0.050
         use_templates: false
     val_dataset:
       name: rcsb_multimer_val
@@ -52,3 +56,16 @@ train:
     train_pde_head: true
     train_pae_head: true
     diffusion_batch_size: 32
+
+  optimizer:
+    max_lr: 0.001
+    warmup_steps: 0
+    decay_steps: 1000000000
+
+  loss:
+    weights:
+      smooth_lddt: 1.0
+
+    diffusion_loss:
+      smooth_lddt_loss:
+        chunk_size: 8

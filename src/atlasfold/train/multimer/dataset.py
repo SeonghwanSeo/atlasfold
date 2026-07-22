@@ -372,12 +372,16 @@ class TrainingDataset(LMDBDataset):
         max_length: int = 384,
         max_seq_length: int = 768,
         max_templates: int = 2,
+        max_contiguous_chains: int = 6,
     ):
         super().__init__(config, max_templates=max_templates)
         self.config: TrainingDatasetConfig = config
         if config.is_multimer:
             self.cropper = MultimerCropper(
-                prob_spatial=0.4, prob_interface_spatial=0.4, prob_contiguous=0.2
+                prob_spatial=0.4,
+                prob_interface_spatial=0.4,
+                prob_contiguous=0.2,
+                max_contiguous_chains=max_contiguous_chains,
             )
         else:
             self.cropper = MultimerCropper(
@@ -876,8 +880,11 @@ class RCSBTrainingDataset(TrainingDataset):
         max_length: int = 384,
         max_seq_length: int = 768,
         max_templates: int = 2,
+        max_contiguous_chains: int = 6,
     ):
-        super().__init__(config, max_length, max_seq_length, max_templates)
+        super().__init__(
+            config, max_length, max_seq_length, max_templates, max_contiguous_chains
+        )
         assert config.is_multimer, (
             "RCSBTrainingDataset should be used for multimer datasets."
         )
@@ -939,6 +946,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         max_length: int = 384,
         max_seq_length: int = 768,
         max_templates: int = 2,
+        max_contiguous_chains: int = 6,
     ) -> None:
         """
         Parameters
@@ -949,15 +957,25 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
             Maximum sequence length for the folding model input (default: 256).
         max_seq_length : int, optional
             Maximum sequence length for the language model input (default: 384).
+        max_contiguous_chains : int, optional
+            Maximum number of chains considered by contiguous cropping (default: 6).
         """
-        self.datasets: list[TrainingDataset] = [
-            RCSBTrainingDataset(config, max_length, max_seq_length, max_templates)
-            if config.is_multimer and config.name in {"rcsb", "rcsb_multimer"}
-            else MonomerTrainingDataset(config, max_length, max_seq_length, max_templates)
-            if not config.is_multimer
-            else TrainingDataset(config, max_length, max_seq_length, max_templates)
-            for config in configs
-        ]
+        self.datasets: list[TrainingDataset] = []
+        for config in configs:
+            if config.name in {"rcsb_multimer", "disordered_pdb_multimer"}:
+                ds = RCSBTrainingDataset(
+                    config,
+                    max_length,
+                    max_seq_length,
+                    max_templates,
+                    max_contiguous_chains,
+                )
+            elif not config.is_multimer:
+                ds = MonomerTrainingDataset(config, max_length, max_seq_length)
+            else:
+                raise ValueError(f"Unsupported dataset name: {config.name}")
+            self.datasets.append(ds)
+
         ds_weights: list[np.ndarray] = [ds.get_sampling_weights() for ds in self.datasets]
         self.weights: np.ndarray = np.concatenate(
             [w * cfg.weight for w, cfg in zip(ds_weights, configs, strict=True)]

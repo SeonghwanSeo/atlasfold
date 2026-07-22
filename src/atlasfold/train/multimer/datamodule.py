@@ -40,6 +40,7 @@ class DataModuleConfig:
     max_length: int = 256
     max_seq_length: int = 384
     max_templates: int = 2
+    max_contiguous_chains: int = 6
 
     # === Dataset configs === #
     data_root: str
@@ -87,6 +88,7 @@ class TrainingDataModule(pl.LightningDataModule):
             max_length=self.config.max_length,
             max_seq_length=self.config.max_seq_length,
             max_templates=self.config.max_templates,
+            max_contiguous_chains=self.config.max_contiguous_chains,
         )
         # Print dataset info
         for d in multi_ds.datasets:
