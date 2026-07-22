@@ -95,7 +95,7 @@ class TrainingModule(monomer_train_module.TrainingModule):
         }
 
     def setup_metrics(self):
-        val_metrics = {}
+        val_metrics = {"distogram/loss": MeanMetric()}
         metric_names = [
             "complex/rmsd",
             "complex/lddt",
@@ -237,6 +237,9 @@ class TrainingModule(monomer_train_module.TrainingModule):
                 return
             raise e
 
+        distogram_loss = self._compute_validation_distogram_loss(sample_out, feat, label)
+        self.val_metrics["distogram/loss"].update(distogram_loss)
+
         x_pred = sample_out["sample_coords"]  # [N, L, 14, 3]
         sanity_error = self._validation_rollout_sanity_error(sample_out, feat)
         failed = sanity_error is not None
@@ -262,6 +265,22 @@ class TrainingModule(monomer_train_module.TrainingModule):
         for k, v in metrics.items():
             if k in val_metrics:
                 val_metrics[k].update(v)
+
+    def _compute_validation_distogram_loss(
+        self,
+        sample_out: dict[str, torch.Tensor],
+        feat: dict[str, torch.Tensor],
+        label: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Compute distogram loss for an unbatched validation example."""
+        loss = self.distogram_loss(
+            logits=sample_out["distogram.logits"].unsqueeze(0),
+            boundaries=sample_out["distogram.boundaries"],
+            x_gt=label["coordinates"].unsqueeze(0),
+            mask_gt=label["resolved_mask"].unsqueeze(0),
+            cbeta_idx=feat["pseudo_beta"].unsqueeze(0),
+        )
+        return loss.mean()
 
     def _validation_rollout_sanity_error(
         self,

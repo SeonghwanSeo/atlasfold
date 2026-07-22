@@ -1,9 +1,7 @@
-seed: 2
+seed: 3
 
 model:
   _yaml_: _model.yaml
-  trunk:
-    blocks_per_ckpt: 8
   template_module:
     blocks_per_ckpt: null
   diffusion_head:
@@ -15,7 +13,7 @@ train:
 
   data:
     max_length: 768
-    max_seq_length: 1280
+    max_seq_length: 1536
     max_templates: 2
     batch_size: 1
     global_batch_size: 256
@@ -25,7 +23,7 @@ train:
       - name: rcsb_multimer
         is_multimer: true
         is_distillation: false
-        weight: 0.500
+        weight: 0.490
         template_prob: 0.4
       - name: disordered_pdb_multimer
         is_multimer: true
@@ -35,7 +33,7 @@ train:
       - name: long_monomers
         is_multimer: false
         is_distillation: true
-        weight: 0.485
+        weight: 0.495
         use_templates: false
       - name: short_monomers
         is_multimer: false
@@ -48,7 +46,7 @@ train:
       use_templates: false
 
   training:
-    train_trunk: true
+    train_trunk: false
     train_diffusion_head: true
     train_confidence_head: true
     train_pde_head: true

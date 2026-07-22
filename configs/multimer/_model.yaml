@@ -1,6 +1,6 @@
 name: "atlasfold_multimer"
 lm_name: "atlaslm-3b-base"
-lm_path: "/mnt/parallel_storage/wykim_lab/icl_shwan/esmc-reproduce/releases/atlaslm-3b-base/weights/atlaslm_3b_base.pth"
+lm_path: "/mnt/parallel_storage/wykim_lab/icl_shwan/atlasfold/weights/atlaslm_3b_base.pth"
 channel_s: 384
 channel_s_lm: 768
 channel_z: 128

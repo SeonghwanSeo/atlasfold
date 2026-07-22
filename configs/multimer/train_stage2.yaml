@@ -15,7 +15,7 @@ train:
 
   data:
     max_length: 640
-    max_seq_length: 1024
+    max_seq_length: 1280
     max_templates: 2
     batch_size: 1
     global_batch_size: 256
@@ -25,7 +25,7 @@ train:
       - name: rcsb_multimer
         is_multimer: true
         is_distillation: false
-        weight: 0.500
+        weight: 0.490
         template_prob: 0.4
       - name: disordered_pdb_multimer
         is_multimer: true
@@ -35,7 +35,7 @@ train:
       - name: long_monomers
         is_multimer: false
         is_distillation: true
-        weight: 0.485
+        weight: 0.495
         use_templates: false
       - name: short_monomers
         is_multimer: false
