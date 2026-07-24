@@ -197,6 +197,15 @@ class TrainingModule(pl.LightningModule):
             for m in module_groups[group]:
                 m.requires_grad_(False)
 
+    def train(self, mode: bool = True) -> "TrainingModule":
+        a = super().train(mode)
+        module_groups = self.model.get_module_groups()
+        for group in self.modules_to_freeze:
+            for m in module_groups[group]:
+                if isinstance(m, torch.nn.Module):
+                    m.eval()  # Set to eval mode
+        return a
+
     def setup_losses(self):
         """Setup loss functions for training"""
         loss_config = self.loss_config
