@@ -25,28 +25,33 @@ train:
     data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
     train_datasets:
       - name: rcsb_multimer
+        type: rcsb
         is_multimer: true
         is_distillation: false
+        use_templates: true
         weight: 0.490
         template_prob: 0.4
       - name: disordered_pdb_multimer
+        type: rcsb
         is_multimer: true
         is_distillation: true
         use_templates: false
         weight: 0.010
       - name: long_monomers
+        type: monomer_distillation
         is_multimer: false
         is_distillation: true
+        use_templates: false
         weight: 0.495
-        use_templates: false
       - name: short_monomers
+        type: monomer_distillation
         is_multimer: false
         is_distillation: true
-        weight: 0.005
         use_templates: false
+        weight: 0.005
     val_dataset:
       name: rcsb_multimer_val
-      is_multimer: true
+      type: rcsb
       use_templates: false
 
   training:

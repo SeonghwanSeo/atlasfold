@@ -20,7 +20,6 @@ from atlasfold.train.multimer.cropper import MultimerCropper
 from atlasfold.utils.geometry.random_augment import do_centering_atom14
 from atlaslm.alphabet import Alphabet
 
-DEFAULT_MAX_TEMPLATES = 0
 TEMPLATE_AATYPE_MISMATCH_SKIP_FRACTION = 0.5
 
 
@@ -91,17 +90,21 @@ class DatasetConfig:
     ----------
     name: str
         Name of the dataset, e.g., "pdb", "afdb"
+    type: str
+        Dataset implementation type.
+        One of "rcsb", "multimer_distillation", or "monomer_distillation".
+    is_multimer: bool
+        Whether the dataset contains multimeric structures.
     data_dir: str
         Path to the preprocessed data directory.
     metadata_path: str | None
         Path to the custom metadata file in msgpack format.
-    is_multimer: bool
-        Whether the dataset contains multimeric structures.
     use_templates: bool
-        Whether to load per-chain template features when template files exist.
+        Whether to load per-chain template features.
     """
 
     name: str
+    type: str
     data_dir: str | None = None
     metadata_path: str | None = None
     is_multimer: bool = True
@@ -140,8 +143,10 @@ class LMDBDataset(torch.utils.data.Dataset):
     ):
         super().__init__()
         self.name: str = config.name
+        self.type: str = config.type
         self.lm_alphabet: Alphabet = Alphabet()
         self.is_multimer: bool = config.is_multimer
+        self.use_templates = config.use_templates
 
         # Set path
         if config.data_dir is None:
@@ -161,25 +166,25 @@ class LMDBDataset(torch.utils.data.Dataset):
 
         # Optional AlphaFold-Multimer-style per-chain template resources.
         self.max_templates = int(max_templates)
-        if self.max_templates < 0:
-            raise ValueError("max_templates must be non-negative.")
-        self.use_templates = False
-        if config.use_templates and self.is_multimer and self.max_templates > 0:
+        if self.use_templates:
+            assert self.max_templates > 0, (
+                "max_templates must be > 0 if use_templates is True."
+            )
             template_lmdb_path = pathlib.Path(
                 config.template_lmdb_path or data_dir / "template.lmdb"
             )
             template_mapping_path = pathlib.Path(
                 config.template_mapping_path or data_dir / "template_mapping.lmdb"
             )
-            if template_lmdb_path.exists() and template_mapping_path.exists():
-                self.template_lmdb_path = str(template_lmdb_path)
-                self.template_mapping_path = str(template_mapping_path)
-                self.use_templates = True
-            else:
-                logging.getLogger(__name__).info(
-                    f"Template resources not found for dataset '{self.name}'; "
-                    "continuing without templates."
-                )
+            assert template_lmdb_path.exists(), (
+                f"Template LMDB path {template_lmdb_path} does not exist."
+            )
+            assert template_mapping_path.exists(), (
+                f"Template mapping LMDB path {template_mapping_path} does not exist."
+            )
+            self.template_lmdb_path = str(template_lmdb_path)
+            self.template_mapping_path = str(template_mapping_path)
+            self.use_templates = True
 
     def __len__(self) -> int:
         return len(self.metadatas)
@@ -376,7 +381,7 @@ class TrainingDataset(LMDBDataset):
     ):
         super().__init__(config, max_templates=max_templates)
         self.config: TrainingDatasetConfig = config
-        if config.is_multimer:
+        if self.is_multimer:
             self.cropper = MultimerCropper(
                 prob_spatial=0.4,
                 prob_interface_spatial=0.4,
@@ -918,17 +923,27 @@ class RCSBTrainingDataset(TrainingDataset):
         return self.prepare_input(compl, m, chain_id, rng)
 
 
-class MonomerTrainingDataset(TrainingDataset):
-    """Training dataset for monomer distillation"""
+class MultimerDistillationDataset(TrainingDataset):
+    """Training dataset for multimer distillation"""
 
     def __init__(
         self,
         config: TrainingDatasetConfig,
         max_length: int = 384,
         max_seq_length: int = 768,
-        max_templates: int = 2,
+        max_templates: int = 0,
+        max_contiguous_chains: int = 6,
     ):
-        super().__init__(config, max_length, max_seq_length, max_templates)
+        super().__init__(
+            config, max_length, max_seq_length, max_templates, max_contiguous_chains
+        )
+        assert config.is_multimer, (
+            "MultimerDistillationDataset should be used for multimer datasets."
+        )
+
+
+class MonomerTrainingDataset(TrainingDataset):
+    """Training dataset for monomer distillation"""
 
     def sample_item(self, index: int) -> dict[str, dict[str, torch.Tensor]] | None:
         rng = np.random.default_rng()
@@ -962,7 +977,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         """
         self.datasets: list[TrainingDataset] = []
         for config in configs:
-            if config.name in {"rcsb_multimer", "disordered_pdb_multimer"}:
+            if config.type == "rcsb":
                 ds = RCSBTrainingDataset(
                     config,
                     max_length,
@@ -970,10 +985,21 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
                     max_templates,
                     max_contiguous_chains,
                 )
-            elif not config.is_multimer:
+            elif config.type == "multimer_distillation":
+                ds = MultimerDistillationDataset(
+                    config,
+                    max_length,
+                    max_seq_length,
+                    max_templates,
+                    max_contiguous_chains,
+                )
+            elif config.type == "monomer_distillation":
                 ds = MonomerTrainingDataset(config, max_length, max_seq_length)
             else:
-                raise ValueError(f"Unsupported dataset name: {config.name}")
+                raise ValueError(
+                    f"Unsupported dataset type '{config.type}' "
+                    f"for dataset '{config.name}'."
+                )
             self.datasets.append(ds)
 
         ds_weights: list[np.ndarray] = [ds.get_sampling_weights() for ds in self.datasets]
@@ -1002,14 +1028,11 @@ class ValidationDataset(LMDBDataset):
     def __init__(
         self,
         config: ValidationDatasetConfig,
-        max_templates: int = DEFAULT_MAX_TEMPLATES,
+        max_templates: int = 0,
     ):
         super().__init__(config, max_templates=max_templates)
-        if not config.is_multimer:
-            raise ValueError("ValidationDataset should be used for multimer datasets.")
         self.config = config
         self.name = config.name
-
         # Sort the metadatas by sequence length for efficient batching
         self.metadatas.sort(
             key=lambda m: m.get(
