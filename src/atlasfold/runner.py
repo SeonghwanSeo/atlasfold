@@ -18,7 +18,6 @@ class FoldingInput:
 
     name: str
     sequence: str
-    chain_id: str = "A"
 
 
 FoldingInputLike: TypeAlias = FoldingInput | tuple[str, str]
@@ -139,7 +138,6 @@ class FoldingRunner:
         name: str,
         sequence: str,
         *,
-        chain_id: str | None = None,
         num_samples: int = 1,
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 4,
@@ -150,7 +148,7 @@ class FoldingRunner:
     ) -> FoldingOutput:
         outputs = list(
             self.iter_fold_batch(
-                [FoldingInput(name, sequence, chain_id or "A")],
+                [FoldingInput(name, sequence)],
                 num_samples=num_samples,
                 seeds=seeds,
                 num_recycles=num_recycles,
@@ -216,7 +214,6 @@ class FoldingRunner:
                         self._make_outputs(
                             name=item.name,
                             sequence=item.sequence,
-                            chain_id=item.chain_id,
                             out=out,
                             batch_idx=batch_item_idx,
                             num_samples=num_samples,
@@ -270,16 +267,13 @@ class FoldingRunner:
             if isinstance(item, FoldingInput):
                 name = item.name
                 sequence = item.sequence
-                chain_id = item.chain_id
             else:
                 name, sequence = item
-                chain_id = "A"
 
-            chain_id = str(chain_id)
             sequence = _sanitize_sequence(str(sequence))
             if len(sequence) == 0:
                 raise ValueError(f"Input ({name}) has an empty sequence.")
-            normalized.append(FoldingInput(str(name), sequence, chain_id))
+            normalized.append(FoldingInput(str(name), sequence))
         return normalized
 
     @classmethod
@@ -352,7 +346,6 @@ class FoldingRunner:
         *,
         name: str,
         sequence: str,
-        chain_id: str,
         out: dict[str, np.ndarray],
         batch_idx: int,
         num_samples: int,
@@ -370,7 +363,6 @@ class FoldingRunner:
             sample = ProteinOutput(
                 name=name,
                 sequence=sequence,
-                chain_id=chain_id,
                 seed=seed,
                 sample_index=sample_idx,
                 coordinates=coords,

@@ -126,14 +126,6 @@ def create_parser() -> argparse.ArgumentParser:
         help="Structure file format for sample and ranked outputs.",
     )
     parser.add_argument(
-        "--use-fasta-chain-ids",
-        action="store_true",
-        help=(
-            "Read optional chain_id=... metadata from FASTA headers. When set, "
-            "headers may only contain the target name and chain_id=..."
-        ),
-    )
-    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Recompute targets even when outputs already exist.",
@@ -152,44 +144,17 @@ def normalize_target_name(header: str) -> str:
     return safe_name
 
 
-def parse_fasta_header(
-    header: str,
-    use_fasta_chain_ids: bool,
-) -> tuple[str, str | None]:
-    fields = header.split()
-    if len(fields) == 0:
-        raise ValueError(f"Invalid FASTA header: {header!r}")
-
-    name = normalize_target_name(header)
-    chain_id = None
-    if use_fasta_chain_ids:
-        for field in fields[1:]:
-            key, sep, value = field.partition("=")
-            if not sep or key != "chain_id":
-                raise ValueError(
-                    f"Invalid FASTA header for {name}: {header!r}. When "
-                    "--use-fasta-chain-ids is set, monomer headers may only "
-                    "contain the target name and chain_id=..."
-                )
-            if chain_id is not None:
-                raise ValueError(f"FASTA header for {name} has multiple chain ID fields.")
-            chain_id = value
-
-    return name, chain_id
-
-
 def load_sequences(
     input_fasta: Path,
     format: str = "cif",
-    use_fasta_chain_ids: bool = False,
 ) -> list[FoldingInput]:
     if not input_fasta.exists():
         raise FileNotFoundError(f"Input FASTA file does not exist: {input_fasta}")
 
     sequences: list[FoldingInput] = []
     for header, sequence in read_fasta(input_fasta):
-        name, chain_id = parse_fasta_header(header, use_fasta_chain_ids)
-        sequences.append(FoldingInput(name, sequence, chain_id or "A"))
+        name = normalize_target_name(header)
+        sequences.append(FoldingInput(name, sequence))
     if len(sequences) == 0:
         raise ValueError(f"No sequences found in FASTA file: {input_fasta}")
 
@@ -290,7 +255,7 @@ def write_outputs(
 def run(args: argparse.Namespace) -> None:
     setup_logging()
 
-    sequences = load_sequences(args.input_fasta, args.format, args.use_fasta_chain_ids)
+    sequences = load_sequences(args.input_fasta, args.format)
     logger.info(
         "Loaded %d sequences from %s. Length range: %d-%d.",
         len(sequences),

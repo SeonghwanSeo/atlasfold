@@ -126,14 +126,6 @@ def create_parser() -> argparse.ArgumentParser:
         help="Structure file format for sample and ranked outputs.",
     )
     parser.add_argument(
-        "--use-fasta-chain-ids",
-        action="store_true",
-        help=(
-            "Read optional chain_ids=... metadata from FASTA headers. "
-            "The IDs must match ':'-separated chains in order."
-        ),
-    )
-    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Recompute targets even when outputs already exist.",
@@ -154,46 +146,6 @@ def safe_target_name(name: str) -> str:
     return safe_name
 
 
-def parse_fasta_header(
-    header: str,
-    use_fasta_chain_ids: bool,
-) -> tuple[str, list[str] | None]:
-    fields = header.split()
-    if len(fields) == 0:
-        raise ValueError(f"Invalid FASTA header: {header!r}")
-
-    name = safe_target_name(fields[0])
-    chain_ids = None
-    if use_fasta_chain_ids:
-        for field in fields[1:]:
-            key, sep, value = field.partition("=")
-            if not sep or key != "chain_ids":
-                raise ValueError(
-                    f"Invalid FASTA header for {name}: {header!r}. When "
-                    "--use-fasta-chain-ids is set, multimer headers may only "
-                    "contain the target name and chain_ids=..."
-                )
-            if chain_ids is not None:
-                raise ValueError(f"FASTA header for {name} has multiple chain ID fields.")
-            chain_ids = value.split(",")
-
-    return name, chain_ids
-
-
-def validate_chain_ids(
-    target_name: str,
-    sequences: list[str],
-    chain_ids: list[str] | None,
-) -> None:
-    if chain_ids is None:
-        return
-    if len(chain_ids) != len(sequences):
-        raise ValueError(
-            f"FASTA target {target_name} has {len(sequences)} chains but "
-            f"{len(chain_ids)} chain IDs."
-        )
-
-
 def split_chain_sequences(sequence: str) -> list[str]:
     sequences = [part for part in sequence.split(":") if part.strip()]
     if len(sequences) == 0:
@@ -207,10 +159,12 @@ def load_inputs(args: argparse.Namespace) -> list[MultimerInput]:
 
     inputs: list[MultimerInput] = []
     for header, sequence in read_fasta(args.input_fasta):
-        name, chain_ids = parse_fasta_header(header, args.use_fasta_chain_ids)
+        fields = header.split()
+        if len(fields) == 0:
+            raise ValueError(f"Invalid FASTA header: {header!r}")
+        name = safe_target_name(fields[0])
         sequences = split_chain_sequences(sequence)
-        validate_chain_ids(name, sequences, chain_ids)
-        inputs.append(MultimerInput(name, sequences, chain_ids))
+        inputs.append(MultimerInput(name, sequences))
     if len(inputs) == 0:
         raise ValueError(f"No sequences found in FASTA file: {args.input_fasta}")
 

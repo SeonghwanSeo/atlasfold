@@ -116,14 +116,6 @@ def create_parser() -> argparse.ArgumentParser:
         help="Optional explicit residue buckets.",
     )
     parser.add_argument(
-        "--use-fasta-chain-ids",
-        action="store_true",
-        help=(
-            "Read optional chain_id=... metadata for monomer inference or "
-            "chain_ids=... metadata for multimer inference from FASTA headers."
-        ),
-    )
-    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Recompute targets even when outputs already exist.",
@@ -146,7 +138,6 @@ def print_run_settings(args: argparse.Namespace) -> None:
     print(f"  model_path={args.model_path}")
     print(f"  device={args.device}")
     print(f"  format={args.format}")
-    print(f"  use_fasta_chain_ids={args.use_fasta_chain_ids}")
     print(f"  num_recycles={args.num_recycles}")
     print(f"  mlm_prob={args.mlm_prob}")
     print(f"  num_samples={args.num_samples}")
@@ -189,7 +180,6 @@ def build_monomer_args(args: argparse.Namespace) -> argparse.Namespace:
         format=args.format,
         max_tokens_per_batch=args.max_tokens_per_batch,
         length_buckets=args.length_buckets,
-        use_fasta_chain_ids=args.use_fasta_chain_ids,
         overwrite=args.overwrite,
     )
 
@@ -225,7 +215,6 @@ def build_multimer_args(args: argparse.Namespace) -> argparse.Namespace:
         format=args.format,
         max_tokens_per_batch=args.max_tokens_per_batch,
         length_buckets=args.length_buckets,
-        use_fasta_chain_ids=args.use_fasta_chain_ids,
         overwrite=args.overwrite,
     )
 

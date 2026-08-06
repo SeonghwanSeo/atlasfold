@@ -18,19 +18,16 @@ class MultimerInput:
 
     name: str
     sequence: list[str]
-    chain_ids: list[str] | None = None
 
     @property
     def length(self) -> int:
         return sum(len(seq) for seq in self.sequence)
 
     @classmethod
-    def from_sequence(
-        cls, name: str, sequence: str, chain_ids: list[str] | None = None
-    ) -> "MultimerInput":
+    def from_sequence(cls, name: str, sequence: str) -> "MultimerInput":
         """Create a MultimerInput from a single concatenated sequence."""
         seqs = sequence.split(":")
-        return cls(name, seqs, chain_ids)
+        return cls(name, seqs)
 
 
 def _sanitize_sequence(sequence: str) -> str:
@@ -299,15 +296,7 @@ class MultimerFoldingRunner:
             sequences = [_sanitize_sequence(seq) for seq in item.sequence]
             if any(len(seq) == 0 for seq in sequences):
                 raise ValueError(f"Input ({item.name}) has an empty chain.")
-            chain_ids = None
-            if item.chain_ids is not None:
-                if isinstance(item.chain_ids, str):
-                    raise ValueError(
-                        f"Input ({item.name}) chain_ids must be a sequence of IDs, "
-                        "not a string."
-                    )
-                chain_ids = [str(chain_id) for chain_id in item.chain_ids]
-            normalized.append(MultimerInput(str(item.name), sequences, chain_ids))
+            normalized.append(MultimerInput(str(item.name), sequences))
         return normalized
 
     @classmethod
@@ -336,11 +325,7 @@ class MultimerFoldingRunner:
             for start in range(0, len(bucket_items), batch_size):
                 chunk = bucket_items[start : start + batch_size]
                 complexes = [
-                    protein.ProteinMultimer.get_empty(
-                        item.name,
-                        item.sequence,
-                        chain_ids=item.chain_ids,
-                    )
+                    protein.ProteinMultimer.get_empty(item.name, item.sequence)
                     for item in chunk
                 ]
                 yield bucket_length, complexes
