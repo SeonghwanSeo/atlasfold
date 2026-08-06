@@ -1,37 +1,43 @@
 import dataclasses
 import functools
+import warnings
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
+from typing import NamedTuple, TypeAlias
 
 import numpy as np
 import torch
 
 from atlasfold.common import featurize, protein, residue_constants
 from atlasfold.model import AtlasFold_Multimer, SamplingConfig
-from atlasfold.model.utils import confidence_metrics
 from atlasfold.runner import SampleKey, autocast_context, seed_context
 
 
-@dataclasses.dataclass(frozen=True)
-class MultimerInput:
+class MultimerInput(NamedTuple):
     """Input for one multimer folding target."""
 
     name: str
-    sequence: list[str]
+    chains: Sequence[str]
 
     @property
     def length(self) -> int:
-        return sum(len(seq) for seq in self.sequence)
-
-    @classmethod
-    def from_sequence(cls, name: str, sequence: str) -> "MultimerInput":
-        """Create a MultimerInput from a single concatenated sequence."""
-        seqs = sequence.split(":")
-        return cls(name, seqs)
+        return sum(len(chain) for chain in self.chains)
 
 
-def _sanitize_sequence(sequence: str) -> str:
+MultimerInputLike: TypeAlias = MultimerInput | tuple[str, Sequence[str]]
+
+
+def _sanitize_sequence(name: str, sequence: str) -> str:
     sequence = "".join(sequence.split()).upper()
+    nonstandard_residues = sorted(
+        set(sequence).difference(residue_constants.restype_orders)
+    )
+    if nonstandard_residues:
+        warnings.warn(
+            f"{name}: Nonstandard residue(s) "
+            f"{', '.join(nonstandard_residues)} replaced with 'X'.",
+            stacklevel=2,
+        )
     return "".join(
         aa if aa in residue_constants.restype_orders else "X" for aa in sequence
     )
@@ -146,6 +152,8 @@ class MultimerFoldingOutput:
 
     outputs: dict[SampleKey, ProteinMultimerOutput]
     ranking: list[SampleKey]
+    distogram_logits: dict[int, np.ndarray] = dataclasses.field(default_factory=dict)
+    distogram_boundaries: np.ndarray | None = None
 
     @property
     def name(self) -> str:
@@ -154,6 +162,16 @@ class MultimerFoldingOutput:
     @property
     def length(self) -> int:
         return self.outputs[next(iter(self.outputs))].num_residues
+
+    @property
+    def best_key(self) -> SampleKey:
+        if len(self.ranking) == 0:
+            raise ValueError("No ranked samples are available.")
+        return self.ranking[0]
+
+    @property
+    def best(self) -> ProteinMultimerOutput:
+        return self.outputs[self.best_key]
 
 
 class MultimerFoldingRunner:
@@ -166,7 +184,7 @@ class MultimerFoldingRunner:
     def fold(
         self,
         name: str,
-        sequence: str | Sequence[str],
+        chains: Sequence[str],
         *,
         num_samples: int = 1,
         seeds: int | Sequence[int] = 1,
@@ -174,24 +192,24 @@ class MultimerFoldingRunner:
         sampling_config: SamplingConfig | None = None,
         mlm_prob: float = 0.20,
         length_buckets: Sequence[int] | None = None,
+        return_distogram: bool = False,
     ) -> MultimerFoldingOutput:
-        sequences = sequence.split(":") if isinstance(sequence, str) else list(sequence)
-        outputs = list(
-            self.iter_fold_batch(
-                [MultimerInput(name, sequences)],
+        return next(
+            self.fold_iter(
+                [MultimerInput(name, chains)],
                 num_samples=num_samples,
                 seeds=seeds,
                 num_recycles=num_recycles,
                 mlm_prob=mlm_prob,
                 sampling_config=sampling_config,
                 length_buckets=length_buckets,
+                return_distogram=return_distogram,
             )
         )
-        return outputs[0][0]
 
-    def iter_fold_batch(
+    def fold_iter(
         self,
-        inputs: Sequence[MultimerInput],
+        inputs: Sequence[MultimerInputLike],
         *,
         num_samples: int = 1,
         seeds: int | Sequence[int] = 1,
@@ -200,6 +218,34 @@ class MultimerFoldingRunner:
         mlm_prob: float = 0.20,
         length_buckets: Sequence[int] | None = None,
         max_tokens_per_batch: int = 1024,
+        return_distogram: bool = False,
+    ) -> Iterator[MultimerFoldingOutput]:
+        """Yield predictions one target at a time in bucket execution order."""
+        for batch in self.fold_iter_batch(
+            inputs,
+            num_samples=num_samples,
+            seeds=seeds,
+            num_recycles=num_recycles,
+            sampling_config=sampling_config,
+            mlm_prob=mlm_prob,
+            length_buckets=length_buckets,
+            max_tokens_per_batch=max_tokens_per_batch,
+            return_distogram=return_distogram,
+        ):
+            yield from batch
+
+    def fold_iter_batch(
+        self,
+        inputs: Sequence[MultimerInputLike],
+        *,
+        num_samples: int = 1,
+        seeds: int | Sequence[int] = 1,
+        num_recycles: int = 10,
+        sampling_config: SamplingConfig | None = None,
+        mlm_prob: float = 0.20,
+        length_buckets: Sequence[int] | None = None,
+        max_tokens_per_batch: int = 1024,
+        return_distogram: bool = False,
     ) -> Iterator[list[MultimerFoldingOutput]]:
         seeds = [seeds] if isinstance(seeds, int) else list(seeds)
 
@@ -227,6 +273,10 @@ class MultimerFoldingRunner:
             model_outputs: list[dict[SampleKey, ProteinMultimerOutput]] = [
                 {} for _ in range(batch_size)
             ]
+            batch_distogram_logits: list[dict[int, np.ndarray]] = [
+                {} for _ in range(batch_size)
+            ]
+            distogram_boundaries = None
             for seed_value in seeds:
                 out = self.model_run(
                     batch,
@@ -235,9 +285,17 @@ class MultimerFoldingRunner:
                     num_recycles=num_recycles,
                     mlm_prob=mlm_prob,
                     sampling_config=sampling_config,
+                    return_distogram=return_distogram,
                 )
 
+                if return_distogram:
+                    distogram_boundaries = out["distogram.boundaries"]
                 for batch_i, complex_input in enumerate(complexes):
+                    if return_distogram:
+                        length = complex_input.num_residues
+                        batch_distogram_logits[batch_i][seed_value] = out[
+                            "distogram.logits"
+                        ][batch_i, :length, :length]
                     model_outputs[batch_i].update(
                         self._make_outputs(
                             complex_input=complex_input,
@@ -248,11 +306,18 @@ class MultimerFoldingRunner:
                         )
                     )
             batch_outputs = []
-            for outputs in model_outputs:
+            for batch_i, outputs in enumerate(model_outputs):
                 ranking = sorted(
                     outputs.keys(), key=lambda k: outputs[k].ranking_score, reverse=True
                 )
-                batch_outputs.append(MultimerFoldingOutput(outputs, ranking))
+                batch_outputs.append(
+                    MultimerFoldingOutput(
+                        outputs,
+                        ranking,
+                        distogram_logits=batch_distogram_logits[batch_i],
+                        distogram_boundaries=distogram_boundaries,
+                    )
+                )
             yield batch_outputs
 
     def model_run(
@@ -263,6 +328,7 @@ class MultimerFoldingRunner:
         num_recycles: int,
         mlm_prob: float,
         sampling_config: SamplingConfig,
+        return_distogram: bool = False,
     ) -> dict[str, np.ndarray]:
         device = self.device
         tensor_feat: dict[str, torch.Tensor] = {
@@ -280,23 +346,38 @@ class MultimerFoldingRunner:
                 mlm_prob=mlm_prob,
                 sampling_config=sampling_config,
             )
-        return {k: v.cpu().float().numpy() for k, v in out.items()}
+        output_keys = {
+            "sample_coords",
+            "plddt",
+            "pae",
+            "pde",
+            "ptm",
+            "iptm",
+            "chain_ptm",
+            "interface_iptm",
+        }
+        if return_distogram:
+            output_keys.update({"distogram.logits", "distogram.boundaries"})
+        return {
+            key: value.cpu().float().numpy()
+            for key, value in out.items()
+            if key in output_keys
+        }
 
     @staticmethod
     def _normalize_inputs(
-        inputs: Sequence[MultimerInput],
+        inputs: Sequence[MultimerInputLike],
     ) -> list[MultimerInput]:
         normalized: list[MultimerInput] = []
-        for item in inputs:
-            if not isinstance(item.sequence, list):
-                raise TypeError(
-                    "MultimerFoldingRunner expects pre-split chain sequences. "
-                    "Pass a list[str]."
-                )
-            sequences = [_sanitize_sequence(seq) for seq in item.sequence]
-            if any(len(seq) == 0 for seq in sequences):
+        for input_ in inputs:
+            item = MultimerInput(*input_)
+            chains = [
+                _sanitize_sequence(f"{item.name} chain {chain_index}", chain)
+                for chain_index, chain in enumerate(item.chains, start=1)
+            ]
+            if any(len(chain) == 0 for chain in chains):
                 raise ValueError(f"Input ({item.name}) has an empty chain.")
-            normalized.append(MultimerInput(str(item.name), sequences))
+            normalized.append(MultimerInput(item.name, chains))
         return normalized
 
     @classmethod
@@ -307,7 +388,7 @@ class MultimerFoldingRunner:
     ) -> dict[int, list[MultimerInput]]:
         bucketed_inputs: dict[int, list[MultimerInput]] = defaultdict(list)
         for item in inputs:
-            length = sum(len(seq) for seq in item.sequence)
+            length = sum(len(chain) for chain in item.chains)
             if length == 0:
                 raise ValueError(f"Input {item.name} has no residues.")
             bucket_length = cls._get_length_bucket(length, length_buckets)
@@ -325,7 +406,7 @@ class MultimerFoldingRunner:
             for start in range(0, len(bucket_items), batch_size):
                 chunk = bucket_items[start : start + batch_size]
                 complexes = [
-                    protein.ProteinMultimer.get_empty(item.name, item.sequence)
+                    protein.ProteinMultimer.get_empty(item.name, list(item.chains))
                     for item in chunk
                 ]
                 yield bucket_length, complexes
@@ -390,12 +471,7 @@ class MultimerFoldingRunner:
         chain_lengths = [len(chain.sequence) for chain in complex_input.chains]
         total_length = sum(chain_lengths)
         chain_ids = [chain.name for chain in complex_input.chains]
-        chain_ranges = []
-        start = 0
-        for chain_length in chain_lengths:
-            end = start + chain_length
-            chain_ranges.append((start, end))
-            start = end
+        num_chains = len(chain_lengths)
         samples = {}
 
         for sample_idx in range(num_samples):
@@ -426,45 +502,18 @@ class MultimerFoldingRunner:
                 )
                 start = end
 
-            pae_logits = torch.as_tensor(
-                out["pae_logits"][batch_idx, sample_idx, :total_length, :total_length]
-            )
-            pae_bin_centers = torch.as_tensor(out["pae_bin_centers"])
-
-            chain_ptm: list[float] = []
-            for start, end in chain_ranges:
-                chain_mask = torch.ones(end - start, dtype=torch.bool)
-                chain_ptm.append(
-                    confidence_metrics.compute_ptm(
-                        pae_logits[start:end, start:end],
-                        pae_bin_centers,
-                        chain_mask,
-                    ).item()
-                )
-
-            interface_iptm_dict: dict[tuple[int, int], float] = {}
-            for chain_i, (start_i, end_i) in enumerate(chain_ranges):
-                for chain_j, (start_j, end_j) in enumerate(
-                    chain_ranges[chain_i + 1 :], chain_i + 1
-                ):
-                    residue_idx = list(range(start_i, end_i)) + list(
-                        range(start_j, end_j)
-                    )
-                    interface_logits = pae_logits[residue_idx][:, residue_idx]
-                    interface_asym_id = torch.cat(
-                        [
-                            torch.zeros(end_i - start_i, dtype=torch.long),
-                            torch.ones(end_j - start_j, dtype=torch.long),
-                        ]
-                    )
-                    interface_mask = torch.ones(len(residue_idx), dtype=torch.bool)
-                    interface_iptm = confidence_metrics.compute_iptm(
-                        interface_logits,
-                        pae_bin_centers,
-                        interface_asym_id,
-                        interface_mask,
-                    ).item()
-                    interface_iptm_dict[(chain_i, chain_j)] = interface_iptm
+            chain_ptm = [
+                float(value)
+                for value in out["chain_ptm"][batch_idx, sample_idx, :num_chains]
+            ]
+            interface_iptm = out["interface_iptm"][
+                batch_idx, sample_idx, :num_chains, :num_chains
+            ]
+            interface_iptm_dict = {
+                (chain_i, chain_j): float(interface_iptm[chain_i, chain_j])
+                for chain_i in range(num_chains)
+                for chain_j in range(chain_i + 1, num_chains)
+            }
 
             samples[(seed, sample_idx)] = ProteinMultimerOutput(
                 name=complex_input.name,

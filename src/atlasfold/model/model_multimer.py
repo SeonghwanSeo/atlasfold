@@ -396,20 +396,34 @@ class AtlasFold_Multimer(torch.nn.Module):
             out["pde"] = confidence_metrics.compute_pde(
                 **confidence_out["pde"], mask=mask
             )
-            out["pae_logits"] = confidence_out["pae"]["logits"]
-            out["pae_bin_centers"] = confidence_out["pae"]["bin_centers"]
-            out["pae"] = confidence_metrics.compute_pae(
-                **confidence_out["pae"], mask=mask
+            pae_logits = confidence_out["pae"]["logits"]
+            pae_bin_centers = confidence_out["pae"]["bin_centers"]
+            pae_probs = torch.softmax(pae_logits, dim=-1)
+            out["pae"] = confidence_metrics.compute_pae_from_probs(
+                pae_probs,
+                pae_bin_centers,
+                mask,
             )
-            out["ptm"] = confidence_metrics.compute_ptm(
-                **confidence_out["pae"], mask=mask
+            out["ptm"] = confidence_metrics.compute_ptm_from_probs(
+                pae_probs,
+                pae_bin_centers,
+                mask,
             )
-            out["iptm"] = confidence_metrics.compute_iptm(
-                **confidence_out["pae"],
-                asym_id=batch["asym_id"],
-                mask=mask,
+            out["iptm"] = confidence_metrics.compute_iptm_from_probs(
+                pae_probs,
+                pae_bin_centers,
+                batch["asym_id"],
+                mask,
             )
-        del mask
+            out["chain_ptm"], out["interface_iptm"] = (
+                confidence_metrics.compute_chain_tm_scores_from_probs(
+                    pae_probs,
+                    pae_bin_centers,
+                    batch["asym_id"],
+                    mask,
+                )
+            )
+        del confidence_out, mask, pae_logits, pae_probs
 
         # Remove batch dimension if the input was not originally batched
         if not is_batched:

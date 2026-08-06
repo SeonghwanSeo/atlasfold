@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from timeit import default_timer as timer
 
+import numpy as np
 import torch
 
 from atlasfold.data.fasta import read_fasta
@@ -33,74 +34,81 @@ def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run AtlasFold batched inference on a FASTA file."
     )
-    parser.add_argument(
+    required = parser.add_argument_group("required arguments")
+    inference = parser.add_argument_group("inference options")
+    runtime = parser.add_argument_group("runtime and batching options")
+    output = parser.add_argument_group("output options")
+
+    required.add_argument(
+        "--model-path",
+        type=Path,
+        required=True,
+        help="Path to local AtlasFold weights.",
+    )
+    required.add_argument(
         "-i",
         "--input-fasta",
         type=Path,
         required=True,
         help="Path to the input FASTA file.",
     )
-    parser.add_argument(
+    required.add_argument(
         "-o",
         "--out-dir",
         type=Path,
         required=True,
         help="Directory where predictions will be written.",
     )
-    parser.add_argument(
-        "--model-path",
-        type=Path,
-        required=True,
-        help="Path to local AtlasFold weights.",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default=None,
-        help="Torch device. Defaults to cuda when available, otherwise cpu.",
-    )
-    parser.add_argument(
-        "--no-kernel",
-        action="store_true",
-        help="Disable cuequivariance kernels.",
-    )
-    parser.add_argument(
+
+    inference.add_argument(
         "--num-recycles",
         type=int,
         default=4,
         help="Number of recycling iterations.",
     )
-    parser.add_argument(
+    inference.add_argument(
         "--mlm-prob",
         type=float,
         default=0.15,
         help="LM masking probability used during recycling.",
     )
-    parser.add_argument(
+    inference.add_argument(
         "--stochastic",
         action="store_true",
-        help="Use stochastic LM features during all recycling iterations.",
+        help="Increase sampling diversity across seeds.",
     )
-    parser.add_argument(
+    inference.add_argument(
         "--num-samples",
         type=int,
         default=5,
         help="Number of diffusion samples to generate per input sequence.",
     )
-    parser.add_argument(
+    inference.add_argument(
         "--seed",
         type=int,
         nargs="+",
         default=[1],
         help="Random seed(s) for inference. Example: --seed 1 2 3.",
     )
-    parser.add_argument(
+    inference.add_argument(
         "--num-steps",
         type=int,
         default=None,
         help="Number of diffusion sampling steps. If not set, uses the model default.",
     )
-    parser.add_argument(
+
+    runtime.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Torch device. Defaults to cuda when available, otherwise cpu.",
+    )
+    runtime.add_argument(
+        "--no-kernel",
+        action="store_true",
+        help="Disable cuequivariance kernels.",
+    )
+    runtime.add_argument(
         "--max-tokens-per-batch",
         type=int,
         default=1024,
@@ -109,7 +117,7 @@ def create_parser() -> argparse.ArgumentParser:
             "CUDA runs out of memory."
         ),
     )
-    parser.add_argument(
+    runtime.add_argument(
         "--length-buckets",
         type=int,
         nargs="+",
@@ -119,13 +127,24 @@ def create_parser() -> argparse.ArgumentParser:
             "32, 64, 128, 192, 256, 384, 512, 640, 768, ..."
         ),
     )
-    parser.add_argument(
+
+    output.add_argument(
         "--format",
         choices=["cif", "pdb"],
         default="cif",
         help="Structure file format for sample and ranked outputs.",
     )
-    parser.add_argument(
+    output.add_argument(
+        "--save-confidence-arrays",
+        action="store_true",
+        help="Save raw pLDDT and PAE arrays for each sample as NPZ files.",
+    )
+    output.add_argument(
+        "--save-distogram",
+        action="store_true",
+        help="Save raw distogram logits and boundaries for each seed as NPZ files.",
+    )
+    output.add_argument(
         "--overwrite",
         action="store_true",
         help="Recompute targets even when outputs already exist.",
@@ -133,27 +152,13 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def normalize_target_name(header: str) -> str:
-    fields = header.split()
-    if len(fields) == 0:
-        raise ValueError(f"Invalid FASTA header: {header!r}")
-    name = fields[0]
-    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
-    if not safe_name:
-        raise ValueError(f"Invalid FASTA header: {header!r}")
-    return safe_name
-
-
-def load_sequences(
-    input_fasta: Path,
-    format: str = "cif",
-) -> list[FoldingInput]:
+def load_sequences(input_fasta: Path) -> list[FoldingInput]:
     if not input_fasta.exists():
         raise FileNotFoundError(f"Input FASTA file does not exist: {input_fasta}")
 
     sequences: list[FoldingInput] = []
     for header, sequence in read_fasta(input_fasta):
-        name = normalize_target_name(header)
+        name = header.split()[0].strip()
         sequences.append(FoldingInput(name, sequence))
     if len(sequences) == 0:
         raise ValueError(f"No sequences found in FASTA file: {input_fasta}")
@@ -199,6 +204,8 @@ def write_outputs(
     out_dir: Path,
     output: FoldingOutput,
     format: str,
+    save_confidence_arrays: bool = False,
+    save_distogram: bool = False,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     sample_records = []
@@ -208,7 +215,7 @@ def write_outputs(
 
     if len(output.ranking) == 0:
         raise ValueError(f"No samples to rank for target {output.name!r}.")
-    best_sample_idx: tuple[int, int] = output.ranking[0]
+    best_sample_idx = output.best_key
 
     for (seed, sample_idx), sample in sorted(output.outputs.items()):
         target_name = output.name
@@ -221,6 +228,12 @@ def write_outputs(
             f.write(sample_text)
         with open(out_dir / f"{sample_name}_confidence.json", "w") as f:
             json.dump(confidence_scores, f, indent=2)
+        if save_confidence_arrays:
+            np.savez_compressed(
+                out_dir / f"{sample_name}_confidence.npz",
+                plddt=sample.plddt,
+                pae=sample.pae,
+            )
 
         record = {
             "seed": seed,
@@ -239,6 +252,16 @@ def write_outputs(
             with open(out_dir / f"{rank_name}_confidence.json", "w") as f:
                 json.dump(confidence_scores, f, indent=2)
 
+    if save_distogram:
+        if len(output.distogram_logits) == 0 or output.distogram_boundaries is None:
+            raise ValueError(f"No distograms are available for target {output.name!r}.")
+        for seed, logits in sorted(output.distogram_logits.items()):
+            np.savez_compressed(
+                out_dir / f"{output.name}_seed-{seed}_distogram.npz",
+                logits=logits,
+                boundaries=output.distogram_boundaries,
+            )
+
     with open(out_dir / f"{output.name}_summary.csv", "w") as f:
         f.write("seed,sample_index,avg_plddt,ptm\n")
         for record in sample_records:
@@ -255,7 +278,7 @@ def write_outputs(
 def run(args: argparse.Namespace) -> None:
     setup_logging()
 
-    sequences = load_sequences(args.input_fasta, args.format)
+    sequences = load_sequences(args.input_fasta)
     logger.info(
         "Loaded %d sequences from %s. Length range: %d-%d.",
         len(sequences),
@@ -312,7 +335,7 @@ def run(args: argparse.Namespace) -> None:
     start = timer()
     batch_start = timer()
     try:
-        for outputs in runner.iter_fold_batch(
+        for outputs in runner.fold_iter_batch(
             sequences,
             num_samples=args.num_samples,
             seeds=args.seed,
@@ -322,6 +345,7 @@ def run(args: argparse.Namespace) -> None:
             sampling_config=sampling_config,
             length_buckets=args.length_buckets,
             max_tokens_per_batch=args.max_tokens_per_batch,
+            return_distogram=args.save_distogram,
         ):
             batch_elapsed = timer() - batch_start
             time_per_target = batch_elapsed / len(outputs)
@@ -329,7 +353,13 @@ def run(args: argparse.Namespace) -> None:
 
             for output in outputs:
                 target_dir = out_dir / output.name
-                best_record = write_outputs(target_dir, output, args.format)
+                best_record = write_outputs(
+                    target_dir,
+                    output,
+                    args.format,
+                    save_confidence_arrays=args.save_confidence_arrays,
+                    save_distogram=args.save_distogram,
+                )
                 num_finished += 1
                 logger.info(
                     "Completed %s (length=%d): "
@@ -359,12 +389,7 @@ def run(args: argparse.Namespace) -> None:
     )
 
 
-def main() -> None:
-    parser = create_parser()
-    args = parser.parse_args()
-    run(args)
-
-
 if __name__ == "__main__":
     torch.set_float32_matmul_precision("highest")
-    main()
+    args = create_parser().parse_args()
+    run(args)

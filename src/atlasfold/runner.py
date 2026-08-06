@@ -1,7 +1,8 @@
 import contextlib
 import dataclasses
+import warnings
 from collections.abc import Iterator, Sequence
-from typing import TypeAlias
+from typing import NamedTuple, TypeAlias
 
 import numpy as np
 import torch
@@ -12,8 +13,7 @@ from atlasfold.model import AtlasFold, SamplingConfig
 SampleKey = tuple[int, int]
 
 
-@dataclasses.dataclass(frozen=True)
-class FoldingInput:
+class FoldingInput(NamedTuple):
     """Input for one monomer folding target."""
 
     name: str
@@ -23,8 +23,17 @@ class FoldingInput:
 FoldingInputLike: TypeAlias = FoldingInput | tuple[str, str]
 
 
-def _sanitize_sequence(sequence: str) -> str:
+def _sanitize_sequence(name: str, sequence: str) -> str:
     sequence = "".join(sequence.split()).upper()
+    nonstandard_residues = sorted(
+        set(sequence).difference(residue_constants.restype_orders)
+    )
+    if nonstandard_residues:
+        warnings.warn(
+            f"{name}: Nonstandard residue(s) "
+            f"{', '.join(nonstandard_residues)} replaced with 'X'.",
+            stacklevel=2,
+        )
     return "".join(
         aa if aa in residue_constants.restype_orders else "X" for aa in sequence
     )
@@ -116,6 +125,8 @@ class FoldingOutput:
 
     outputs: dict[SampleKey, ProteinOutput]
     ranking: list[SampleKey]
+    distogram_logits: dict[int, np.ndarray] = dataclasses.field(default_factory=dict)
+    distogram_boundaries: np.ndarray | None = None
 
     @property
     def name(self) -> str:
@@ -124,6 +135,16 @@ class FoldingOutput:
     @property
     def length(self) -> int:
         return self.outputs[next(iter(self.outputs))].num_residues
+
+    @property
+    def best_key(self) -> SampleKey:
+        if len(self.ranking) == 0:
+            raise ValueError("No ranked samples are available.")
+        return self.ranking[0]
+
+    @property
+    def best(self) -> ProteinOutput:
+        return self.outputs[self.best_key]
 
 
 class FoldingRunner:
@@ -145,9 +166,10 @@ class FoldingRunner:
         stochastic: bool = False,
         sampling_config: SamplingConfig | None = None,
         length_buckets: Sequence[int] | None = None,
+        return_distogram: bool = False,
     ) -> FoldingOutput:
-        outputs = list(
-            self.iter_fold_batch(
+        return next(
+            self.fold_iter(
                 [FoldingInput(name, sequence)],
                 num_samples=num_samples,
                 seeds=seeds,
@@ -156,11 +178,11 @@ class FoldingRunner:
                 stochastic=stochastic,
                 sampling_config=sampling_config,
                 length_buckets=length_buckets,
+                return_distogram=return_distogram,
             )
         )
-        return outputs[0][0]
 
-    def iter_fold_batch(
+    def fold_iter(
         self,
         inputs: Sequence[FoldingInputLike],
         *,
@@ -172,6 +194,36 @@ class FoldingRunner:
         sampling_config: SamplingConfig | None = None,
         length_buckets: Sequence[int] | None = None,
         max_tokens_per_batch: int = 1024,
+        return_distogram: bool = False,
+    ) -> Iterator[FoldingOutput]:
+        """Yield predictions one target at a time in bucket execution order."""
+        for batch in self.fold_iter_batch(
+            inputs,
+            num_samples=num_samples,
+            seeds=seeds,
+            num_recycles=num_recycles,
+            mlm_prob=mlm_prob,
+            stochastic=stochastic,
+            sampling_config=sampling_config,
+            length_buckets=length_buckets,
+            max_tokens_per_batch=max_tokens_per_batch,
+            return_distogram=return_distogram,
+        ):
+            yield from batch
+
+    def fold_iter_batch(
+        self,
+        inputs: Sequence[FoldingInputLike],
+        *,
+        num_samples: int = 1,
+        seeds: int | Sequence[int] = 1,
+        num_recycles: int = 4,
+        mlm_prob: float = 0.15,
+        stochastic: bool = False,
+        sampling_config: SamplingConfig | None = None,
+        length_buckets: Sequence[int] | None = None,
+        max_tokens_per_batch: int = 1024,
+        return_distogram: bool = False,
     ) -> Iterator[list[FoldingOutput]]:
         """Yield predictions grouped by model batch."""
         seeds = [seeds] if isinstance(seeds, int) else list(seeds)
@@ -198,6 +250,8 @@ class FoldingRunner:
             _config = sampling_config or get_sampling_config(bucket_length)
 
             batch_outputs: list[dict[SampleKey, ProteinOutput]] = [{} for _ in chunk]
+            batch_distogram_logits: list[dict[int, np.ndarray]] = [{} for _ in chunk]
+            distogram_boundaries = None
             for seed_value in seeds:
                 out = self.model_run(
                     feat,
@@ -207,9 +261,17 @@ class FoldingRunner:
                     mlm_prob=mlm_prob,
                     stochastic=stochastic,
                     sampling_config=_config,
+                    return_distogram=return_distogram,
                 )
 
+                if return_distogram:
+                    distogram_boundaries = out["distogram.boundaries"]
                 for batch_item_idx, item in enumerate(chunk):
+                    if return_distogram:
+                        length = len(item.sequence)
+                        batch_distogram_logits[batch_item_idx][seed_value] = out[
+                            "distogram.logits"
+                        ][batch_item_idx, :length, :length]
                     batch_outputs[batch_item_idx].update(
                         self._make_outputs(
                             name=item.name,
@@ -222,11 +284,18 @@ class FoldingRunner:
                     )
 
             model_outputs = []
-            for outputs in batch_outputs:
+            for batch_item_idx, outputs in enumerate(batch_outputs):
                 ranking = sorted(
                     outputs.keys(), key=lambda k: outputs[k].ranking_score, reverse=True
                 )
-                model_outputs.append(FoldingOutput(outputs, ranking))
+                model_outputs.append(
+                    FoldingOutput(
+                        outputs,
+                        ranking,
+                        distogram_logits=batch_distogram_logits[batch_item_idx],
+                        distogram_boundaries=distogram_boundaries,
+                    )
+                )
             yield model_outputs
 
     def model_run(
@@ -238,6 +307,7 @@ class FoldingRunner:
         mlm_prob: float,
         stochastic: bool,
         sampling_config: SamplingConfig,
+        return_distogram: bool = False,
     ) -> dict[str, np.ndarray]:
         device = self.device
         feat: dict[str, torch.Tensor] = {
@@ -256,24 +326,26 @@ class FoldingRunner:
                 stochastic=stochastic,
                 sampling_config=sampling_config,
             )
-        return {k: v.cpu().float().numpy() for k, v in out.items()}
+        output_keys = {"sample_coords", "plddt", "pae", "ptm"}
+        if return_distogram:
+            output_keys.update({"distogram.logits", "distogram.boundaries"})
+        return {
+            key: value.cpu().float().numpy()
+            for key, value in out.items()
+            if key in output_keys
+        }
 
     @staticmethod
     def _normalize_inputs(
         inputs: Sequence[FoldingInputLike],
     ) -> list[FoldingInput]:
         normalized: list[FoldingInput] = []
-        for item in inputs:
-            if isinstance(item, FoldingInput):
-                name = item.name
-                sequence = item.sequence
-            else:
-                name, sequence = item
-
-            sequence = _sanitize_sequence(str(sequence))
+        for input_ in inputs:
+            item = FoldingInput(*input_)
+            sequence = _sanitize_sequence(item.name, item.sequence)
             if len(sequence) == 0:
-                raise ValueError(f"Input ({name}) has an empty sequence.")
-            normalized.append(FoldingInput(str(name), sequence))
+                raise ValueError(f"Input ({item.name}) has an empty sequence.")
+            normalized.append(FoldingInput(item.name, sequence))
         return normalized
 
     @classmethod

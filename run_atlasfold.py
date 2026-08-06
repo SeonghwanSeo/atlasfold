@@ -1,4 +1,5 @@
 import argparse
+import logging
 from pathlib import Path
 
 MODEL_DEFAULTS = {
@@ -10,7 +11,7 @@ MODEL_DEFAULTS = {
     "multimer": {
         "num_recycles": 10,
         "mlm_prob": 0.20,
-        "num_steps": 200,
+        "num_steps": 100,
     },
 }
 
@@ -19,13 +20,24 @@ def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run AtlasFold or AtlasFold-Multimer inference."
     )
-    parser.add_argument(
+    required = parser.add_argument_group("required arguments")
+    inference = parser.add_argument_group("inference options")
+    runtime = parser.add_argument_group("runtime and batching options")
+    output = parser.add_argument_group("output options")
+
+    required.add_argument(
         "--model",
         choices=["monomer", "multimer"],
         required=True,
         help="Model pipeline to run.",
     )
-    parser.add_argument(
+    required.add_argument(
+        "--model-path",
+        type=Path,
+        required=True,
+        help="Path to local AtlasFold weights.",
+    )
+    required.add_argument(
         "-i",
         "--input-fasta",
         type=Path,
@@ -35,87 +47,93 @@ def create_parser() -> argparse.ArgumentParser:
             "separating chains."
         ),
     )
-    parser.add_argument(
+    required.add_argument(
         "-o",
         "--out-dir",
         type=Path,
         required=True,
         help="Directory where predictions will be written.",
     )
-    parser.add_argument(
-        "--model-path",
-        type=Path,
-        required=True,
-        help="Path to local AtlasFold weights.",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default=None,
-        choices=["cpu", "cuda"],
-        help="Torch device. Defaults to cuda when available, otherwise cpu.",
-    )
-    parser.add_argument(
-        "--no-kernel",
-        action="store_true",
-        help="Disable cuequivariance kernels.",
-    )
-    parser.add_argument(
+
+    inference.add_argument(
         "--num-recycles",
         type=int,
         default=None,
         help="Number of recycling iterations. Defaults depend on --model.",
     )
-    parser.add_argument(
+    inference.add_argument(
         "--mlm-prob",
         type=float,
         default=None,
         help="LM masking probability used during recycling.",
     )
-    parser.add_argument(
+    inference.add_argument(
         "--stochastic",
         action="store_true",
-        help="Use stochastic LM features during monomer recycling.",
+        help="Increase sampling diversity across seeds.",
     )
-    parser.add_argument(
+    inference.add_argument(
         "--num-samples",
         type=int,
         default=5,
         help="Number of diffusion samples to generate.",
     )
-    parser.add_argument(
+    inference.add_argument(
         "--seed",
         type=int,
         nargs="+",
         default=[1],
         help="Random seed(s) for inference. Example: --seed 1 2 3.",
     )
-    parser.add_argument(
+    inference.add_argument(
         "--num-steps",
         type=int,
         default=None,
         help="Number of diffusion sampling steps. Defaults depend on --model.",
     )
-    parser.add_argument(
-        "--format",
-        choices=["cif", "pdb"],
-        default="cif",
-        help="Structure file format for sample and ranked outputs.",
+
+    runtime.add_argument(
+        "--device",
+        default=None,
+        choices=["cpu", "cuda"],
+        help="Torch device. Defaults to cuda when available, otherwise cpu.",
     )
-    parser.add_argument(
+    runtime.add_argument(
+        "--no-kernel",
+        action="store_true",
+        help="Disable cuequivariance kernels.",
+    )
+    runtime.add_argument(
         "--max-tokens-per-batch",
         type=int,
         default=1024,
         help="Maximum bucketed residue tokens per model call.",
     )
-    parser.add_argument(
+    runtime.add_argument(
         "--length-buckets",
         type=int,
         nargs="+",
         default=None,
         help="Optional explicit residue buckets.",
     )
-    parser.add_argument(
+
+    output.add_argument(
+        "--format",
+        choices=["cif", "pdb"],
+        default="cif",
+        help="Structure file format for sample and ranked outputs.",
+    )
+    output.add_argument(
+        "--save-confidence-arrays",
+        action="store_true",
+        help="Save raw confidence arrays for each sample as NPZ files.",
+    )
+    output.add_argument(
+        "--save-distogram",
+        action="store_true",
+        help="Save raw distogram logits and boundaries for each seed as NPZ files.",
+    )
+    output.add_argument(
         "--overwrite",
         action="store_true",
         help="Recompute targets even when outputs already exist.",
@@ -123,7 +141,7 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def print_run_settings(args: argparse.Namespace) -> None:
+def log_run_settings(args: argparse.Namespace, logger: logging.Logger) -> None:
     seed = " ".join(str(item) for item in args.seed)
     length_buckets = (
         " ".join(str(item) for item in args.length_buckets)
@@ -131,37 +149,40 @@ def print_run_settings(args: argparse.Namespace) -> None:
         else None
     )
 
-    print("AtlasFold run settings")
-    print(f"  model={args.model}")
-    print(f"  input_fasta={args.input_fasta}")
-    print(f"  out_dir={args.out_dir}")
-    print(f"  model_path={args.model_path}")
-    print(f"  device={args.device}")
-    print(f"  format={args.format}")
-    print(f"  num_recycles={args.num_recycles}")
-    print(f"  mlm_prob={args.mlm_prob}")
-    print(f"  num_samples={args.num_samples}")
-    print(f"  seed={seed}")
-    print(f"  num_steps={args.num_steps}")
-    print(f"  max_tokens_per_batch={args.max_tokens_per_batch}")
-    print(f"  length_buckets={length_buckets}")
+    settings = [
+        f"model={args.model}",
+        f"model_path={args.model_path}",
+        f"input_fasta={args.input_fasta}",
+        f"out_dir={args.out_dir}",
+        f"num_recycles={args.num_recycles}",
+        f"mlm_prob={args.mlm_prob}",
+    ]
     if args.model == "monomer":
-        print(f"  stochastic={args.stochastic}")
-    print(f"  overwrite={args.overwrite}")
-    print()
+        settings.append(f"stochastic={args.stochastic}")
+    settings.extend(
+        [
+            f"num_samples={args.num_samples}",
+            f"seed={seed}",
+            f"num_steps={args.num_steps}",
+            f"device={args.device}",
+            f"no_kernel={args.no_kernel}",
+            f"max_tokens_per_batch={args.max_tokens_per_batch}",
+            f"length_buckets={length_buckets}",
+            f"format={args.format}",
+            f"save_confidence_arrays={args.save_confidence_arrays}",
+            f"save_distogram={args.save_distogram}",
+            f"overwrite={args.overwrite}",
+        ]
+    )
+    logger.info("Run settings: %s", ", ".join(settings))
 
 
 def build_monomer_args(args: argparse.Namespace) -> argparse.Namespace:
     return argparse.Namespace(
         model=args.model,
+        model_path=args.model_path,
         input_fasta=args.input_fasta,
         out_dir=args.out_dir,
-        model_path=args.model_path,
-        device=args.device,
-        no_kernel=args.no_kernel,
-        num_samples=args.num_samples,
-        stochastic=args.stochastic,
-        seed=args.seed,
         num_recycles=(
             args.num_recycles
             if args.num_recycles is not None
@@ -172,14 +193,21 @@ def build_monomer_args(args: argparse.Namespace) -> argparse.Namespace:
             if args.mlm_prob is not None
             else MODEL_DEFAULTS["monomer"]["mlm_prob"]
         ),
+        stochastic=args.stochastic,
+        num_samples=args.num_samples,
+        seed=args.seed,
         num_steps=(
             args.num_steps
             if args.num_steps is not None
             else MODEL_DEFAULTS["monomer"]["num_steps"]
         ),
-        format=args.format,
+        device=args.device,
+        no_kernel=args.no_kernel,
         max_tokens_per_batch=args.max_tokens_per_batch,
         length_buckets=args.length_buckets,
+        format=args.format,
+        save_confidence_arrays=args.save_confidence_arrays,
+        save_distogram=args.save_distogram,
         overwrite=args.overwrite,
     )
 
@@ -190,13 +218,9 @@ def build_multimer_args(args: argparse.Namespace) -> argparse.Namespace:
 
     return argparse.Namespace(
         model=args.model,
+        model_path=args.model_path,
         input_fasta=args.input_fasta,
         out_dir=args.out_dir,
-        model_path=args.model_path,
-        device=args.device,
-        no_kernel=args.no_kernel,
-        num_samples=args.num_samples,
-        seed=args.seed,
         num_recycles=(
             args.num_recycles
             if args.num_recycles is not None
@@ -207,43 +231,47 @@ def build_multimer_args(args: argparse.Namespace) -> argparse.Namespace:
             if args.mlm_prob is not None
             else MODEL_DEFAULTS["multimer"]["mlm_prob"]
         ),
+        num_samples=args.num_samples,
+        seed=args.seed,
         num_steps=(
             args.num_steps
             if args.num_steps is not None
             else MODEL_DEFAULTS["multimer"]["num_steps"]
         ),
-        format=args.format,
+        device=args.device,
+        no_kernel=args.no_kernel,
         max_tokens_per_batch=args.max_tokens_per_batch,
         length_buckets=args.length_buckets,
+        format=args.format,
+        save_confidence_arrays=args.save_confidence_arrays,
+        save_distogram=args.save_distogram,
         overwrite=args.overwrite,
     )
 
 
-def run(args: argparse.Namespace) -> None:
+if __name__ == "__main__":
+    args = create_parser().parse_args()
+
+    import torch
+
+    torch.set_float32_matmul_precision("highest")
+
     if args.model == "monomer":
         from scripts import run_inference
 
         resolved_args = build_monomer_args(args)
-        print_run_settings(resolved_args)
+        run_inference.setup_logging()
+        log_run_settings(resolved_args, run_inference.logger)
         run_inference.run(resolved_args)
-        return
+        exit(0)
 
     if args.model == "multimer":
         from scripts import run_inference_multimer
 
         resolved_args = build_multimer_args(args)
-        print_run_settings(resolved_args)
+        run_inference_multimer.setup_logging()
+        log_run_settings(resolved_args, run_inference_multimer.logger)
         run_inference_multimer.run(resolved_args)
-        return
+        exit(0)
 
     raise ValueError(f"Unsupported model: {args.model}")
-
-
-def main() -> None:
-    parser = create_parser()
-    args = parser.parse_args()
-    run(args)
-
-
-if __name__ == "__main__":
-    main()

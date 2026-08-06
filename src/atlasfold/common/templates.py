@@ -63,9 +63,7 @@ def make_empty_template_features(
     return {
         "template.mask": np.zeros((num_templates,), dtype=bool),
         "template.aatype": template_aatype,
-        "template.pseudo_beta_mask": np.zeros(
-            (num_templates, num_residues), dtype=bool
-        ),
+        "template.pseudo_beta_mask": np.zeros((num_templates, num_residues), dtype=bool),
         "template.pseudo_beta": np.zeros(
             (num_templates, num_residues, 3), dtype=np.float32
         ),
@@ -117,11 +115,7 @@ def template_sequence_mismatch_stats(
 
 def compute_backbone_frame_mask(atom14_mask: np.ndarray) -> np.ndarray:
     """Return mask for residues with valid N, CA, and C coordinates."""
-    return (
-        atom14_mask[..., N_ATOM]
-        & atom14_mask[..., CA_ATOM]
-        & atom14_mask[..., C_ATOM]
-    )
+    return atom14_mask[..., N_ATOM] & atom14_mask[..., CA_ATOM] & atom14_mask[..., C_ATOM]
 
 
 def compute_backbone_coords(atom14_positions: np.ndarray) -> np.ndarray:
