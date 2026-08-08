@@ -13,6 +13,13 @@ train:
   _yaml_: _train_base.yaml
   name: stage2-640
 
+  init_from_ema: ['trunk', 'diffusion_head', 'confidence_head']
+
+  optimizer:
+    max_lr: 0.001
+    warmup_steps: 0
+    decay_steps: 1000000000
+
   data:
     max_length: 640
     max_seq_length: 1280
@@ -29,26 +36,26 @@ train:
         is_multimer: true
         is_distillation: false
         use_templates: true
-        weight: 0.490
+        weight: 0.50
         template_prob: 0.4
       - name: disordered_pdb_multimer
         type: rcsb
         is_multimer: true
         is_distillation: true
         use_templates: false
-        weight: 0.010
+        weight: 0.01
       - name: long_monomers
         type: monomer_distillation
         is_multimer: false
         is_distillation: true
         use_templates: false
-        weight: 0.495
+        weight: 0.48
       - name: short_monomers
         type: monomer_distillation
         is_multimer: false
         is_distillation: true
         use_templates: false
-        weight: 0.005
+        weight: 0.01
     val_dataset:
       name: rcsb_multimer_val
       type: rcsb
