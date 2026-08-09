@@ -1,16 +1,16 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlasfold"
-version = "0.0.1"
+version = "1.0.0"
 authors = [
   { name = "SeonghwanSeo", email = "shwan0106@gmail.com" }
 ]
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT License" }
+license = "MIT"
 dependencies = [
   "numpy", 
   "torch",
@@ -34,5 +34,6 @@ train = [
   "lightning", # for training loop
   "wandb", # for experiment tracking
   "lmdb", # for training dataset storage
+  "pandas",
   "zstandard"
 ]

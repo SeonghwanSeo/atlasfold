@@ -100,5 +100,5 @@ class RotaryEmbedding(torch.nn.Module):
         x: (*, seqlen, nheads, headdim)
         cos, sin: (seqlen, dim)
         """
-        cos, sin = cos[:, None, :], sin[:, None, :]
+        cos, sin = cos[..., None, :], sin[..., None, :]
         return x * cos + rotate_half(x) * sin

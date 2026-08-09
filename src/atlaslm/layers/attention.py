@@ -94,12 +94,12 @@ class MultiHeadAttention(nn.Module):
         else:
             mask = None
 
-        if return_attn:
+        if return_attn or return_attn_logits:
             q *= Dh**-0.5
             a = torch.matmul(q, k.transpose(-2, -1))  # [B, H, L, L]
             if mask is not None:
                 a.masked_fill_(~mask, float("-inf"))
-            attn_weights = F.softmax(a, dim=-1).to(v.dtype)
+            attn_weights = F.softmax(a, dim=-1)
             out = torch.matmul(attn_weights, v)  # [B, H, L, Dh]
             if return_attn_logits:
                 attn_weights = a
