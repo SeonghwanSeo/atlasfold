@@ -11,7 +11,6 @@ train:
   _yaml_: _train_base.yaml
   name: stage4-640
 
-  load_opt_state: false
   init_from_ema: ['trunk']
   training:
     train_trunk: false

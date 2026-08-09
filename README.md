@@ -199,6 +199,8 @@ print(multimer.best.iptm)
 
 The multimer runner takes pre-split chain sequences and does not interpret colon-delimited strings. See the [folding guide](docs/folding.md) for batched iteration, input and output types, ranking, confidence arrays, and optional distogram output.
 
+To train the monomer or multimer models, see the [training guide](docs/training.md) for staged configurations, memory tuning, distributed batch sizing, and checkpoint handoffs.
+
 ---
 
 ## Acknowledgements
