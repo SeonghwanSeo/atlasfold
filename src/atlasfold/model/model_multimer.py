@@ -581,14 +581,12 @@ class AtlasFold_Multimer(torch.nn.Module):
         cls,
         state_dict: dict,
         config: AtlasFoldMultimerConfig | None = None,
-        dtype: torch.dtype = torch.bfloat16,
         device: str | torch.device = "cuda",
     ) -> "AtlasFold_Multimer":
         """Create an AtlasFold model from a pretrained state dict."""
         config = config if config is not None else AtlasFoldMultimerConfig()
 
         device = torch.device(device)
-        dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
 
         # Create the model on meta device
         with torch.device("meta"):
@@ -603,6 +601,7 @@ class AtlasFold_Multimer(torch.nn.Module):
         model.load_state_dict(state_dict, strict=True)
 
         # Finally, load the LM
+        dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
         model.lm = load_model(
             config.lm_name, path=config.lm_path, device=device, dtype=dtype
         )

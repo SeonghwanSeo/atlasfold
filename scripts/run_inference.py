@@ -10,6 +10,7 @@ import torch
 
 from atlasfold.data.fasta import read_fasta
 from atlasfold.model import AtlasFold, SamplingConfig
+from atlasfold.pretrained import load_model as load_pretrained_model
 from atlasfold.runner import FoldingInput, FoldingOutput, FoldingRunner
 
 logger = logging.getLogger("atlasfold.monomer")
@@ -39,12 +40,6 @@ def create_parser() -> argparse.ArgumentParser:
     runtime = parser.add_argument_group("runtime and batching options")
     output = parser.add_argument_group("output options")
 
-    required.add_argument(
-        "--model-path",
-        type=Path,
-        required=True,
-        help="Path to local AtlasFold weights.",
-    )
     required.add_argument(
         "-i",
         "--input-fasta",
@@ -97,6 +92,18 @@ def create_parser() -> argparse.ArgumentParser:
         help="Number of diffusion sampling steps. If not set, uses the model default.",
     )
 
+    runtime.add_argument(
+        "--model-path",
+        type=Path,
+        default=None,
+        help="Optional local model weights.",
+    )
+    runtime.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="Optional cache directory for AtlasFold and AtlasLM weights.",
+    )
     runtime.add_argument(
         "--device",
         type=str,
@@ -180,21 +187,34 @@ def load_sequences(input_fasta: Path) -> list[FoldingInput]:
 
 
 def load_model(
-    model_path: str | Path,
+    model_path: str | Path | None = None,
     device: str | torch.device | None = None,
+    cache_dir: str | Path | None = None,
 ) -> AtlasFold:
-    model_path = Path(model_path)
-    if not model_path.exists():
-        raise FileNotFoundError(f"Local weight file does not exist: {model_path}")
-
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
 
-    logger.info("Loading weight path=%s, device=%s", model_path, device)
-    state_dict = torch.load(model_path, map_location="cpu")
+    if model_path is not None:
+        model_path = Path(model_path)
+        if not model_path.exists():
+            raise FileNotFoundError(f"Local weight file does not exist: {model_path}")
+        logger.info("Loading local weight path=%s, device=%s", model_path, device)
+    else:
+        logger.info(
+            "Loading atlasfold-260703 from Hugging Face, cache_dir=%s, device=%s",
+            cache_dir,
+            device,
+        )
 
-    model = AtlasFold.from_pretrained(state_dict=state_dict, device=device)
+    model = load_pretrained_model(
+        "atlasfold-260703",
+        device=device,
+        cache_dir=cache_dir,
+        model_path=model_path,
+    )
+    if not isinstance(model, AtlasFold):
+        raise TypeError(f"Expected AtlasFold, got {type(model)!r}.")
     return model
 
 
@@ -302,7 +322,11 @@ def run(args: argparse.Namespace) -> None:
         logger.info("All targets are complete. Nothing to do.")
         return
 
-    model = load_model(args.model_path, args.device)
+    model = load_model(
+        model_path=args.model_path,
+        device=args.device,
+        cache_dir=args.cache_dir,
+    )
     if args.no_kernel:
         model.set_forward_flags(use_cuequiv_kernels=False)
 

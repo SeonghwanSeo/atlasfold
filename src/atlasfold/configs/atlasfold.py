@@ -1,8 +1,8 @@
 from atlasfold.model import model
 
 monomer_config = model.AtlasFoldConfig(
-    name="atlasfold-3b-base",
-    lm_name="SeonghwanSeo/atlaslm-3b-base",
+    name="atlasfold-260703",
+    lm_name="atlaslm-3b",
     channel_s=384,
     channel_s_lm=768,
     channel_z=128,

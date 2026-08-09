@@ -29,8 +29,8 @@ TODO
 | Shorthand | Available | Description |
 |-----------|-----------| ------------|
 | **AtlasLM** | `atlaslm-600m`, `atlaslm-3b` | State-of-the-art protein language models with unsupervised learning for general purpose. Available in `600m` and `3b` sizes. |
-| **AtlasFold** | `atlasfold-0703` | Protein structure prediction model. |
-| **AtlasFold-M** | `atlasfold-m-0725` | Protein multimeric structure prediction model. |
+| **AtlasFold** | `atlasfold-260703` | Protein structure prediction model. |
+| **AtlasFold-M** | `atlasfold-m-260725` | Protein multimeric structure prediction model. |
 
 
 ## Installation
@@ -56,7 +56,8 @@ pip install "atlasfold[fold,cuequiv]"
 
 ## AtlasLM protein language model
 
-**AtlasLM** is the reproduction of [**ESM Cambrian (ESM C)**](https://www.evolutionaryscale.ai/blog/esm-cambrian), the state-of-the-art protein language model developed by EvolutionaryScale. ~~While the original model has restrictive licensing, this repository provides pre-trained weights under the **MIT License**, facilitating unrestricted research and commercial application.~~
+**AtlasLM** is the reproduction of [**ESM Cambrian (ESM C)**](https://www.evolutionaryscale.ai/blog/esm-cambrian), the state-of-the-art protein language model developed by EvolutionaryScale.
+~~While the original model has restrictive licensing, this repository provides pre-trained weights under the **MIT License**, facilitating unrestricted research and commercial application.~~
 
 ### Available Models
 
@@ -105,7 +106,14 @@ AtlasFold predicts monomer structures directly from a single protein sequence. A
 
 ### Command-line inference
 
-The inference scripts currently load model weights from a local checkpoint.
+Pretrained weights are hosted on Hugging Face:
+
+- [`SeonghwanSeo/atlasfold-260703`](https://huggingface.co/SeonghwanSeo/atlasfold-260703)
+- [`SeonghwanSeo/atlasfold-m-260725`](https://huggingface.co/SeonghwanSeo/atlasfold-m-260725)
+
+Both the Python API and CLI download AtlasFold and AtlasLM weights automatically.
+Use `--cache-dir` to select a cache location, or `--model-path` as an optional
+override for a local/custom AtlasFold checkpoint.
 
 For monomer inference, provide one sequence per FASTA record:
 
@@ -119,7 +127,6 @@ GILGYTEHQVVSSDFQKAAQQLLQYFQKAGY
 ```bash
 python run_atlasfold.py \
     --model monomer \
-    --model-path checkpoints/atlasfold.pt \
     --input-fasta monomers.fasta \
     --out-dir predictions/monomers
 ```
@@ -136,7 +143,6 @@ GILGYTEHQVVSSDFQKAA:QQLLQYFQKAGY
 ```bash
 python run_atlasfold.py \
     --model multimer \
-    --model-path checkpoints/atlasfold-multimer.pt \
     --input-fasta multimers.fasta \
     --out-dir predictions/multimers
 ```
@@ -173,18 +179,21 @@ Each target is written to its own output directory. Every generated sample has a
 
 ### Python API
 
-Create a runner from an already loaded model and call `fold()` for one target:
+Load a pretrained model by name, create a runner, and call `fold()` for one target:
 
 ```python
+from atlasfold.pretrained import load_model
 from atlasfold.runner import FoldingRunner
 from atlasfold.runner_multimer import MultimerFoldingRunner
 
-folding_runner = FoldingRunner(model)
+monomer_model = load_model("atlasfold-260703", device="cuda")
+folding_runner = FoldingRunner(monomer_model)
 monomer = folding_runner.fold("protein_a", "MKTAYIAKQRQISFVKSHFS", num_samples=5)
 print(monomer.best.avg_plddt)
 
+multimer_model = load_model("atlasfold-m-260725", device="cuda")
 multimer_runner = MultimerFoldingRunner(multimer_model)
-multimer = multimer_runner.fold("complex_a", ["MKTAYIAKQRQISFVKSHFS", "GGHVDHGKSTTTGHLIYK"])
+multimer = multimer_runner.fold("complex_a", ["MKTAYIAKQRQISFVKSHFS", "GGHVDHGKSTTTGHLIYK"], num_samples=5)
 print(multimer.best.iptm)
 ```
 
@@ -213,6 +222,7 @@ This project is built upon the pioneering works of Google DeepMind, Meta AI, Ope
 - **ESMFold**: Lin, Zeming, et al. "Evolutionary-scale prediction of atomic-level protein structure with a language model." Science 379.6637 (2023): 1123-1130.
 - **AlphaFold3**: Abramson, Josh, et al. "Accurate structure prediction of biomolecular interactions with AlphaFold 3." Nature 630.8016 (2024): 493-500.
 - **SimpleFold**: Wang, Yuyang, et al. "Simplefold: Folding proteins is simpler than you think." arXiv preprint arXiv:2509.18480 (2025).
+- **ESMFold2**: Candido, Salvatore, et al. "Language Modeling Materializes a World Model of Protein Biology." bioRxiv (2026): 2026-06.
 
 ## License
 

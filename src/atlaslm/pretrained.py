@@ -70,15 +70,16 @@ def get_model(model_name: str) -> AtlasLM:
 
 
 def download_model_weights(model_name: str, cache_dir: str | Path | None = None) -> Path:
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import hf_hub_download
 
+    model_name = get_model_name(model_name)
     repo_id, filename = WEIGHT_PATH[model_name]
-    path = snapshot_download(
+    path = hf_hub_download(
         repo_id=repo_id,
-        repo_type="model",
-        local_dir=cache_dir,
+        filename=filename,
+        cache_dir=cache_dir,
     )
-    return Path(path) / filename
+    return Path(path)
 
 
 def load_model(

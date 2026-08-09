@@ -1,8 +1,8 @@
 from atlasfold.model import model_multimer as model
 
 multimer_config = model.AtlasFoldMultimerConfig(
-    name="atlasfold-3b-multimer",
-    lm_name="SeonghwanSeo/atlaslm-3b-base",
+    name="atlasfold-m-260725",
+    lm_name="atlaslm-3b",
     channel_s=384,
     channel_s_lm=768,
     channel_z=128,

@@ -32,12 +32,6 @@ def create_parser() -> argparse.ArgumentParser:
         help="Model pipeline to run.",
     )
     required.add_argument(
-        "--model-path",
-        type=Path,
-        required=True,
-        help="Path to local AtlasFold weights.",
-    )
-    required.add_argument(
         "-i",
         "--input-fasta",
         type=Path,
@@ -92,6 +86,18 @@ def create_parser() -> argparse.ArgumentParser:
         help="Number of diffusion sampling steps. Defaults depend on --model.",
     )
 
+    runtime.add_argument(
+        "--model-path",
+        type=Path,
+        default=None,
+        help="Optional local model weights.",
+    )
+    runtime.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="Optional cache directory for AtlasFold and AtlasLM weights.",
+    )
     runtime.add_argument(
         "--device",
         default=None,
@@ -152,6 +158,7 @@ def log_run_settings(args: argparse.Namespace, logger: logging.Logger) -> None:
     settings = [
         f"model={args.model}",
         f"model_path={args.model_path}",
+        f"cache_dir={args.cache_dir}",
         f"input_fasta={args.input_fasta}",
         f"out_dir={args.out_dir}",
         f"num_recycles={args.num_recycles}",
@@ -181,6 +188,7 @@ def build_monomer_args(args: argparse.Namespace) -> argparse.Namespace:
     return argparse.Namespace(
         model=args.model,
         model_path=args.model_path,
+        cache_dir=args.cache_dir,
         input_fasta=args.input_fasta,
         out_dir=args.out_dir,
         num_recycles=(
@@ -219,6 +227,7 @@ def build_multimer_args(args: argparse.Namespace) -> argparse.Namespace:
     return argparse.Namespace(
         model=args.model,
         model_path=args.model_path,
+        cache_dir=args.cache_dir,
         input_fasta=args.input_fasta,
         out_dir=args.out_dir,
         num_recycles=(
