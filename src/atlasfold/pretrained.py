@@ -3,7 +3,6 @@ from pathlib import Path
 
 import torch
 
-from atlaslm.pretrained import download_model_weights as download_lm_weights
 from atlasfold.configs.atlasfold import monomer_config
 from atlasfold.configs.atlasfold_multimer import multimer_config
 from atlasfold.model import (
@@ -12,6 +11,7 @@ from atlasfold.model import (
     AtlasFoldConfig,
     AtlasFoldMultimerConfig,
 )
+from atlaslm.pretrained import download_model_weights as download_lm_weights
 
 ATLASFOLD_260703 = "atlasfold-260703"
 ATLASFOLD_M_260725 = "atlasfold-m-260725"
