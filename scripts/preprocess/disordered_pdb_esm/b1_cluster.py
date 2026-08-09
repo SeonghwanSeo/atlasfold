@@ -1,4 +1,4 @@
-"""Cluster RCSB training set sequences using MMseqs2."""
+"""Cluster disordered-PDB ESMFold training sequences using MMseqs2."""
 
 import argparse
 import pathlib
@@ -31,7 +31,7 @@ def parse_args():
 def main():
     """Main function to construct RCSB training set."""
     args = parse_args()
-    data_dir: pathlib.Path = args.data_dir / "disordered_pdb/"
+    data_dir: pathlib.Path = args.data_dir / "disordered_pdb_esm/"
 
     # Step 1. Extract sequences from npz files
     fasta_path = data_dir / "rcsb_sequences.fasta"

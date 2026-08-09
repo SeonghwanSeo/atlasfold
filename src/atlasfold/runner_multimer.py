@@ -10,7 +10,9 @@ import torch
 
 from atlasfold.common import featurize, protein, residue_constants
 from atlasfold.model import AtlasFold_Multimer, SamplingConfig
+from atlasfold.model.utils import confidence_metrics
 from atlasfold.runner import SampleKey, autocast_context, seed_context
+from atlasfold.utils import rasa
 
 
 class MultimerInput(NamedTuple):
@@ -56,6 +58,7 @@ class ProteinMultimerOutput(protein.ProteinMultimer):
     pde: np.ndarray
     ptm: float
     iptm: float
+    fraction_disordered: float
     chain_ptm: list[float] = dataclasses.field(default_factory=list)
     interface_iptm: dict[tuple[int, int], float] = dataclasses.field(default_factory=dict)
 
@@ -102,15 +105,16 @@ class ProteinMultimerOutput(protein.ProteinMultimer):
 
     @property
     def ranking_score(self) -> float:
-        return 0.8 * self.iptm + 0.2 * float(self.ptm)
+        return 0.8 * self.iptm + 0.2 * self.ptm + 0.5 * self.fraction_disordered
 
     @functools.cached_property
     def confidence_scores(self) -> dict:
         complex_scores = {
             "avg_plddt": self.avg_plddt,
             "avg_pde": self.avg_pde,
-            "ptm": float(self.ptm),
+            "ptm": self.ptm,
             "iptm": self.iptm,
+            "fraction_disordered": self.fraction_disordered,
             "ranking_score": self.ranking_score,
         }
 
@@ -186,7 +190,7 @@ class MultimerFoldingRunner:
         name: str,
         chains: Sequence[str],
         *,
-        num_samples: int = 1,
+        num_samples: int = 5,
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 10,
         sampling_config: SamplingConfig | None = None,
@@ -211,7 +215,7 @@ class MultimerFoldingRunner:
         self,
         inputs: Sequence[MultimerInputLike],
         *,
-        num_samples: int = 1,
+        num_samples: int = 5,
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 10,
         sampling_config: SamplingConfig | None = None,
@@ -238,7 +242,7 @@ class MultimerFoldingRunner:
         self,
         inputs: Sequence[MultimerInputLike],
         *,
-        num_samples: int = 1,
+        num_samples: int = 5,
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 10,
         sampling_config: SamplingConfig | None = None,
@@ -473,6 +477,13 @@ class MultimerFoldingRunner:
         chain_ids = [chain.name for chain in complex_input.chains]
         num_chains = len(chain_lengths)
         samples = {}
+        residue_rasa = rasa.compute_rasa(
+            out["sample_coords"][batch_idx, :, :total_length],
+            complex_input.sequences,
+        )
+        fraction_disordered = confidence_metrics.compute_fraction_disordered(
+            residue_rasa, chain_lengths
+        )
 
         for sample_idx in range(num_samples):
             coords = out["sample_coords"][batch_idx, sample_idx, :total_length]
@@ -525,6 +536,7 @@ class MultimerFoldingRunner:
                 pde=pde,
                 ptm=ptm,
                 iptm=iptm,
+                fraction_disordered=float(fraction_disordered[sample_idx]),
                 chain_ptm=chain_ptm,
                 interface_iptm=interface_iptm_dict,
             )

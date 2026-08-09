@@ -17,12 +17,16 @@ dependencies = [
   "huggingface_hub",
 ]
 
+[project.scripts]
+atlasfold = "atlasfold.cli:main"
+
 [project.optional-dependencies]
 fold = [
   "scipy",
   "einops",
   "gemmi",
   "omegaconf",
+  "numba", # for SASA computation
 ]
 cuequiv = [
   "cuequivariance_torch>=0.6.0",

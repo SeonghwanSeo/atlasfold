@@ -1,4 +1,4 @@
-"""Preprocess Disordered PDB mmCIF files."""
+"""Preprocess Disordered PDB mmCIF files for the ESMFold dataset."""
 
 import argparse
 import io
@@ -61,7 +61,7 @@ def main():
     """Main function to process RCSB mmCIF files"""
     args = parse_args()
     rcsb_dir = args.data_dir / "rcsb/"
-    data_dir: pathlib.Path = args.data_dir / "disordered_pdb_afm"
+    data_dir: pathlib.Path = args.data_dir / "disordered_pdb_esm"
     structure_path = rcsb_dir / "structure.lmdb"
 
     # Step 1: Read all raw bytes from LMDB sequentially (fast I/O operation)

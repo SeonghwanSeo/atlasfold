@@ -1,5 +1,7 @@
 """Functions for computing confidence metrics from model outputs."""
 
+from collections.abc import Sequence
+
 import numpy as np
 import torch
 
@@ -363,11 +365,28 @@ def compute_chain_tm_scores_from_probs(
     return chain_ptm, interface_iptm
 
 
-def compute_pair_mean(
-    values: np.ndarray,
-    pair_mask: np.ndarray,
-) -> float:
-    selected = values[pair_mask]
-    if selected.size == 0:
-        raise ValueError("Cannot compute pair mean over an empty mask.")
-    return float(selected.mean())
+def compute_fraction_disordered(
+    rasa: np.ndarray,
+    chain_lengths: Sequence[int],
+    smoothing_window: int = 25,
+    disorder_cutoff: float = 0.581,
+) -> np.ndarray:
+    """Compute the fraction of residues classified as disordered from RASA."""
+    assert rasa.ndim == 2
+    assert sum(chain_lengths) == rasa.shape[1]
+
+    half_window = (smoothing_window - 1) // 2
+    smoothing_kernel = np.full(smoothing_window, 1.0 / smoothing_window, dtype=np.float32)
+    num_disordered = np.zeros(rasa.shape[0], dtype=np.int64)
+    chain_start = 0
+    for chain_length in chain_lengths:
+        chain_end = chain_start + chain_length
+        chain_rasa = rasa[:, chain_start:chain_end]
+        for sample_idx in range(rasa.shape[0]):
+            padded = np.pad(
+                chain_rasa[sample_idx], (half_window, half_window), mode="reflect"
+            )
+            smoothed = np.convolve(padded, smoothing_kernel, mode="valid")
+            num_disordered[sample_idx] += np.count_nonzero(smoothed > disorder_cutoff)
+        chain_start = chain_end
+    return num_disordered / rasa.shape[1]

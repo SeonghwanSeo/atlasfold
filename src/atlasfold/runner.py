@@ -159,11 +159,10 @@ class FoldingRunner:
         name: str,
         sequence: str,
         *,
-        num_samples: int = 1,
+        num_samples: int = 5,
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 4,
         mlm_prob: float = 0.15,
-        stochastic: bool = False,
         sampling_config: SamplingConfig | None = None,
         length_buckets: Sequence[int] | None = None,
         return_distogram: bool = False,
@@ -175,7 +174,6 @@ class FoldingRunner:
                 seeds=seeds,
                 num_recycles=num_recycles,
                 mlm_prob=mlm_prob,
-                stochastic=stochastic,
                 sampling_config=sampling_config,
                 length_buckets=length_buckets,
                 return_distogram=return_distogram,
@@ -186,11 +184,10 @@ class FoldingRunner:
         self,
         inputs: Sequence[FoldingInputLike],
         *,
-        num_samples: int = 1,
+        num_samples: int = 5,
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 4,
         mlm_prob: float = 0.15,
-        stochastic: bool = False,
         sampling_config: SamplingConfig | None = None,
         length_buckets: Sequence[int] | None = None,
         max_tokens_per_batch: int = 1024,
@@ -203,7 +200,6 @@ class FoldingRunner:
             seeds=seeds,
             num_recycles=num_recycles,
             mlm_prob=mlm_prob,
-            stochastic=stochastic,
             sampling_config=sampling_config,
             length_buckets=length_buckets,
             max_tokens_per_batch=max_tokens_per_batch,
@@ -215,11 +211,10 @@ class FoldingRunner:
         self,
         inputs: Sequence[FoldingInputLike],
         *,
-        num_samples: int = 1,
+        num_samples: int = 5,
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 4,
         mlm_prob: float = 0.15,
-        stochastic: bool = False,
         sampling_config: SamplingConfig | None = None,
         length_buckets: Sequence[int] | None = None,
         max_tokens_per_batch: int = 1024,
@@ -234,6 +229,10 @@ class FoldingRunner:
             raise ValueError("No seeds provided.")
         if num_samples <= 0:
             raise ValueError(f"num_samples must be positive, got {num_samples}.")
+        if not 0.0 < mlm_prob <= 1.0:
+            raise ValueError(
+                f"mlm_prob must be greater than 0 and at most 1, got {mlm_prob}."
+            )
         if max_tokens_per_batch <= 0:
             raise ValueError(
                 f"max_tokens_per_batch must be positive, got {max_tokens_per_batch}."
@@ -259,7 +258,6 @@ class FoldingRunner:
                     num_samples=num_samples,
                     num_recycles=num_recycles,
                     mlm_prob=mlm_prob,
-                    stochastic=stochastic,
                     sampling_config=_config,
                     return_distogram=return_distogram,
                 )
@@ -305,7 +303,6 @@ class FoldingRunner:
         num_samples: int,
         num_recycles: int,
         mlm_prob: float,
-        stochastic: bool,
         sampling_config: SamplingConfig,
         return_distogram: bool = False,
     ) -> dict[str, np.ndarray]:
@@ -323,7 +320,6 @@ class FoldingRunner:
                 num_samples=num_samples,
                 num_recycles=num_recycles,
                 mlm_prob=mlm_prob,
-                stochastic=stochastic,
                 sampling_config=sampling_config,
             )
         output_keys = {"sample_coords", "plddt", "pae", "ptm"}

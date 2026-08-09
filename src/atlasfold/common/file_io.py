@@ -126,21 +126,30 @@ def to_gemmi_structure(name: str, chains: list[ChainInfo]) -> gemmi.Structure:
 
 RAW_PDB_HEADER = """
 HEADER
-TITLE     ATLASFOLD MONOMER PREDICTION of %s
+TITLE     %s
 REMARK   1 REFERENCE 1
-REMARK   1  AUTH   SEONGHWAN SEO, HYEONGWOO KIM, WOO YOUN KIM
-REMARK   1  TITL   TO BE PUBLISHED
+REMARK   1  AUTH   SEONGHWAN SEO, HYEONGWOO KIM, SEOKHYUN MOON, WOO YOUN KIM
+REMARK   1  TITL   ATLASFOLD: PROTEIN STRUCTURE PREDICTION WITH METAGENOMIC-
+REMARK   1  TITL 2 SCALE LANGUAGE MODELS
 REMARK   1  REF    TO BE PUBLISHED
 """
 
 
-def to_pdb(struct: gemmi.Structure) -> str:
-    header = RAW_PDB_HEADER % struct.name
+def to_pdb(struct: gemmi.Structure, model: str | None = None) -> str:
+    if model == "monomer":
+        title = "ATLASFOLD MONOMER PREDICTION of " + struct.name
+    elif model == "multimer":
+        title = "ATLASFOLD MULTIMER PREDICTION of " + struct.name
+    elif model is None:
+        title = "ATLASFOLD PREDICTION of " + struct.name
+    else:
+        raise ValueError(f"Unknown model type: {model}")
+    header = RAW_PDB_HEADER % title
     struct.raw_remarks = header.strip().splitlines()
     return struct.make_pdb_string()
 
 
-def to_mmcif(struct: gemmi.Structure) -> str:
+def to_mmcif(struct: gemmi.Structure, model: str | None = None) -> str:
     cif_block = gemmi.cif.Block(struct.name)
 
     # Add metadata
@@ -151,14 +160,24 @@ def to_mmcif(struct: gemmi.Structure) -> str:
     )
     author_loop.add_row(["primary", "1", '"Seo, Seonghwan"'])
     author_loop.add_row(["primary", "2", '"Kim, Hyeongwoo"'])
-    author_loop.add_row(["primary", "3", '"Kim, Woo Youn"'])
+    author_loop.add_row(["primary", "3", '"Moon, Seokhyun"'])
+    author_loop.add_row(["primary", "4", '"Kim, Woo Youn"'])
 
     software_loop = cif_block.init_loop(
         "_software.",
         ["pdbx_ordinal", "name", "type", "description", "version"],
     )
+
+    if model == "monomer":
+        description = "AtlasFold Monomer Prediction Pipeline"
+    elif model == "multimer":
+        description = "AtlasFold Multimer Prediction Pipeline"
+    elif model is None:
+        description = "AtlasFold Prediction Pipeline"
+    else:
+        raise ValueError(f"Unknown model type: {model}")
     software_loop.add_row(
-        ["1", "AtlasFold", "model", '"Monomer Prediction Pipeline"', "0.1.0"]
+        ["1", "AtlasFold", "model", gemmi.cif.quote(description), "1.0.0"]
     )
 
     # Add structure data

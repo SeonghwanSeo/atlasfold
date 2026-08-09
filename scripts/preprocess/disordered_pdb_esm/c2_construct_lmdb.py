@@ -1,4 +1,4 @@
-"""concatenate multiple files into one file."""
+"""Construct the disordered-PDB ESMFold LMDB and manifest."""
 
 import argparse
 import json
@@ -68,7 +68,7 @@ def process_metadata(npz_path: pathlib.Path) -> tuple[str, dict | None, bool]:
     bfactors_ca = bfactors[:, 1]
     plddt = np.nanmean(bfactors_ca).item()  # Convert to Python float
     plddt = round(plddt, 2)  # Round to 2 decimal places
-    pred_record = metadata.PredictionRecord(model="AlphaFold-Multimer", plddt=plddt)
+    pred_record = metadata.PredictionRecord(model="ESMFold", plddt=plddt)
 
     cluster_id = GLOBAL_CLUSTER_MAPPING.get(prot.sequence)
     if cluster_id is None:
@@ -86,7 +86,7 @@ def process_metadata(npz_path: pathlib.Path) -> tuple[str, dict | None, bool]:
 
 def main():
     args = parse_args()
-    data_dir: pathlib.Path = args.data_dir / "disordered_pdb_afm/"
+    data_dir: pathlib.Path = args.data_dir / "disordered_pdb_esm/"
     npz_dir: pathlib.Path = data_dir / "npz"
 
     if not npz_dir.exists():

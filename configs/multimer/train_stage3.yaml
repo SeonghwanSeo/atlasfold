@@ -36,19 +36,19 @@ train:
         use_templates: true
         weight: 0.490
         template_prob: 0.4
-      - name: disordered_pdb_multimer
+      - name: disordered_pdb_afm
         type: rcsb
         is_multimer: true
         is_distillation: true
         use_templates: false
         weight: 0.010
-      - name: long_monomers
+      - name: mgnify_long
         type: monomer_distillation
         is_multimer: false
         is_distillation: true
         use_templates: false
         weight: 0.495
-      - name: short_monomers
+      - name: mgnify_short
         type: monomer_distillation
         is_multimer: false
         is_distillation: true

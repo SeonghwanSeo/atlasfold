@@ -21,6 +21,7 @@ TODO
 - [Installation](#installation)
 - [AtlasLM protein language model](#atlaslm-protein-language-model)
 - [AtlasFold protein structure prediction](#atlasfold-protein-structure-prediction)
+- [Training](#training)
 - [Acknowledgements](#acknowledgements)
 - [License](#license)
 
@@ -57,11 +58,7 @@ pip install "atlasfold[fold,cuequiv]"
 ## AtlasLM protein language model
 
 **AtlasLM** is the reproduction of [**ESM Cambrian (ESM C)**](https://www.evolutionaryscale.ai/blog/esm-cambrian), the state-of-the-art protein language model developed by EvolutionaryScale.
-~~While the original model has restrictive licensing, this repository provides pre-trained weights under the **MIT License**, facilitating unrestricted research and commercial application.~~
 
-### Available Models
-
-We provide the following models under the **MIT License**:
 
 | Model | Params | Layers | Width | Heads |
 | --- | --- | --- | --- | --- |
@@ -95,7 +92,9 @@ hidden_states = out.hidden_states  # List of hidden states per layer
 # 2. Get Attention Maps
 # Requires return_attentions=True. Note that this increases memory usage.
 out = model.embed_sequences(sequences, return_attentions=True)
-attentions = out.attentions  # List of attention maps: (batch_size, n_heads, seq_len, seq_len)
+attentions = (
+    out.attentions
+)  # List of attention maps: (batch_size, n_heads, seq_len, seq_len)
 ```
 
 ## AtlasFold protein structure prediction
@@ -113,7 +112,7 @@ Pretrained weights are hosted on Hugging Face:
 
 Both the Python API and CLI download AtlasFold and AtlasLM weights automatically.
 Use `--cache-dir` to select a cache location, or `--model-path` as an optional
-override for a local/custom AtlasFold checkpoint.
+override for a local/custom model parameters.
 
 For monomer inference, provide one sequence per FASTA record:
 
@@ -125,8 +124,7 @@ GILGYTEHQVVSSDFQKAAQQLLQYFQKAGY
 ```
 
 ```bash
-python run_atlasfold.py \
-    --model monomer \
+python run_atlasfold.py monomer \
     --input-fasta monomers.fasta \
     --out-dir predictions/monomers
 ```
@@ -141,13 +139,19 @@ GILGYTEHQVVSSDFQKAA:QQLLQYFQKAGY
 ```
 
 ```bash
-python run_atlasfold.py \
-    --model multimer \
+python run_atlasfold.py multimer \
     --input-fasta multimers.fasta \
     --out-dir predictions/multimers
 ```
 
-The scripts use the first whitespace-delimited token in each FASTA header as the target name. Target names must be unique and suitable for use in directory and file names. Sequences are uppercased and whitespace is removed; nonstandard residues are replaced with `X` with a warning that identifies the target and, for multimers, the chain.
+When AtlasFold is installed, the same pipelines are also available as CLI subcommands:
+
+```bash
+atlasfold monomer --input-fasta monomers.fasta --out-dir predictions/monomers
+atlasfold multimer --input-fasta multimers.fasta --out-dir predictions/multimers
+```
+
+Both CLI entry points use the first whitespace-delimited token in each FASTA header as the target name. Target names must be unique and cannot be empty, `.`, `..`, or contain path separators. Sequences are uppercased and whitespace is removed; nonstandard residues are replaced with `X` with a warning that identifies the target and, for multimers, the chain.
 
 Common inference options and their model-specific defaults are:
 
@@ -155,11 +159,10 @@ Common inference options and their model-specific defaults are:
 | --- | --- | --- | --- |
 | `--num-recycles N` | `4` | `10` | Set the number of recycling iterations. |
 | `--mlm-prob P` | `0.15` | `0.20` | Set the LM masking probability used during recycling. |
-| `--stochastic` | `off` | Not supported | Increase sampling diversity across seeds. |
 | `--num-samples N` | `5` | `5` | Generate `N` diffusion samples for every seed. |
 | `--seed S [S ...]` | `[1]` | `[1]` | Run one or more random seeds. |
-| `--num-steps N` | Auto | `100` | Set the number of diffusion steps. |
-| `--device {cpu,cuda}` | Auto | Auto | Use CUDA when available, otherwise CPU. |
+| `--num-steps N` | Auto | `200` | Set the number of diffusion steps. |
+| `--device DEVICE` | Auto | Auto | Use CUDA when available, otherwise CPU. Accepts Torch device strings such as `cpu`, `cuda`, or `cuda:0`. |
 | `--no-kernel` | `off` | `off` | Disable optional cuEquivariance kernels. |
 | `--max-tokens-per-batch N` | `1024` | `1024` | Limit bucketed residue tokens in each model call; reduce this after a CUDA out-of-memory error. |
 | `--format {cif,pdb}` | `cif` | `cif` | Select the output structure format. |
@@ -169,35 +172,51 @@ Common inference options and their model-specific defaults are:
 
 > **Note:** The automatic monomer diffusion schedule uses `20` steps for L <= 512, `30` steps for L <= 1024, and `100` steps otherwise, where L is the runner's bucketed residue length.
 
-Use `python run_atlasfold.py --help` for the complete option list and current defaults.
+Use `atlasfold monomer --help`, `atlasfold multimer --help`, or the equivalent `python run_atlasfold.py <model> --help` command for the complete model-specific option lists and current defaults.
 
 ### Output files
 
-Each target is written to its own output directory. Every generated sample has a structure file and a JSON confidence summary. The highest-ranked sample is also written as `<target>_ranked_model.cif` (or `.pdb`), and all samples are listed in `<target>_summary.csv`. Monomers are ranked by mean pLDDT; multimers are ranked by `0.8 * ipTM + 0.2 * pTM`.
+Each target is written to its own output directory. Every generated sample has a structure file and a JSON confidence summary. The highest-ranked sample is also written as `<target>_ranked_model.cif` (or `.pdb`), and all samples are listed in `<target>_summary.csv`. Monomers are ranked by mean pLDDT; multimers are ranked by `0.8 * ipTM + 0.2 * pTM + 0.5 * fraction_disordered`, where `fraction_disordered` is the fraction of residues with window-smoothed RASA above 0.581.
 
-`--save-confidence-arrays` additionally writes one NumPy NPZ file per sample. Monomer files contain `plddt` and `pae`; multimer files contain `plddt`, `pae`, and `pde`. Scalar scores such as pTM and ipTM remain in the JSON and CSV outputs. `--save-distogram` writes `logits` and `boundaries` once per seed. Raw pairwise arrays scale quadratically with sequence length and can require substantial host memory and disk space for long targets.
+`--save-confidence-arrays` additionally writes one NumPy NPZ file per sample. Monomer files contain `plddt` and `pae`; multimer files contain `plddt`, `pae`, and `pde`. Scalar scores such as pTM, ipTM, and fraction disordered remain in the JSON and CSV outputs. `--save-distogram` writes `logits` and `boundaries` once per seed. Raw pairwise arrays scale quadratically with sequence length and can require substantial host memory and disk space for long targets.
 
 ### Python API
 
-Load a pretrained model by name, create a runner, and call `fold()` for one target:
+AtlasFold runners support single-target folding, streaming and batched inference, automatic length bucketing, sample ranking, confidence outputs, and optional distogram outputs. See the [inference guide](docs/inference.md) for examples and detailed API documentation.
+
+The following example loads a model and predicts a single target with `fold()`. Fine-tuned model instances can be passed to `get_runner()` in the same way:
 
 ```python
-from atlasfold.pretrained import load_model
-from atlasfold.runner import FoldingRunner
-from atlasfold.runner_multimer import MultimerFoldingRunner
+from atlasfold.pretrained import get_runner, load_model
 
-monomer_model = load_model("atlasfold-260703", device="cuda")
-folding_runner = FoldingRunner(monomer_model)
-monomer = folding_runner.fold("protein_a", "MKTAYIAKQRQISFVKSHFS", num_samples=5)
-print(monomer.best.avg_plddt)
+# Monomer prediction
+monomer_model = load_model("atlasfold", device="cuda")
+folding_runner = get_runner(monomer_model)
+seq = 'MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG'
+monomer_out = folding_runner.fold("test", seq, num_samples=5)
+print(monomer_out.best.avg_plddt) # 96.42
+with open("test_monomer.pdb", "w") as f:
+    f.write(monomer_out.best.to_pdb())
 
-multimer_model = load_model("atlasfold-m-260725", device="cuda")
-multimer_runner = MultimerFoldingRunner(multimer_model)
-multimer = multimer_runner.fold("complex_a", ["MKTAYIAKQRQISFVKSHFS", "GGHVDHGKSTTTGHLIYK"], num_samples=5)
-print(multimer.best.iptm)
+# Multimer prediction
+multimer_model = load_model("atlasfold-m", device="cuda")
+multimer_runner = get_runner(multimer_model)
+seq1 = (
+    "GSEVQLLESGGGLVQAGDSLRLSCAASGRTFSAYAMGWFRQAPGKEREFVAAISWSGNSTYYAD"
+    "SVKGRFTISRDNAKNTVYLQMNSLKPEDTAIYYCAARKPMYRVDISKGQNYDYWGQGTQVTVSS"
+)
+seq2 = "GAMGPGVDTQIFEDPREFLSHLEEYLRQVGGSEEYWLSQIQNHMNGPAKKWWEFKQGSVKNWVEFKKEFLQYSEG"
+multimer_out = multimer_runner.fold(
+    "test_m", [seq1, seq2], seeds=[1, 2], num_samples=5
+)
+print(multimer_out.best.iptm) # 0.956
+with open("test_multimer.cif", "w") as f:
+    f.write(multimer_out.best.to_mmcif())
 ```
 
-The multimer runner takes pre-split chain sequences and does not interpret colon-delimited strings. See the [folding guide](docs/folding.md) for batched iteration, input and output types, ranking, confidence arrays, and optional distogram output.
+## Training
+
+To train the monomer or multimer models, see the [training guide](docs/training.md) for staged configurations, memory tuning, distributed batch sizing, and checkpoint handoffs.
 
 ---
 
@@ -214,7 +233,7 @@ This project is built upon the pioneering works of Google DeepMind, Meta AI, Ope
 **Foundations of AtlasLM:**
 - **ESM2**: Lin, Zeming, et al. "Evolutionary-scale prediction of atomic-level protein structure with a language model." Science 379.6637 (2023): 1123-1130.
 - **ESM3**: Hayes, Thomas, et al. "Simulating 500 million years of evolution with a language model." Science 387.6736 (2025): 850-858.
-- **ESM C**: ESM Team. "ESM Cambrian: Revealing the mysteries of proteins with unsupervised learning." EvolutionaryScale Website, December 4, 2024. https://evolutionaryscale.ai/blog/esm-cambrian."
+- **ESMC**: ESM Team. "ESM Cambrian: Revealing the mysteries of proteins with unsupervised learning." EvolutionaryScale Website, December 4, 2024. https://evolutionaryscale.ai/blog/esm-cambrian."
 
 **Foundations of AtlasFold:**
 - **AlphaFold2**: Jumper, John, et al. "Highly accurate protein structure prediction with AlphaFold." nature 596.7873 (2021): 583-589.

@@ -23,15 +23,15 @@ train:
         is_distillation: false
         weight: 0.240
         sampling_strategy: ["length", "cluster"]
-      - name: disordered_pdb
+      - name: disordered_pdb_af2
         is_distillation: true
         weight: 0.010
         sampling_strategy: ["length", "cluster"]
-      - name: long_monomers
+      - name: mgnify_long
         is_distillation: true
         weight: 0.740
         sampling_strategy: ["plddt"]
-      - name: short_monomers
+      - name: mgnify_short
         is_distillation: true
         weight: 0.010
         sampling_strategy: ["plddt"]
