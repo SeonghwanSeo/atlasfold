@@ -196,7 +196,6 @@ def load_inputs(args: argparse.Namespace) -> list[MultimerInput]:
 def load_model(
     model_path: str | Path | None = None,
     device: str | torch.device | None = None,
-    disable_kernel: bool = True,
 ) -> AtlasFold_Multimer:
     if model_path is None:
         raise NotImplementedError("Model download is not implemented.")
@@ -214,8 +213,6 @@ def load_model(
     logger.info("Loading weight path=%s", model_path)
     state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
     model = AtlasFold_Multimer.from_pretrained(state_dict, device=device)
-
-    model.set_forward_flags(use_cuequiv_kernels=not disable_kernel)
     return model
 
 
@@ -334,7 +331,7 @@ def run(args: argparse.Namespace) -> None:
         return
 
     # Load the model
-    model = load_model(args.model_path, args.device, args.no_kernel)
+    model = load_model(args.model_path, args.device)
     if args.no_kernel:
         model.set_forward_flags(use_cuequiv_kernels=False)
 

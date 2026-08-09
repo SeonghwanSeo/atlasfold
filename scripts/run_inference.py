@@ -182,7 +182,6 @@ def load_sequences(input_fasta: Path) -> list[FoldingInput]:
 def load_model(
     model_path: str | Path,
     device: str | torch.device | None = None,
-    disable_kernel: bool = False,
 ) -> AtlasFold:
     model_path = Path(model_path)
     if not model_path.exists():
@@ -196,7 +195,6 @@ def load_model(
     state_dict = torch.load(model_path, map_location="cpu")
 
     model = AtlasFold.from_pretrained(state_dict=state_dict, device=device)
-    model.set_forward_flags(use_cuequiv_kernels=not disable_kernel)
     return model
 
 
@@ -304,9 +302,12 @@ def run(args: argparse.Namespace) -> None:
         logger.info("All targets are complete. Nothing to do.")
         return
 
-    model = load_model(args.model_path, args.device, args.no_kernel)
-    runner = FoldingRunner(model)
+    model = load_model(args.model_path, args.device)
+    if args.no_kernel:
+        model.set_forward_flags(use_cuequiv_kernels=False)
 
+    # Set up the runner
+    runner = FoldingRunner(model)
     num_steps = args.num_steps if args.num_steps is not None else "auto"
     if num_steps == "auto":
         logger.info(
