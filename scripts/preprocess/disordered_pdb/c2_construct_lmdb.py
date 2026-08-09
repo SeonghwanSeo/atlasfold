@@ -1,6 +1,7 @@
 """concatenate multiple files into one file."""
 
 import argparse
+import json
 import logging
 import multiprocessing
 import os
@@ -13,6 +14,7 @@ import numpy as np
 from tqdm import tqdm
 
 from atlasfold.common import metadata, protein
+from atlasfold.train.monomer.dataset import DataPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +59,7 @@ def process_metadata(npz_path: pathlib.Path) -> tuple[str, dict | None, bool]:
     """Worker function to parse the monomer and extract metadata."""
     entry_id = npz_path.stem
     try:
-        prot = protein.Protein.load_npz(npz_path)
+        prot: protein.Protein = DataPipeline.load(npz_path)
     except Exception as e:
         return npz_path.name, {"error": str(e)}, False
 
@@ -66,7 +68,7 @@ def process_metadata(npz_path: pathlib.Path) -> tuple[str, dict | None, bool]:
     bfactors_ca = bfactors[:, 1]
     plddt = np.nanmean(bfactors_ca).item()  # Convert to Python float
     plddt = round(plddt, 2)  # Round to 2 decimal places
-    pred_record = metadata.PredictionRecord(model="ESMFold", plddt=plddt)
+    pred_record = metadata.PredictionRecord(model="AlphaFold-Multimer", plddt=plddt)
 
     cluster_id = GLOBAL_CLUSTER_MAPPING.get(prot.sequence)
     if cluster_id is None:
@@ -84,7 +86,7 @@ def process_metadata(npz_path: pathlib.Path) -> tuple[str, dict | None, bool]:
 
 def main():
     args = parse_args()
-    data_dir: pathlib.Path = args.data_dir / "disordered_pdb/"
+    data_dir: pathlib.Path = args.data_dir / "disordered_pdb_afm/"
     npz_dir: pathlib.Path = data_dir / "npz"
 
     if not npz_dir.exists():
@@ -97,7 +99,7 @@ def main():
         str(lmdb_path),
         map_size=10 * 1024 * 1024 * 1024,  # size in Bytes
     )
-    npz_paths = sorted(list(npz_dir.glob("*.npz")))
+    npz_paths = sorted(list(npz_dir.rglob("*.npz")))
     with env.begin(write=True) as txn:
         for npz_path in tqdm(
             npz_paths,
@@ -124,7 +126,7 @@ def main():
         initializer=worker_init,
         initargs=(cluster_path,),
     ) as pool:
-        npz_paths = list(npz_dir.glob("*.npz"))
+        npz_paths = list(npz_dir.rglob("*.npz"))
         shard_iterator = pool.imap_unordered(process_metadata, npz_paths, chunksize=50)
         for entry_id, meta_dict, success in tqdm(
             shard_iterator,
@@ -153,6 +155,11 @@ def main():
     with open(manifest_path, "wb") as f:
         msgpack.pack(metadatas, f)
     print(f"Saved manifest (msgpack) to {manifest_path}")
+
+    manifest_json_path: pathlib.Path = data_dir / "manifest.json"
+    with open(manifest_json_path, "w") as f:
+        json.dump(metadatas, f, indent=2)
+    print(f"Saved manifest (json) to {manifest_json_path}")
 
 
 if __name__ == "__main__":

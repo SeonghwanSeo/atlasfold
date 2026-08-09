@@ -1,9 +1,7 @@
-seed: 2
-
 model:
   _yaml_: _model.yaml
   trunk:
-    blocks_per_ckpt: 16
+    blocks_per_ckpt: null
   template_module:
     blocks_per_ckpt: null
   diffusion_head:
@@ -12,13 +10,6 @@ model:
 train:
   _yaml_: _train_base.yaml
   name: stage2-640
-
-  init_from_ema: ['trunk', 'diffusion_head', 'confidence_head']
-
-  optimizer:
-    max_lr: 0.001
-    warmup_steps: 0
-    decay_steps: 1000000000
 
   data:
     max_length: 640
@@ -36,35 +27,27 @@ train:
         is_multimer: true
         is_distillation: false
         use_templates: true
-        weight: 0.50
+        weight: 0.490
         template_prob: 0.4
       - name: disordered_pdb_multimer
         type: rcsb
         is_multimer: true
         is_distillation: true
         use_templates: false
-        weight: 0.01
+        weight: 0.010
       - name: long_monomers
         type: monomer_distillation
         is_multimer: false
         is_distillation: true
         use_templates: false
-        weight: 0.48
+        weight: 0.495
       - name: short_monomers
         type: monomer_distillation
         is_multimer: false
         is_distillation: true
         use_templates: false
-        weight: 0.01
+        weight: 0.005
     val_dataset:
       name: rcsb_multimer_val
       type: rcsb
       use_templates: false
-
-  training:
-    train_trunk: true
-    train_diffusion_head: true
-    train_confidence_head: true
-    train_pde_head: true
-    train_pae_head: true
-    diffusion_batch_size: 32

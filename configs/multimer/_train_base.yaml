@@ -51,11 +51,11 @@ trainer:
 # Exponential Moving Average (EMA)
 training:
   # Training step hyperparameters
-  train_trunk: false
-  train_diffusion_head: false
-  train_confidence_head: false
-  train_pde_head: false
-  train_pae_head: false
+  train_trunk: true
+  train_diffusion_head: true
+  train_confidence_head: true
+  train_pde_head: true
+  train_pae_head: true
 
   num_recycles: 3
 

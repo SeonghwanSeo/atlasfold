@@ -1,9 +1,7 @@
-seed: 1
-
 model:
   _yaml_: _model.yaml
   trunk:
-    blocks_per_ckpt: 12
+    blocks_per_ckpt: null
   template_module:
     blocks_per_ckpt: null
   diffusion_head:
@@ -19,10 +17,10 @@ train:
     max_templates: 2
     max_contiguous_chains: 6
 
-    batch_size: 2
+    batch_size: 1
     global_batch_size: 256
 
-    data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
+    data_root: /data/atlasfold_data/
     train_datasets:
       - name: rcsb_multimer
         type: rcsb
@@ -52,16 +50,7 @@ train:
     val_dataset:
       name: rcsb_multimer_val
       type: rcsb
-      is_multimer: true
       use_templates: false
-
-  training:
-    train_trunk: true
-    train_diffusion_head: true
-    train_confidence_head: true
-    train_pde_head: true
-    train_pae_head: true
-    diffusion_batch_size: 32
 
   loss:
     weights:
@@ -69,4 +58,4 @@ train:
 
     diffusion_loss:
       smooth_lddt_loss:
-        chunk_size: 16
+        chunk_size: null

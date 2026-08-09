@@ -11,6 +11,7 @@ import numpy as np
 from tqdm import tqdm
 
 from atlasfold.common import protein
+from atlasfold.train.monomer.dataset import DataPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ def process_protein_bytes(npz_bytes):
 
     try:
         with io.BytesIO(npz_bytes) as f:
-            prot = protein.Protein.load_npz(f)
+            prot = DataPipeline.load(f)
 
         ca_coords = prot.coordinates[:, 1, :]  # (L, 3)
         n_disordered = np.isnan(ca_coords).all(-1).sum()
@@ -60,6 +61,7 @@ def main():
     """Main function to process RCSB mmCIF files"""
     args = parse_args()
     rcsb_dir = args.data_dir / "rcsb/"
+    data_dir: pathlib.Path = args.data_dir / "disordered_pdb_afm"
     structure_path = rcsb_dir / "structure.lmdb"
 
     # Step 1: Read all raw bytes from LMDB sequentially (fast I/O operation)
@@ -96,7 +98,6 @@ def main():
         return
 
     # Save outputs
-    data_dir: pathlib.Path = args.data_dir / "disordered_pdb/"
     data_dir.mkdir(parents=True, exist_ok=True)
     disordered_proteins.sort(key=lambda p: p.name)
 
