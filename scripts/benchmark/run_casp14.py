@@ -10,18 +10,31 @@ from atlasfold.data.fasta import read_fasta
 from atlasfold.model import AtlasFold, AtlasFoldConfig, SamplingConfig
 from atlasfold.runner import FoldingRunner
 
-CKPT = "/mnt/parallel_storage/wykim_lab/icl_shwan/train_results/v4/stage-confidence-1/AtlasFold/qchch827/checkpoints/epoch0116_step00117000_lddt0.8292.ckpt"
-CKPT_NAME = "117k"
 NUM_RECYCLES = 4
 NUM_STEPS = 100
 SIGMA_MAX = 160
 
-ROOT_DIR = Path("./outputs/casp14/")
-EXP_NAME = f"{CKPT_NAME}_recycles{NUM_RECYCLES}_steps{NUM_STEPS}_sigma{SIGMA_MAX}"
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run AtlasFold on CASP14.")
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        required=True,
+        help="Path to an AtlasFold training checkpoint.",
+    )
+    parser.add_argument(
+        "--input-fasta",
+        type=Path,
+        default=Path("./assets/test/casp14_public.fasta"),
+        help="Path to the CASP14 FASTA file.",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=Path("./outputs/casp14"),
+        help="Root directory for benchmark outputs.",
+    )
     parser.add_argument(
         "--seed",
         type=int,
@@ -69,7 +82,7 @@ def main():
     # Load model
     device = torch.device("cuda")
     config = AtlasFoldConfig()
-    state_dict = torch.load(CKPT, map_location="cuda")
+    state_dict = torch.load(args.checkpoint, map_location="cuda", weights_only=True)
     model_state_dict = {
         k.removeprefix("model."): v for k, v in state_dict["state_dict"].items()
     }
@@ -84,11 +97,15 @@ def main():
     )
 
     # Create output directory
-    OUT_DIR = ROOT_DIR / EXP_NAME / "predictions"
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    experiment_name = (
+        f"{args.checkpoint.stem}_recycles{NUM_RECYCLES}_"
+        f"steps{NUM_STEPS}_sigma{SIGMA_MAX}"
+    )
+    out_dir = args.output_root / experiment_name / "predictions"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # Load sequences
-    sequences = read_fasta("./assets/test/casp14_public.fasta")
+    sequences = read_fasta(args.input_fasta)
     sequences.sort(key=lambda x: (len(x[1]), x[0]))
     targets = [(header.split()[0], seq) for header, seq in sequences]
 
@@ -100,7 +117,7 @@ def main():
         pending_targets = [
             (name, seq)
             for name, seq in targets
-            if not has_all_samples(OUT_DIR, name, seed, args.num_samples)
+            if not has_all_samples(out_dir, name, seed, args.num_samples)
         ]
         if len(pending_targets) == 0:
             print(f"Skipping seed {seed}: all samples already exist.")
@@ -132,10 +149,10 @@ def main():
             desc=f"Writing seed {seed}",
         ):
             for i, out in enumerate(outs):
-                out_path = OUT_DIR / f"{name}_seed-{seed}_sample-{i}.cif"
+                out_path = out_dir / f"{name}_seed-{seed}_sample-{i}.cif"
                 with open(out_path, "w") as f:
                     f.write(out.to_mmcif())
-                confidence_path = OUT_DIR / f"{name}_seed-{seed}_sample-{i}.json"
+                confidence_path = out_dir / f"{name}_seed-{seed}_sample-{i}.json"
                 write_confidence_json(confidence_path, out)
 
 

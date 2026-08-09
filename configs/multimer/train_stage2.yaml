@@ -20,7 +20,7 @@ train:
     batch_size: 1
     global_batch_size: 256
 
-    data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
+    data_root: /data/atlasfold_data/
     train_datasets:
       - name: rcsb_multimer
         type: rcsb

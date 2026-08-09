@@ -9,7 +9,7 @@ model:
 
 train:
   _yaml_: _train_base.yaml
-  name: stage2
+  name: stage2-384
 
   data:
     max_length: 384
@@ -17,7 +17,7 @@ train:
     batch_size: 1
     global_batch_size: 256
 
-    data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
+    data_root: /data/atlasfold_data/
     train_datasets:
       - name: rcsb
         is_distillation: false

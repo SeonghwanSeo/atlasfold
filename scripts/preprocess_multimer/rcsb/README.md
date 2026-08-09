@@ -73,7 +73,7 @@ Convert raw template chain `.npz` files into AtlasFold monomer atom14 `.npz` fil
 
 ```bash
 python c1_process_templates.py \
-    --template_dir /cache/wykim_lab/icl_shwan/templates/templates \
+    --template_dir /path/to/templates \
     --data_dir /path/to/data/root/ \
     --num_workers 16
 ```
@@ -92,7 +92,7 @@ Convert per-entry template-hit metadata into an LMDB mapping keyed by `{pdb_id}_
 
 ```bash
 python c3_create_template_mapping.py \
-    --metadata_dir /cache/wykim_lab/icl_shwan/templates/train_template_metadata \
+    --metadata_dir /path/to/template/metadata \
     --data_dir /path/to/data/root/ \
     --num_workers 16 \
     --size_gb 64

@@ -1,5 +1,5 @@
 # Configuration for training
-name: monomer
+name: multimer
 out_dir: ./experiments/
 
 # Reproducibility
@@ -116,4 +116,4 @@ loss:
 wandb:
   use: false
   project: "AtlasFold_Multimer" # Set your project name
-  entity: "SeonghwanSeo" # Set your entity name
+  entity: null # Defaults to the authenticated user's entity

@@ -115,4 +115,4 @@ loss:
 wandb:
   use: false
   project: "AtlasFold" # Set your project name
-  entity: "SeonghwanSeo" # Set your entity name
+  entity: null # Defaults to the authenticated user's entity
