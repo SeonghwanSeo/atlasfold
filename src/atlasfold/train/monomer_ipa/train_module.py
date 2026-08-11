@@ -21,6 +21,7 @@ from atlasfold.train.monomer_ipa.model_train import AtlasFoldIPAForTrain
 from atlasfold.train.utils.ema import ExponentialMovingAverage
 from atlasfold.train.utils.gradient_logging import gradient_norm, parameter_norm
 from atlasfold.train.utils.lr_scheduler import AlphaFoldLRScheduler
+from atlasfold.utils.geometry import metrics as geometry_metrics
 
 
 def to_dict(config: DictConfig) -> dict:
@@ -75,6 +76,7 @@ class LossConfig:
     distogram_loss: Any
     violation_loss: Any
     confidence_loss: Any
+    structure_loss: Any = None
     chain_center_of_mass_loss: Any = None
 
 
@@ -151,6 +153,7 @@ class TrainingModuleIPA(pl.LightningModule):
         """Setup loss functions for training."""
         loss_config = dataclasses.asdict(self.loss_config)
         self.loss_weights: dict[str, float] = loss_config["weights"]
+        self.structure_loss_config = loss_config["structure_loss"] or {}
         self.violation_loss_config = loss_config["violation_loss"]
 
         # Distogram loss
@@ -222,7 +225,20 @@ class TrainingModuleIPA(pl.LightningModule):
                 batch["res_idx"],
                 use_clamped_fape=batch["use_clamped_fape"],
                 reduction="none",
+                **self.structure_loss_config,
             )
+            pred_pos = out["structure"]["coords"].float()
+            renamed_pos = structure_labels["renamed_atom14_gt_positions"]
+            renamed_mask = structure_labels["renamed_atom14_gt_exists"]
+            with torch.no_grad():
+                rmsd = geometry_metrics.compute_rmsd_atom14(
+                    pred_pos, renamed_pos, renamed_mask, align=True
+                )
+                lddt_ca = geometry_metrics.compute_lddt_ca(
+                    pred_pos, renamed_pos, renamed_mask
+                )
+            metrics["rmsd"] = rmsd.mean()
+            metrics["lddt-ca"] = lddt_ca.mean()
             if self.loss_weights["violation"] != 0:
                 violation, violation_metrics = structure_ipa.violation_loss(
                     out["structure"],
@@ -257,7 +273,6 @@ class TrainingModuleIPA(pl.LightningModule):
                 dgram = zero
                 dummy_loss = dummy_loss + (out["distogram"]["logits"] * 0).mean()
             confidence_mask = loss_mask["confidence"].float()
-            pred_pos = out["structure"]["coords"].float()
             if self.loss_weights["plddt"] != 0:
                 plddt = self.plddt_loss(
                     out["confidence"]["plddt"]["logits"].float(),

@@ -83,6 +83,11 @@ loss:
     pae: 0.0
     experimentally_resolved: 0.0
 
+  # Structure loss
+  structure_loss:
+    backbone_fape_chunk_size: null
+    sidechain_fape_chunk_size: 128
+
   # Distogram loss
   distogram_loss:
     include_self_pairs: true

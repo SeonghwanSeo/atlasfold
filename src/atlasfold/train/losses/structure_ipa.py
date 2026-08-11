@@ -145,6 +145,11 @@ def _dihedral(points: torch.Tensor) -> torch.Tensor:
     return torch.stack((y / norm, x / norm), dim=-1)
 
 
+def _cdist(x: torch.Tensor, y: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
+    squared_distance = (x.unsqueeze(-2) - y.unsqueeze(-3)).square().sum(-1)
+    return torch.sqrt(squared_distance + eps)
+
+
 @torch.no_grad()
 def make_structure_labels(
     aatype: torch.Tensor, coordinates: torch.Tensor, resolved_mask: torch.Tensor
@@ -245,26 +250,26 @@ def rename_ground_truth(
     B, L = pred.shape[:2]
     pred_flat = pred.reshape(B, L * 14, 3)
     gt_flat = gt.reshape(B, L * 14, 3)
+    alt_flat = alt.reshape(B, L * 14, 3)
+    ambiguous_flat = (ambiguous & exists).reshape(B, L * 14)
     non_ambiguous_flat = (~ambiguous & exists).reshape(B, L * 14)
-    original_parts, alternate_parts = [], []
-    for start in range(0, L, 16):
-        end = min(start + 16, L)
-        pred_d = torch.cdist(pred[:, start:end].flatten(1, 2), pred_flat)
-        gt_d = torch.cdist(gt[:, start:end].flatten(1, 2), gt_flat)
-        alt_d = torch.cdist(alt[:, start:end].flatten(1, 2), gt_flat)
-        first_mask = ambiguous[:, start:end].flatten(1, 2) & exists[:, start:end].flatten(
-            1, 2
-        )
-        pair_mask = first_mask.unsqueeze(-1) & non_ambiguous_flat.unsqueeze(1)
-        shape = (B, end - start, 14, L * 14)
-        original_parts.append(
-            (torch.abs(pred_d - gt_d) * pair_mask).reshape(shape).sum((-1, -2))
-        )
-        alternate_parts.append(
-            (torch.abs(pred_d - alt_d) * pair_mask).reshape(shape).sum((-1, -2))
-        )
-    original_error = torch.cat(original_parts, dim=1)
-    alternate_error = torch.cat(alternate_parts, dim=1)
+    pair_mask = ambiguous_flat.unsqueeze(-1) & non_ambiguous_flat.unsqueeze(-2)
+
+    pred_d = _cdist(pred_flat, pred_flat)
+    gt_d = _cdist(gt_flat, gt_flat)
+    original_error = (
+        (torch.sqrt((pred_d - gt_d).square() + 1e-10) * pair_mask)
+        .reshape(B, L, 14, L * 14)
+        .sum((-1, -2))
+    )
+    del gt_d
+
+    alt_d = _cdist(alt_flat, gt_flat)
+    alternate_error = (
+        (torch.sqrt((pred_d - alt_d).square() + 1e-10) * pair_mask)
+        .reshape(B, L, 14, L * 14)
+        .sum((-1, -2))
+    )
     use_alt = alternate_error < original_error
     return {
         "alt_naming_is_better": use_alt,
@@ -316,9 +321,10 @@ def compute_fape(
     length_scale: float,
     clamp_distance: float | None,
     pair_mask: torch.Tensor | None = None,
-    chunk_size: int = 64,
+    chunk_size: int | None = 64,
+    eps: float = 1e-4,
 ) -> torch.Tensor:
-    """Frame-aligned point error, chunked along frames to limit memory."""
+    """Frame-aligned point error, optionally chunked along the frame axis."""
 
     pr, pt = _rigid_parts(pred_frames)
     tr, tt = _rigid_parts(target_frames)
@@ -333,6 +339,10 @@ def compute_fape(
     losses = []
     weights = []
     n_frames = pr.shape[-3]
+    if chunk_size is None:
+        chunk_size = n_frames
+    elif chunk_size <= 0:
+        raise ValueError("FAPE chunk_size must be positive or None.")
     for start in range(0, n_frames, chunk_size):
         end = min(start + chunk_size, n_frames)
         pr_c, pt_c = pr[..., start:end, :, :], pt[..., start:end, :]
@@ -345,7 +355,7 @@ def compute_fape(
             tr_c.transpose(-1, -2).unsqueeze(-3),
             (target_positions.unsqueeze(-3) - tt_c.unsqueeze(-2)).unsqueeze(-1),
         ).squeeze(-1)
-        error = torch.sqrt((pred_local - target_local).square().sum(-1) + 1e-8)
+        error = torch.sqrt((pred_local - target_local).square().sum(-1) + eps)
         if clamp_distance is not None:
             error = error.clamp(max=clamp_distance)
         weight = (
@@ -355,55 +365,64 @@ def compute_fape(
             weight = weight * pair_mask[..., start:end, :].float()
         losses.append((error / length_scale * weight).sum((-1, -2)))
         weights.append(weight.sum((-1, -2)))
-    return sum(losses) / (sum(weights) + 1e-8)
+    return sum(losses) / (sum(weights) + eps)
 
 
-def backbone_fape(
+def monomer_backbone_fape(
     structure: dict[str, Any],
     labels: dict[str, torch.Tensor],
-    multimer: bool,
-    asym_id: torch.Tensor | None = None,
     use_clamped_fape: torch.Tensor | None = None,
+    chunk_size: int | None = 64,
     reduction: Reduction = "mean",
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     pred = trajectory_to_frames(structure["traj"])
     target = labels["backbone_rigid_tensor"]
     mask = labels["backbone_rigid_mask"]
-    pred_pos = pred[..., :3, 3]
-    target_pos = target[..., :3, 3]
-    if not multimer:
-        value = compute_fape(pred, target, mask, pred_pos, target_pos, mask, 10.0, 10.0)
-        if use_clamped_fape is not None:
-            unclamped = compute_fape(
-                pred, target, mask, pred_pos, target_pos, mask, 10.0, None
-            )
-            use_clamped_fape = use_clamped_fape.to(value).squeeze()
-            while use_clamped_fape.ndim < value.ndim:
-                use_clamped_fape = use_clamped_fape.unsqueeze(0)
-            value = value * use_clamped_fape + unclamped * (1.0 - use_clamped_fape)
-        per_example = value.mean(dim=0)
-        return _reduce_batch(per_example, reduction), {"backbone_fape": value[-1].mean()}
-    if asym_id is None:
-        raise ValueError("asym_id is required for multimer backbone FAPE.")
+    x_pred = pred[..., :3, 3]
+    x_target = target[..., :3, 3]
+    value = compute_fape(
+        pred, target, mask, x_pred, x_target, mask, 10.0, 10.0, chunk_size=chunk_size
+    )
+    if use_clamped_fape is not None:
+        unclamped = compute_fape(
+            pred, target, mask, x_pred, x_target, mask, 10.0, None, chunk_size=chunk_size
+        )
+        use_clamped_fape = use_clamped_fape.to(value).squeeze()
+        while use_clamped_fape.ndim < value.ndim:
+            use_clamped_fape = use_clamped_fape.unsqueeze(0)
+        value = value * use_clamped_fape + unclamped * (1.0 - use_clamped_fape)
+    per_example = value.mean(dim=0)
+    return _reduce_batch(per_example, reduction), {"backbone_fape": value[-1].mean()}
+
+
+def multimer_backbone_fape(
+    structure: dict[str, Any],
+    labels: dict[str, torch.Tensor],
+    asym_id: torch.Tensor,
+    chunk_size: int | None = 64,
+    reduction: Reduction = "mean",
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    pred = trajectory_to_frames(structure["traj"])
+    target = labels["backbone_rigid_tensor"]
+    mask = labels["backbone_rigid_mask"]
+    x_pred = pred[..., :3, 3]
+    x_target = target[..., :3, 3]
     valid_chain = asym_id > 0
-    intra = (
+    intra_mask = (
         (asym_id[..., :, None] == asym_id[..., None, :])
         & valid_chain[..., :, None]
         & valid_chain[..., None, :]
     )
+    inter_mask = (
+        (asym_id[..., :, None] != asym_id[..., None, :])
+        & valid_chain[..., :, None]
+        & valid_chain[..., None, :]
+    )
     intra_fape = compute_fape(
-        pred, target, mask, pred_pos, target_pos, mask, 10.0, 10.0, intra
+        pred, target, mask, x_pred, x_target, mask, 10.0, 10.0, intra_mask, chunk_size
     )
     interface_fape = compute_fape(
-        pred,
-        target,
-        mask,
-        pred_pos,
-        target_pos,
-        mask,
-        20.0,
-        1000.0,
-        ~intra & valid_chain[..., :, None] & valid_chain[..., None, :],
+        pred, target, mask, x_pred, x_target, mask, 20.0, 30.0, inter_mask, chunk_size
     )
     value = intra_fape + interface_fape
     per_example = value.mean(dim=0)
@@ -413,10 +432,30 @@ def backbone_fape(
     }
 
 
+def backbone_fape(
+    structure: dict[str, Any],
+    labels: dict[str, torch.Tensor],
+    multimer: bool,
+    asym_id: torch.Tensor | None = None,
+    use_clamped_fape: torch.Tensor | None = None,
+    chunk_size: int | None = 64,
+    reduction: Reduction = "mean",
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    if multimer:
+        if asym_id is None:
+            raise ValueError("asym_id is required for multimer backbone FAPE.")
+        return multimer_backbone_fape(structure, labels, asym_id, chunk_size, reduction)
+    else:
+        return monomer_backbone_fape(
+            structure, labels, use_clamped_fape, chunk_size, reduction
+        )
+
+
 def sidechain_fape(
     structure: dict[str, Any],
     labels: dict[str, torch.Tensor],
     renamed: dict[str, torch.Tensor],
+    chunk_size: int | None = 64,
     reduction: Reduction = "mean",
 ) -> torch.Tensor:
     pred_frames = structure["sidechains"]["frames"][-1]
@@ -435,6 +474,7 @@ def sidechain_fape(
         renamed["renamed_atom14_gt_exists"].flatten(-2, -1),
         10.0,
         10.0,
+        chunk_size=chunk_size,
     )
     return _reduce_batch(per_example, reduction)
 
@@ -677,6 +717,8 @@ def structure_loss(
     asym_id: torch.Tensor | None = None,
     multimer: bool = False,
     use_clamped_fape: torch.Tensor | None = None,
+    backbone_fape_chunk_size: int | None = 64,
+    sidechain_fape_chunk_size: int | None = 64,
     reduction: Reduction = "mean",
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """Compute FAPE and torsion losses, excluding structural violations."""
@@ -690,9 +732,16 @@ def structure_loss(
             multimer,
             asym_id,
             use_clamped_fape,
+            backbone_fape_chunk_size,
             reduction=reduction,
         )
-        side = sidechain_fape(structure, labels, renamed, reduction=reduction)
+        side = sidechain_fape(
+            structure,
+            labels,
+            renamed,
+            chunk_size=sidechain_fape_chunk_size,
+            reduction=reduction,
+        )
         fape = 0.5 * bb + 0.5 * side
         chi_total, chi, angle_norm = supervised_chi_loss(
             structure, labels, seq_mask, reduction=reduction
