@@ -3,13 +3,18 @@ prediction, pLDDT, and Predicted Aligned Error (PAE).
 """
 
 import functools
+from typing import Literal
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 from atlasfold.common import residue_constants
-from atlasfold.utils.torch_utils import get_one_hot_from_bins, index_select_dim
+from atlasfold.utils.torch_utils import (
+    get_one_hot_from_bins,
+    get_one_hot_from_boundaries,
+    index_select_dim,
+)
 
 
 def cdist(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -266,9 +271,16 @@ class PDELoss(torch.nn.Module):
 class PAELoss(torch.nn.Module):
     """Loss on Predicted Aligned Error (PAE)."""
 
-    def __init__(self, eps: float = 1e-8) -> None:
+    def __init__(
+        self,
+        eps: float = 1e-8,
+        frame_style: Literal["af2", "af3"] = "af3",
+    ) -> None:
         super().__init__()
         self.eps: float = eps
+        if frame_style not in ("af2", "af3"):
+            raise ValueError(f"Unknown PAE frame style: {frame_style}")
+        self.frame_style = frame_style
 
     def forward(
         self,
@@ -302,22 +314,40 @@ class PAELoss(torch.nn.Module):
         with torch.no_grad():
             e = self.get_alignment_error(x_pred, x_gt, mask)  # [B, L, L]
 
-        # Compute Cross Entropy Error
-        e_bins = get_one_hot_from_bins(e, bin_centers)
+        e_bins = self.get_error_bins(e, bin_centers)
         loss = -(e_bins.float() * logits.log_softmax(-1)).sum(-1)  # [B, L, L]
 
         # === Compute validity masks ===
-        frame_mask = mask[..., :3].all(dim=-1)  # All backbone atoms must be valid
-        ca_mask = mask[..., 1]  # [B, L]
-        mask_i = frame_mask & ca_mask
-        mask_j = ca_mask
-        pair_mask = mask_i[..., :, None] & mask_j[..., None, :]  # [B, L, L]
+        pair_mask = self.get_pair_mask(mask)
 
         # Reduce
         n_valid = pair_mask.sum(dim=(-1, -2)).clamp(min=1)  # [B,]
         loss_mean = (loss * pair_mask).sum(dim=(-1, -2)) / n_valid  # [B,]
 
         return loss_mean
+
+    def get_error_bins(
+        self, error: torch.Tensor, bin_centers: torch.Tensor
+    ) -> torch.Tensor:
+        """Assign PAE errors using the target convention selected by frame_style."""
+        step = bin_centers[1] - bin_centers[0]
+        if self.frame_style == "af2":
+            # AF2 reserves the first class for exact zero error by using breaks
+            # [0, 0.5, ..., 31].
+            breaks = bin_centers[:-1] - step / 2
+            return get_one_hot_from_boundaries(error, breaks)
+
+        # AF3/Boltz uses natural fixed-width bins [0, 0.5), [0.5, 1), ... .
+        indices = torch.floor(error / step).long().clamp(max=bin_centers.numel() - 1)
+        return F.one_hot(indices, num_classes=bin_centers.numel())
+
+    def get_pair_mask(self, mask: torch.Tensor) -> torch.Tensor:
+        """Return valid alignment-frame/point pairs for the selected convention."""
+        frame_mask = mask[..., :3].all(dim=-1)
+        if self.frame_style == "af2":
+            return frame_mask[..., :, None] & frame_mask[..., None, :]
+        ca_mask = mask[..., 1]
+        return frame_mask[..., :, None] & ca_mask[..., None, :]
 
     def get_alignment_error(
         self,
@@ -351,36 +381,52 @@ class PAELoss(torch.nn.Module):
         xij_gt = self.get_local_frame_points(x_gt_backbone)  # [B, L, L, 3]
         xij_pred = self.get_local_frame_points(x_pred_backbone)  # [B, L, L, 3]
 
-        # Compute Euclidean distance between alignments
-        e = torch.sqrt((xij_pred - xij_gt).pow(2).sum(-1) + self.eps)
+        # AF2 compares squared errors directly to squared breaks, so an exact
+        # alignment must remain exactly zero for its dedicated first class.
+        squared_error = (xij_pred - xij_gt).pow(2).sum(-1)
+        if self.frame_style == "af2":
+            e = torch.sqrt(squared_error)
+        else:
+            e = torch.sqrt(squared_error + self.eps)
 
         # Apply mask to set pad atoms to zero
-        mask_ca = mask[..., 1]  # [B, L]
-        pair_mask = mask_ca[..., :, None] & mask_ca[..., None, :]  # [B, L, L]
+        pair_mask = self.get_pair_mask(mask)
         e.masked_fill_(~pair_mask, 0.0)
         return e
 
+    def get_local_frame_points(self, x_backbone: torch.Tensor) -> torch.Tensor:
+        if self.frame_style == "af2":
+            return self.get_af2_local_frame_points(x_backbone)
+        return self.get_af3_local_frame_points(x_backbone)
+
     @staticmethod
-    def get_local_frame_points(x_backbone: torch.Tensor) -> torch.Tensor:
+    def get_af2_local_frame_points(x_backbone: torch.Tensor) -> torch.Tensor:
         x_n, x_ca, x_c = x_backbone.unbind(dim=-2)  # Each is [B, L, 3]
-        w1 = x_n - x_ca
-        w1 /= w1.norm(dim=-1, keepdim=True) + 1e-8
+        # Match the N-CA-C backbone frame used by the structure/FAPE path.
+        # The historical AlphaFold convention mirrors the x and z axes after
+        # constructing the frame from C (negative x), CA (origin), and N (xy).
+        e0 = F.normalize(x_ca - x_c, dim=-1, eps=1e-8)
+        e1 = x_n - x_ca
+        e1 = F.normalize(e1 - (e1 * e0).sum(-1, keepdim=True) * e0, dim=-1, eps=1e-8)
+        e2 = torch.linalg.cross(e0, e1, dim=-1)
+        rotation = torch.stack((-e0, e1, -e2), dim=-1)
 
-        w2 = x_c - x_ca
-        w2 /= w2.norm(dim=-1, keepdim=True) + 1e-8
+        d_ca = x_ca.unsqueeze(-3) - x_ca.unsqueeze(-2)
+        local_coords = rotation.transpose(-1, -2).unsqueeze(-3) @ d_ca.unsqueeze(-1)
+        return local_coords.squeeze(-1)
 
-        # Build orthogonal frame basis (e1, e2, e3)
-        e1 = w1 + w2
-        e1 /= e1.norm(dim=-1, keepdim=True) + 1e-8
+    @staticmethod
+    def get_af3_local_frame_points(x_backbone: torch.Tensor) -> torch.Tensor:
+        x_n, x_ca, x_c = x_backbone.unbind(dim=-2)  # Each is [B, L, 3]
+        w1 = F.normalize(x_n - x_ca, dim=-1, eps=1e-8)
+        w2 = F.normalize(x_c - x_ca, dim=-1, eps=1e-8)
 
-        e2 = w2 - w1
-        e2 /= e2.norm(dim=-1, keepdim=True) + 1e-8
-
+        # AF3 uses the N-CA-C angle bisector and its in-plane orthogonal axis.
+        e1 = F.normalize(w1 + w2, dim=-1, eps=1e-8)
+        e2 = F.normalize(w2 - w1, dim=-1, eps=1e-8)
         e3 = torch.linalg.cross(e1, e2, dim=-1)
 
-        # Project onto frame basis
         d_ca = x_ca.unsqueeze(-3) - x_ca.unsqueeze(-2)
-
-        basis = torch.stack([e1, e2, e3], dim=-2)  # [B, L, 3, 3]
-        local_coords = basis.unsqueeze(2) @ d_ca.unsqueeze(-1)
+        basis = torch.stack((e1, e2, e3), dim=-2)
+        local_coords = basis.unsqueeze(-3) @ d_ca.unsqueeze(-1)
         return local_coords.squeeze(-1)

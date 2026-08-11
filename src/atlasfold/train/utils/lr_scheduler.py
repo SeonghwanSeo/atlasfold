@@ -45,10 +45,14 @@ class AlphaFoldLRScheduler(torch.optim.lr_scheduler._LRScheduler):
         step = self.last_epoch
         if step == -1:
             lr_ratio = 0.0
-        elif step < self.warmup_steps:
+        elif self.warmup_steps > 0 and step < self.warmup_steps:
             lr_ratio = step / self.warmup_steps
+        elif step <= self.decay_steps:
+            lr_ratio = 1.0
         else:
-            num_decays = step // self.decay_steps
+            # AF2 keeps the peak LR through decay_steps and applies the first
+            # decay immediately afterwards.
+            num_decays = 1 + (step - self.decay_steps) // self.decay_steps
             lr_ratio = self.decay_factor**num_decays
         lr = lr_ratio * self.max_lr
         return [lr for _ in self.optimizer.param_groups]

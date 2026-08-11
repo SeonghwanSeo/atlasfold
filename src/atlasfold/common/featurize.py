@@ -186,6 +186,7 @@ def featurize_batch(
         "aatype": np.zeros((bs, maxlen, 21), dtype=np.float32),
         "aatype_int": np.zeros((bs, maxlen), dtype=int),
         "res_idx": np.zeros((bs, maxlen), dtype=int),
+        "seq_tok_idx": np.zeros((bs, maxlen), dtype=int),
         "seq_mask": np.zeros((bs, maxlen), dtype=bool),
         "atom14_mask": np.zeros((bs, maxlen, 14), dtype=bool),
         "atom37_mask": np.zeros((bs, maxlen, 37), dtype=bool),
@@ -196,7 +197,7 @@ def featurize_batch(
         seq = sequence_list[i]
         length = len(seq)
         residue_index = residue_index_list[i] if residue_index_list else None
-        featurized = featurize(seq, residue_index)
+        featurized = featurize(seq, residue_index=residue_index)
         for k, v in featurized.items():
             if k.startswith("lm."):
                 batch[k][i, : length + 2] = v
@@ -261,6 +262,7 @@ class InputFeaturizer:
             feat = featurize_batch(
                 batch["sequences"],
                 residue_index_list=None,
+                buckets=self.buckets,
             )
             feat = {k: torch.from_numpy(v) for k, v in feat.items()}
             batch["feat"] = feat

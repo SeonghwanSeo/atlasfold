@@ -4,6 +4,10 @@ from atlasfold.utils.torch_utils import index_select_dim
 
 
 class DistogramLoss(torch.nn.Module):
+    def __init__(self, include_self_pairs: bool = False) -> None:
+        super().__init__()
+        self.include_self_pairs = include_self_pairs
+
     def forward(
         self,
         logits: torch.Tensor,
@@ -53,7 +57,8 @@ class DistogramLoss(torch.nn.Module):
 
         # Mask out invalid distogram
         pair_mask = mask_beta[..., :, None] & mask_beta[..., None, :]  # [B, L, L]
-        pair_mask.diagonal(dim1=-2, dim2=-1).fill_(False)  # Mask out self-distances
+        if not self.include_self_pairs:
+            pair_mask.diagonal(dim1=-2, dim2=-1).fill_(False)
 
         # Compute mean loss
         w = pair_mask.float()
