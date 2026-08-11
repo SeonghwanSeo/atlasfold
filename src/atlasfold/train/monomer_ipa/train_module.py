@@ -39,10 +39,8 @@ class TrainConfig:
     loss: LossConfig
     kernel: KernelConfig
     num_recycles: int = 4
-    # multi-phase training
+    mlm_prob: float = 0.15
     load_opt_state: bool = True
-    # Replace model parameters with EMA parameters
-    init_from_ema: tuple[str] | None = None
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -95,6 +93,9 @@ class TrainingModuleIPA(pl.LightningModule):
         self.optimizer_config: OptimizerConfig = self.config.optimizer
         self.loss_config: LossConfig = self.config.loss
         self.compile_config: CompileConfig = self.config.compile
+
+        if not 0.0 <= self.config.mlm_prob <= 1.0:
+            raise ValueError("train.mlm_prob must be between 0 and 1.")
 
         self.save_hyperparameters(to_dict(self.global_config))
 
@@ -159,7 +160,9 @@ class TrainingModuleIPA(pl.LightningModule):
 
     def forward(self, batch: dict[str, torch.Tensor], num_recycles: int, mode: str):
         if mode == "train":
-            return self.model.forward_train(batch, num_recycles)
+            return self.model.forward_train(
+                batch, num_recycles, mlm_prob=self.config.mlm_prob
+            )
         return self.model.inference(batch, num_recycles=num_recycles)
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:

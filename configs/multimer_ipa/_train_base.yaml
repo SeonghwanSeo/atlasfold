@@ -33,6 +33,8 @@ trainer:
   gradient_clip_val: 0.1
   gradient_clip_algorithm: norm
 num_recycles: 4
+mlm_prob: 0.15
+load_opt_state: true
 optimizer:
   opt: adam
   beta_1: 0.9

@@ -184,15 +184,9 @@ class AtlasFold_IPA(torch.nn.Module):
         self.z_init = LinearNoBias(21, 2 * self.channel_z)
         self.z_rel_pos = LinearNoBias(self.rel_pos_encoding.dim, self.channel_z)
 
-        # REcycling embedding
-        self.recycle_s = torch.nn.Sequential(
-            LayerNorm(self.channel_s),
-            LinearNoBias(self.channel_s, self.channel_s, init="final"),
-        )
-        self.recycle_z = torch.nn.Sequential(
-            LayerNorm(self.channel_z),
-            LinearNoBias(self.channel_z, self.channel_z, init="final"),
-        )
+        # Recycling embedding
+        self.recycle_s = LayerNorm(self.channel_s)
+        self.recycle_z = LayerNorm(self.channel_z)
         self.recycle_pos_cfg = {
             "num_bins": cfg.position_recycling.num_bins,
             "min_bin": cfg.position_recycling.min_bin,
@@ -249,11 +243,12 @@ class AtlasFold_IPA(torch.nn.Module):
             num_pair_to_single_blocks=cfg.trunk.num_pair_to_single_blocks,
             blocks_per_ckpt=cfg.trunk.blocks_per_ckpt,
         )
+
+        # Prediction heads
         self.distogram_head = distogram_head.DistogramHead(
             channel_z=self.channel_z,
             **dataclasses.asdict(cfg.distogram_head),
         )
-
         self.structure_module = StructureModule(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
@@ -444,10 +439,8 @@ class AtlasFold_IPA(torch.nn.Module):
             # Add recycling information from previous iteration
             s = s + self.recycle_s(s_prev)
             z = z + self.recycle_z(z_prev)
-            dgram = get_distogram(
-                x_prev, batch["pseudo_beta"], **self.recycle_pos_cfg
-            ).to(dtype)
-            z = z + self.recycle_pos(dgram)
+            dgram = get_distogram(x_prev, batch["pseudo_beta"], **self.recycle_pos_cfg)
+            z = z + self.recycle_pos(dgram.to(dtype))
 
             # Run LM embedder with stochastic masking
             mlm_mask = self.sample_mlm_mask(batch, mlm_prob)

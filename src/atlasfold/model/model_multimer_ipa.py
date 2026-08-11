@@ -31,7 +31,7 @@ from atlaslm.pretrained import get_model, load_model
 
 @dataclasses.dataclass(kw_only=True)
 class AtlasFoldMultimerIPAConfig:
-    name: str = "atlasfold-multimer-ipa-base"
+    name: str = "atlasfold-m-ipa-base"
     lm_name: str = "atlaslm-3b"
     lm_path: str | None = None
     channel_s: int = 384
@@ -65,11 +65,15 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
     ) -> None:
         super().__init__()
         self.cfg: AtlasFoldMultimerIPAConfig = cfg
+        # Trunk dimensions
         self.channel_s = cfg.channel_s
         self.channel_s_lm = cfg.channel_s_lm
         self.channel_z = cfg.channel_z
-        self.seq_rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
 
+        # Relative position encoding
+        self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
+
+        # Language model
         if load_lm:
             lm = load_model(cfg.lm_name, path=cfg.lm_path, dtype=torch.bfloat16)
         else:
@@ -78,17 +82,14 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         self.lm.requires_grad_(False)
         self.alphabet = self.lm.alphabet
 
+        # Representation initialization
         self.s_init = LinearNoBias(21, self.channel_s)
         self.z_init = LinearNoBias(21, 2 * self.channel_z)
-        self.z_rel_pos = LinearNoBias(self.seq_rel_pos_encoding.dim, self.channel_z)
-        self.recycle_s = torch.nn.Sequential(
-            LayerNorm(self.channel_s),
-            LinearNoBias(self.channel_s, self.channel_s, init="final"),
-        )
-        self.recycle_z = torch.nn.Sequential(
-            LayerNorm(self.channel_z),
-            LinearNoBias(self.channel_z, self.channel_z, init="final"),
-        )
+        self.z_rel_pos = LinearNoBias(self.rel_pos_encoding.dim, self.channel_z)
+
+        # Recycling embedding
+        self.recycle_s = LayerNorm(self.channel_s)
+        self.recycle_z = LayerNorm(self.channel_z)
         self.recycle_pos_cfg = {
             "num_bins": cfg.position_recycling.num_bins,
             "min_bin": cfg.position_recycling.min_bin,
@@ -96,6 +97,7 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         }
         self.recycle_pos = Linear(cfg.position_recycling.num_bins, self.channel_z)
 
+        # LM stack
         self.lm_layer_weights = torch.nn.Parameter(torch.zeros(self.lm.n_layers + 1))
         self.layernorm_lm_emb = LayerNorm(self.lm.d_model)
         self.lm_emb_to_s_lm = torch.nn.Sequential(
@@ -132,6 +134,12 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
             LayerNorm(self.channel_z),
             LinearNoBias(self.channel_z, self.channel_z),
         )
+
+        # Trunk body
+        self.template_module = template.TemplateModule(
+            channel_z=self.channel_z,
+            **dataclasses.asdict(cfg.template_module),
+        )
         self.main_stack = trunk.PairformerStack(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
@@ -142,14 +150,12 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
             num_pair_to_single_blocks=cfg.trunk.num_pair_to_single_blocks,
             blocks_per_ckpt=cfg.trunk.blocks_per_ckpt,
         )
+
         self.distogram_head = distogram_head.DistogramHead(
             channel_z=self.channel_z,
             **dataclasses.asdict(cfg.distogram_head),
         )
-        self.template_module = template.TemplateModule(
-            channel_z=self.channel_z,
-            **dataclasses.asdict(cfg.template_module),
-        )
+        # Prediction heads
         self.structure_module = StructureModule(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
@@ -175,7 +181,6 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         use_cuequiv_kernels: bool | None = None,
     ) -> None:
         """Set the flags for the forward pass."""
-
         if use_cuequiv_kernels is not None:
             self.use_kernel = use_cuequiv_kernels
 
@@ -200,7 +205,7 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         out: dict[str, Any] = {}
 
         # Compute positional encodings
-        batch["rel_pos"] = self.seq_rel_pos_encoding(batch)
+        batch["rel_pos"] = self.rel_pos_encoding(batch)
 
         # Run trunk and structure module
         s, z, structure = self.run_trunk(batch, num_recycles, mlm_prob)
@@ -242,6 +247,7 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
                 )
             )
 
+        # Remove batch dimension if the input was not originally batched
         if not is_batched:
             out = {key: value.squeeze(0) for key, value in out.items()}
         return out
@@ -253,7 +259,6 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         synchronized: bool = True,
     ) -> torch.Tensor:
         """Sample a synchronized random MLM mask for the input batch."""
-
         input_ids = batch["lm.input_ids"]
         batch_size, sequence_length = input_ids.shape
         shape = (1, sequence_length) if synchronized else (batch_size, sequence_length)
@@ -268,12 +273,14 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         train: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Extract LM features and project them to s and z representations."""
-
         _add = partial(torch_utils.add, inplace=not train)
+
+        # === Prepare LM inputs === #
         input_ids = batch["lm.input_ids"]
         pos_id = batch["lm.pos_id"]
         seq_id = batch["lm.seq_id"]
 
+        # Apply MLM mask to input IDs for stochastic feature extraction
         if mlm_mask is not None:
             assert mlm_mask.shape[1] == input_ids.shape[1], (
                 "MLM mask must have the same length dimension as input_ids. "
@@ -283,6 +290,7 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
             mlm_mask = mlm_mask & torch.isin(input_ids, aa_idxs)
             input_ids = input_ids.masked_fill(mlm_mask, self.alphabet.mask_idx)
 
+        # === Accumulate LM features === #
         B, S = input_ids.shape
         device = input_ids.device
         lm_emb = torch.zeros((B, S, self.lm.d_model), device=device, dtype=torch.float32)
@@ -349,10 +357,8 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
             # Add recycling information from previous iteration
             s = s + self.recycle_s(s_prev)
             z = z + self.recycle_z(z_prev)
-            dgram = get_distogram(
-                x_prev, batch["pseudo_beta"], **self.recycle_pos_cfg
-            ).to(dtype)
-            z = z + self.recycle_pos(dgram)
+            dgram = get_distogram(x_prev, batch["pseudo_beta"], **self.recycle_pos_cfg)
+            z = z + self.recycle_pos(dgram.to(dtype))
 
             # Run LM embedder with stochastic masking
             mlm_mask = self.sample_mlm_mask(batch, mlm_prob)

@@ -1,6 +1,5 @@
 """Monomer IPA data module."""
 
-from atlasfold.train.monomer.datamodule import *  # noqa: F403
 from atlasfold.train.monomer.datamodule import TrainingDataModule as BaseDataModule
 from atlasfold.train.monomer_ipa.dataset import MultiTrainingDataset
 

@@ -4,7 +4,7 @@ model:
     blocks_per_ckpt: null
 train:
   _yaml_: _train_base.yaml
-  name: ipa-stage2-384
+  name: ipa-stage3-384-ptm
   load_opt_state: false
   optimizer:
     max_lr: 0.0005
@@ -13,7 +13,7 @@ train:
   loss:
     weights:
       violation: 1.0
-      pae: 0.0
+      pae: 0.1
       experimentally_resolved: 0.01
   data:
     max_length: 384
@@ -22,11 +22,11 @@ train:
     train_datasets:
       - name: rcsb
         is_distillation: false
-        weight: 0.20
+        weight: 0.25
         sampling_strategy: ["length", "cluster"]
       - name: long_monomers
         is_distillation: true
-        weight: 0.78
+        weight: 0.73
         sampling_strategy: ["length", "plddt"]
       - name: short_monomers
         is_distillation: true

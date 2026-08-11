@@ -56,6 +56,7 @@ class AtlasFoldMultimerIPAForTrain(AtlasFoldMultimer_IPA):
         self,
         batch: dict[str, torch.Tensor],
         num_recycles: int,
+        mlm_prob: float = 0.15,
     ) -> dict[str, Any]:
         mask = batch["seq_mask"]
         B, L = mask.shape
@@ -71,7 +72,7 @@ class AtlasFoldMultimerIPAForTrain(AtlasFoldMultimer_IPA):
         for recycle_i in range(num_recycles + 1):
             final = recycle_i == num_recycles
             enable_grad = final and self.training
-            mlm_mask = self.sample_mlm_mask(batch, 0.15)
+            mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
             with torch.set_grad_enabled(enable_grad):
                 s, z, structure = self._trunk_pass(
                     batch, s_prev, z_prev, x_prev, mask, mlm_mask, train=enable_grad
