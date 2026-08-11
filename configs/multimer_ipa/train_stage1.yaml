@@ -12,7 +12,7 @@ train:
     max_seq_length: 768
     max_templates: 2
     max_contiguous_chains: 6
-    data_root: /data/atlasfold_data/
+    data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
     train_datasets:
       # RCSB complex: 50%
       - name: rcsb_multimer

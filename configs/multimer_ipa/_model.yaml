@@ -34,8 +34,6 @@ structure_module:
   sidechain_num_layer: 2
   num_torsion: 7
   position_scale: 20.0
-  epsilon: 1.0e-8
-  inf: 1.0e5
 position_recycling:
   num_bins: 15
   min_bin: 3.25

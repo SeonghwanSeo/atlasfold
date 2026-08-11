@@ -16,8 +16,8 @@ train:
     weights:
       violation: 0.5
   data:
-    max_length: 384
-    max_seq_length: 768
+    max_length: 640
+    max_seq_length: 1280
     max_templates: 2
     max_contiguous_chains: 6
     data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/

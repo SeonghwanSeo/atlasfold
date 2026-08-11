@@ -267,10 +267,7 @@ def train(args: argparse.Namespace) -> None:
         print_config(cfg)
     trainer.fit(
         module,
-        datamodule=TrainingDataModule(
-            cfg.train.data,
-            unclamped_fape_probability=cfg.train.data.unclamped_fape_probability,
-        ),
+        datamodule=TrainingDataModule(cfg.train.data),
         ckpt_path=ckpt_path,
     )
 

@@ -39,8 +39,6 @@ class StructureModuleConfig:
     sidechain_num_layer: int = 2
     num_torsion: int = 7
     position_scale: float = 10.0
-    epsilon: float = 1e-8
-    inf: float = 1e5
 
 
 @dataclasses.dataclass(kw_only=True)

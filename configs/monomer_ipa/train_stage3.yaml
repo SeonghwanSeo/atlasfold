@@ -1,10 +1,11 @@
 model:
   _yaml_: _model.yaml
+  lm_path: ./weights/atlaslm_3b_base.pth
   trunk:
     blocks_per_ckpt: null
 train:
   _yaml_: _train_base.yaml
-  name: ipa-stage3-384-ptm
+  name: ipa-stage3-512-ptm
   load_opt_state: false
   optimizer:
     max_lr: 0.0005
@@ -16,9 +17,9 @@ train:
       pae: 0.1
       experimentally_resolved: 0.01
   data:
-    max_length: 384
-    max_seq_length: 768
-    data_root: /data/atlasfold_data/
+    max_length: 512
+    max_seq_length: 1024
+    data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
     train_datasets:
       - name: rcsb
         is_distillation: false

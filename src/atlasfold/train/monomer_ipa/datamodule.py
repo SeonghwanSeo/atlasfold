@@ -1,17 +1,21 @@
 """Monomer IPA data module."""
 
+from omegaconf import DictConfig, OmegaConf
+
 from atlasfold.train.monomer.datamodule import TrainingDataModule as BaseDataModule
 from atlasfold.train.monomer_ipa.dataset import MultiTrainingDataset
 
 
 class TrainingDataModule(BaseDataModule):
-    def __init__(
-        self,
-        config,
-        unclamped_fape_probability: float = 0.1,
-    ) -> None:
-        super().__init__(config)
-        self.unclamped_fape_probability = float(unclamped_fape_probability)
+    def __init__(self, config: DictConfig) -> None:
+        # This controls the IPA-specific cropper and is not part of the shared
+        # monomer DataModuleConfig. Remove it before the base class performs its
+        # strict structured-config merge.
+        base_config = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
+        self.unclamped_fape_probability = float(
+            base_config.pop("unclamped_fape_probability", 0.1)
+        )
+        super().__init__(base_config)
 
     def construct_train_dataset(self) -> MultiTrainingDataset:
         if hasattr(self, "_train_ds"):

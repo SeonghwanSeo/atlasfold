@@ -1,5 +1,6 @@
 model:
   _yaml_: _model.yaml
+  lm_path: ./weights/atlaslm_3b_base.pth
   trunk:
     blocks_per_ckpt: null
 train:
@@ -8,15 +9,15 @@ train:
   data:
     max_length: 256
     max_seq_length: 512
-    data_root: /data/atlasfold_data/
+    data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
     train_datasets:
       - name: rcsb
         is_distillation: false
-        weight: 0.20
+        weight: 0.25
         sampling_strategy: ["length", "cluster"]
       - name: long_monomers
         is_distillation: true
-        weight: 0.78
+        weight: 0.73
         sampling_strategy: ["length", "plddt"]
       - name: short_monomers
         is_distillation: true
