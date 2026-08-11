@@ -1,12 +1,12 @@
 """Multimer IPA data module."""
 
-from atlasfold.train.multimer.datamodule import *  # noqa: F403
 from atlasfold.train.multimer.datamodule import TrainingDataModule as BaseDataModule
 from atlasfold.train.multimer_ipa.dataset import MultiTrainingDataset
 
 
 class TrainingDataModule(BaseDataModule):
     def construct_train_dataset(self) -> MultiTrainingDataset:
+        """Construct training dataset."""
         if hasattr(self, "_train_ds"):
             return self._train_ds
         multi_ds = MultiTrainingDataset(
@@ -16,11 +16,12 @@ class TrainingDataModule(BaseDataModule):
             max_templates=self.config.max_templates,
             max_contiguous_chains=self.config.max_contiguous_chains,
         )
-        for dataset in multi_ds.datasets:
+        # Print dataset info
+        for d in multi_ds.datasets:
             self.print_rank_zero(
-                f"Constructed IPA training dataset '{dataset.name}':\n"
-                f"  Weights: {dataset.config.weight}\n"
-                f"  Num complexes: {len(dataset.metadatas)}\n"
-                f"  Num samples: {len(dataset)}"
+                f"Constructed training dataset '{d.name}':\n"
+                f"  Weights: {d.config.weight}\n"
+                f"  Num complexes: {len(d.metadatas)}\n"
+                f"  Num samples: {len(d)}"
             )
         return multi_ds

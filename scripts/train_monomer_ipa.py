@@ -7,11 +7,12 @@ import dataclasses
 import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import lightning.pytorch as pl
-import lightning.pytorch.callbacks as callbacks
+import lightning.pytorch.callbacks as pl_callbacks
 import torch
+from lightning.pytorch.utilities import rank_zero_only
+from omegaconf import DictConfig
 
 from atlasfold.train.config import print_config, save_config, to_dict
 from atlasfold.train.monomer_ipa.datamodule import TrainingDataModule
@@ -149,13 +150,37 @@ def initialize_from_ipa_checkpoint(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train AtlasFold IPA.")
-    parser.add_argument("config")
-    parser.add_argument("--experiment_name")
-    parser.add_argument("--out_dir")
-    parser.add_argument("--num_gpus", type=int)
-    parser.add_argument("--num_nodes", type=int)
-    parser.add_argument("--num_workers", type=int)
+    parser = argparse.ArgumentParser(description="Train an AtlasFold IPA model.")
+    parser.add_argument(
+        "config",
+        type=str,
+        help="Path to the yaml configuration file.",
+    )
+    parser.add_argument(
+        "--experiment_name",
+        type=str,
+        help="Name of the experiment for logging purposes.",
+    )
+    parser.add_argument(
+        "--out_dir",
+        type=str,
+        help="Output root directory for saving logs and checkpoints.",
+    )
+    parser.add_argument(
+        "--num_gpus",
+        type=int,
+        help="Number of GPUs to use for training.",
+    )
+    parser.add_argument(
+        "--num_nodes",
+        type=int,
+        help="Number of nodes to use for training.",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        help="Number of workers to use for dataloader.",
+    )
     parser.add_argument(
         "--init_weight",
         help=(
@@ -164,68 +189,107 @@ def parse_args() -> argparse.Namespace:
             "distogram parameters are loaded."
         ),
     )
-    parser.add_argument("--resume_from_checkpoint")
-    parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--compile", action="store_true")
-    parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--override", nargs="+")
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        help="Path to a checkpoint file to resume training from.",
+    )
+    parser.add_argument(
+        "--wandb",
+        action="store_true",
+        help="Enable Weights & Biases logging.",
+    )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="Enable torch.compile.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode.",
+    )
+    parser.add_argument(
+        "--override",
+        type=str,
+        nargs="+",
+        help="Override configuration options using 'key=value' format.",
+    )
     return parser.parse_args()
 
 
-def build_trainer(cfg, debug: bool = False, multimer: bool = False) -> pl.Trainer:
+def build_trainer(cfg: DictConfig, debug: bool = False) -> pl.Trainer:
     train_cfg = cfg.train
+    pl_trainer_cfg = train_cfg.trainer
     save_dir = Path(train_cfg.out_dir) / train_cfg.name
-    logger: Any = None
+
+    callbacks = []
     if train_cfg.wandb.use:
         from lightning.pytorch.loggers import WandbLogger
 
-        logger = WandbLogger(
+        wandb_logger = WandbLogger(
             name=train_cfg.name,
             project=train_cfg.wandb.project,
             entity=train_cfg.wandb.entity,
             config=to_dict(cfg),
             save_dir=save_dir,
         )
-        save_config(cfg, Path(logger.experiment.dir) / "train_config.yaml")
-    monitor = "val/complex/lddt" if multimer else "val/lddt"
-    cbs = [
-        callbacks.LearningRateMonitor(logging_interval="step"),
-        callbacks.ModelSummary(max_depth=2),
-        callbacks.TQDMProgressBar(
-            refresh_rate=1 if debug else train_cfg.trainer.log_every_n_steps
-        ),
-    ]
+        loggers = [wandb_logger]
+
+        @rank_zero_only
+        def _save_config() -> None:
+            config_out = Path(wandb_logger.experiment.dir) / "train_config.yaml"
+            save_config(cfg, config_out)
+            wandb_logger.experiment.save("train_config.yaml")
+
+        _save_config()
+    else:
+        loggers = None
+
+    # Learning rate monitor
+    lr_monitor = pl_callbacks.LearningRateMonitor(logging_interval="step")
+    callbacks.append(lr_monitor)
+
+    # Model summary
+    model_summary = pl_callbacks.ModelSummary(max_depth=2)
+    callbacks.append(model_summary)
+
+    # TQDM
+    tqdm_refresh_rate = 1 if debug else pl_trainer_cfg.log_every_n_steps
+    tqdm_callback = pl_callbacks.TQDMProgressBar(refresh_rate=tqdm_refresh_rate)
+    callbacks.append(tqdm_callback)
+
     if not debug:
-        cbs.append(
-            callbacks.ModelCheckpoint(
-                monitor=monitor,
-                save_top_k=-1,
-                filename="epoch{epoch:04d}_step{step:08d}",
-                mode="max",
-                auto_insert_metric_name=False,
-            )
+        checkpoint_callback = pl_callbacks.ModelCheckpoint(
+            monitor="val/lddt",
+            save_top_k=-1,
+            filename="epoch{epoch:04d}_step{step:08d}",
+            mode="max",
+            auto_insert_metric_name=False,
         )
-    tc = train_cfg.trainer
-    return pl.Trainer(
+        callbacks.append(checkpoint_callback)
+
+    trainer = pl.Trainer(
         default_root_dir=save_dir,
-        logger=logger,
-        callbacks=cbs,
-        accelerator=tc.accelerator,
-        strategy=tc.strategy,
-        devices=tc.devices,
-        num_nodes=tc.num_nodes,
-        precision=tc.precision,
-        max_epochs=tc.max_epochs,
-        limit_train_batches=tc.limit_train_batches,
-        limit_val_batches=tc.limit_val_batches,
-        log_every_n_steps=tc.log_every_n_steps,
-        enable_checkpointing=tc.enable_checkpointing,
-        accumulate_grad_batches=tc.accumulate_grad_batches,
-        gradient_clip_val=tc.gradient_clip_val,
-        gradient_clip_algorithm=tc.gradient_clip_algorithm,
+        logger=loggers,
+        callbacks=callbacks,
+        accelerator=pl_trainer_cfg.accelerator,
+        strategy=pl_trainer_cfg.strategy,
+        devices=pl_trainer_cfg.devices,
+        num_nodes=pl_trainer_cfg.num_nodes,
+        precision=pl_trainer_cfg.precision,
+        max_epochs=pl_trainer_cfg.max_epochs,
+        limit_train_batches=pl_trainer_cfg.limit_train_batches,
+        limit_val_batches=pl_trainer_cfg.limit_val_batches,
+        log_every_n_steps=pl_trainer_cfg.log_every_n_steps,
+        enable_checkpointing=pl_trainer_cfg.enable_checkpointing,
+        accumulate_grad_batches=pl_trainer_cfg.accumulate_grad_batches,
+        gradient_clip_val=pl_trainer_cfg.gradient_clip_val,
+        gradient_clip_algorithm=pl_trainer_cfg.gradient_clip_algorithm,
         use_distributed_sampler=False,
         benchmark=True,
     )
+    return trainer
 
 
 def train(args: argparse.Namespace) -> None:
@@ -236,11 +300,14 @@ def train(args: argparse.Namespace) -> None:
         )
     cfg = parse_config(args)
     trainer = build_trainer(cfg, args.debug)
+    is_global_zero = trainer.is_global_zero
+
     pl.seed_everything(cfg.train.seed, workers=True, verbose=False)
-    module = TrainingModuleIPA(cfg)
+
+    model_module = TrainingModuleIPA(cfg)
     if args.init_weight is not None:
-        report = _initialize_from_atlasfold_weight(module, args.init_weight)
-        if trainer.is_global_zero:
+        report = _initialize_from_atlasfold_weight(model_module, args.init_weight)
+        if is_global_zero:
             logging.info(
                 "Initialized %d parameters across %d tensors from AtlasFold "
                 "weights at %s.",
@@ -254,8 +321,8 @@ def train(args: argparse.Namespace) -> None:
             raise ValueError(
                 "--resume_from_checkpoint is required when train.load_opt_state=false."
             )
-        loaded_numel = initialize_from_ipa_checkpoint(module, ckpt_path)
-        if trainer.is_global_zero:
+        loaded_numel = initialize_from_ipa_checkpoint(model_module, ckpt_path)
+        if is_global_zero:
             logging.info(
                 "Initialized %d IPA model parameters from %s; optimizer, scheduler, "
                 "and global step will start fresh.",
@@ -263,11 +330,13 @@ def train(args: argparse.Namespace) -> None:
                 ckpt_path,
             )
         ckpt_path = None
-    if trainer.is_global_zero:
+    if is_global_zero:
         print_config(cfg)
+
+    data_module = TrainingDataModule(cfg.train.data)
     trainer.fit(
-        module,
-        datamodule=TrainingDataModule(cfg.train.data),
+        model_module,
+        datamodule=data_module,
         ckpt_path=ckpt_path,
     )
 

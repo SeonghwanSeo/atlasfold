@@ -104,6 +104,8 @@ class AtlasFoldIPAConfig:
 
 
 class PredictedLDDTHead(torch.nn.Module):
+    """Predict per-residue lDDT-Ca distributions from structure activations."""
+
     def __init__(self, channel_s: int, hidden_channel: int, num_bins: int) -> None:
         super().__init__()
         self.input_layer_norm = LayerNorm(channel_s)
@@ -117,6 +119,7 @@ class PredictedLDDTHead(torch.nn.Module):
         self.num_bins = num_bins
 
     def forward(self, s: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Return pLDDT logits and their normalized bin centers."""
         logits = self.mlp(self.input_layer_norm(s))
         bin_centers = (
             torch.arange(self.num_bins, dtype=torch.float32, device=s.device) + 0.5
@@ -125,15 +128,20 @@ class PredictedLDDTHead(torch.nn.Module):
 
 
 class ExperimentallyResolvedHead(torch.nn.Module):
+    """Predict whether each atom37 coordinate is experimentally resolved."""
+
     def __init__(self, channel_s: int) -> None:
         super().__init__()
         self.linear = Linear(channel_s, 37, init="final")
 
     def forward(self, s: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Return atom37 resolved-status logits for each residue."""
         return {"logits": self.linear(s)}
 
 
 class PredictedAlignedErrorHead(torch.nn.Module):
+    """Predict aligned-error distributions for ordered residue pairs."""
+
     def __init__(self, channel_z: int, num_bins: int, max_error: float) -> None:
         super().__init__()
         if num_bins < 3:
@@ -143,6 +151,7 @@ class PredictedAlignedErrorHead(torch.nn.Module):
         self.max_error = max_error
 
     def forward(self, z: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Return PAE logits and the error value represented by each bin."""
         logits = self.linear(z)
         step = self.max_error / (self.num_bins - 2)
         bin_centers = (
@@ -155,20 +164,21 @@ class PredictedAlignedErrorHead(torch.nn.Module):
 
 
 class AtlasFold_IPA(torch.nn.Module):
-    """AtlasFold monomer trunk with an IPA regression structure decoder."""
+    """AtlasFold monomer trunk with an AlphaFold-style IPA structure decoder."""
 
     def __init__(self, cfg: AtlasFoldIPAConfig, load_lm: bool = True) -> None:
+        """Initialize the AtlasFold IPA model."""
         super().__init__()
         self.cfg: AtlasFoldIPAConfig = cfg
         # Trunk dimensions
-        self.channel_s = cfg.channel_s
-        self.channel_s_lm = cfg.channel_s_lm
-        self.channel_z = cfg.channel_z
+        self.channel_s: int = cfg.channel_s
+        self.channel_s_lm: int = cfg.channel_s_lm
+        self.channel_z: int = cfg.channel_z
 
         # Relative position encoding
         self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
 
-        # Language model
+        # === Language model === #
         if load_lm:
             lm = load_model(cfg.lm_name, path=cfg.lm_path, dtype=torch.bfloat16)
         else:
@@ -177,12 +187,12 @@ class AtlasFold_IPA(torch.nn.Module):
         self.lm.requires_grad_(False)
         self.alphabet = self.lm.alphabet
 
-        # Representation initialization
+        # === Representation initialization === #
         self.s_init = LinearNoBias(21, self.channel_s)
         self.z_init = LinearNoBias(21, 2 * self.channel_z)
         self.z_rel_pos = LinearNoBias(self.rel_pos_encoding.dim, self.channel_z)
 
-        # Recycling embedding
+        # === Recycling embedding === #
         self.recycle_s = LayerNorm(self.channel_s)
         self.recycle_z = LayerNorm(self.channel_z)
         self.recycle_pos_cfg = {
@@ -192,7 +202,7 @@ class AtlasFold_IPA(torch.nn.Module):
         }
         self.recycle_pos = Linear(cfg.position_recycling.num_bins, self.channel_z)
 
-        # LM stack
+        # === LM Stack === #
         self.lm_layer_weights = torch.nn.Parameter(torch.zeros(self.lm.n_layers + 1))
         self.layernorm_lm_emb = LayerNorm(self.lm.d_model)
         self.lm_emb_to_s_lm = torch.nn.Sequential(
@@ -230,7 +240,7 @@ class AtlasFold_IPA(torch.nn.Module):
             LinearNoBias(self.channel_z, self.channel_z),
         )
 
-        # Trunk body
+        # === Trunk body === #
         self.main_stack = trunk.PairformerStack(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
@@ -242,17 +252,20 @@ class AtlasFold_IPA(torch.nn.Module):
             blocks_per_ckpt=cfg.trunk.blocks_per_ckpt,
         )
 
-        # Prediction heads
+        # === Distogram head === #
         self.distogram_head = distogram_head.DistogramHead(
             channel_z=self.channel_z,
             **dataclasses.asdict(cfg.distogram_head),
         )
+
+        # === Structure prediction head === #
         self.structure_module = StructureModule(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
             **dataclasses.asdict(cfg.structure_module),
         )
 
+        # === Confidence prediction heads === #
         confidence_cfg = cfg.confidence_head
         self.plddt_head = PredictedLDDTHead(
             self.channel_s, confidence_cfg.hidden_channel, confidence_cfg.num_plddt_bins
@@ -261,10 +274,12 @@ class AtlasFold_IPA(torch.nn.Module):
             self.channel_z, confidence_cfg.num_pae_bins, confidence_cfg.max_pae_error
         )
         self.experimentally_resolved_head = ExperimentallyResolvedHead(self.channel_s)
-        self.use_kernel = True
+        # Kernel option
+        self.use_kernel: bool = True
 
     @property
     def device(self) -> torch.device:
+        """Device on which the model parameters reside."""
         return next(self.parameters()).device
 
     def set_forward_flags(
@@ -275,6 +290,9 @@ class AtlasFold_IPA(torch.nn.Module):
         if use_cuequiv_kernels is not None:
             self.use_kernel = use_cuequiv_kernels
 
+    # ==================================================
+    # Inference
+    # ==================================================
     @torch.inference_mode()
     def inference(
         self,
@@ -284,6 +302,58 @@ class AtlasFold_IPA(torch.nn.Module):
         mlm_prob: float = 0.15,
         num_recycles: int = 4,
     ) -> dict[str, Any]:
+        """Perform the monomer IPA forward pass.
+
+        Parameters
+        ----------
+        batch: dict[str, torch.Tensor]
+            The input batch with the following keys:
+            # Folding trunk inputs
+            - "aatype"          : [B, L, 21] float
+                One-hot encoded amino acid types.
+            - "aatype_int"      : [B, L] int
+                Amino acid type indices.
+            - "res_idx"         : [B, L] int
+                Residue indices.
+            - "asym_id"         : [B, L] int
+                Chain IDs. Monomer inputs normally contain one chain ID.
+            - "entity_id"       : [B, L] int
+                Entity IDs used by relative position encoding.
+            - "sym_id"          : [B, L] int
+                Copy IDs used by relative position encoding.
+            - "seq_tok_idx"     : [B, L] int
+                LM token index corresponding to each residue.
+            - "seq_mask"        : [B, L] bool
+                Boolean mask for valid residue positions.
+            - "pseudo_beta"     : [B, L] int
+                Atom14 index of C-beta, or C-alpha for glycine.
+            # LM inputs
+            - "lm.input_ids"    : [B, S] int
+                Language model token IDs, including special tokens.
+            - "lm.pos_id"       : [B, S] int
+                Language model position IDs.
+            - "lm.seq_id"       : [B, S] int
+                Language model attention segment IDs.
+        return_representations : bool
+            Whether to return the final trunk single and pair representations.
+        return_structure_representations : bool
+            Whether to return the final structure module activation.
+
+        # Advanced options
+        mlm_prob : float
+            Probability of masking amino acid LM tokens. A new mask is sampled for
+            each recycling pass.
+        num_recycles : int
+            Number of recycling steps. The model runs num_recycles + 1 passes.
+
+        Returns
+        -------
+        out: dict[str, torch.Tensor]
+            The output dictionary containing atom14 coordinates, distogram logits,
+            pLDDT, PAE, and pTM. Optional representations are returned under
+            "trunk.s", "trunk.z", and "structure.s". If the input is unbatched,
+            the leading batch dimension is removed from every output.
+        """
         if mlm_prob < 0.0:
             raise ValueError("mlm_prob must be non-negative.")
         if num_recycles < 0:
@@ -331,13 +401,16 @@ class AtlasFold_IPA(torch.nn.Module):
             out = {key: value.squeeze(0) for key, value in out.items()}
         return out
 
+    # ==================================================
+    # Forward pass components
+    # ==================================================
     def sample_mlm_mask(
         self,
         batch: dict[str, torch.Tensor],
         prob: float,
         synchronized: bool = True,
     ) -> torch.Tensor:
-        """Sample a synchronized random MLM mask for the input batch."""
+        """Sample an LM-token mask, shared across examples by default."""
         input_ids = batch["lm.input_ids"]
         batch_size, sequence_length = input_ids.shape
         shape = (1, sequence_length) if synchronized else (batch_size, sequence_length)
@@ -351,7 +424,7 @@ class AtlasFold_IPA(torch.nn.Module):
         mlm_mask: torch.Tensor | None = None,
         train: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Extract LM features and project them to s and z representations."""
+        """Extract frozen-LM features and refine their single/pair projections."""
         _add = partial(torch_utils.add, inplace=not train)
 
         # === Prepare LM inputs === #
@@ -416,7 +489,7 @@ class AtlasFold_IPA(torch.nn.Module):
         num_recycles: int,
         mlm_prob: float = 0.15,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        """Runs trunk and shared IPA once for every initial/recycling pass."""
+        """Run the initial pass and all requested recycling passes."""
         mask = batch["seq_mask"]
         B, L = mask.shape
         device = mask.device
@@ -464,6 +537,7 @@ class AtlasFold_IPA(torch.nn.Module):
         device: str | torch.device = "cuda",
         strict: bool = True,
     ) -> AtlasFold_IPA:
+        """Create an AtlasFold IPA model from a pretrained state dict."""
         config = config if config is not None else AtlasFoldIPAConfig()
         device = torch.device(device)
         dtype = torch.bfloat16 if device.type == "cuda" else torch.float32

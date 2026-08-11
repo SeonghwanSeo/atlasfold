@@ -11,7 +11,11 @@ from atlasfold.utils.torch_utils import get_context_dtype
 
 
 class AtlasFoldIPAForTrain(AtlasFold_IPA):
+    # ==================================================
+    # Forward functions for training step.
+    # ==================================================
     def compile_train(self, **kwargs: Any) -> None:
+        """Compile the function used in the training step."""
         self._trunk_pass = torch.compile(self._trunk_pass, **kwargs)
 
     def _trunk_pass(
@@ -70,7 +74,7 @@ class AtlasFoldIPAForTrain(AtlasFold_IPA):
         for recycle_i in range(num_recycles + 1):
             final = recycle_i == num_recycles
             enable_grad = final and self.training
-            mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
+            mlm_mask = self.sample_mlm_mask(batch, mlm_prob, synchronized=False)
             with torch.set_grad_enabled(enable_grad):
                 s, z, structure = self._trunk_pass(
                     batch, s_prev, z_prev, x_prev, mask, mlm_mask, train=enable_grad

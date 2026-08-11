@@ -9,6 +9,8 @@ from atlasfold.train.multimer_ipa.cropper import MultimerIPACropper
 
 
 class RCSBTrainingDataset(base.RCSBTrainingDataset):
+    """RCSB training dataset with AFM-style cropping."""
+
     def __init__(
         self,
         config: base.TrainingDatasetConfig,
@@ -28,6 +30,8 @@ class RCSBTrainingDataset(base.RCSBTrainingDataset):
 
 
 class MultimerDistillationDataset(base.MultimerDistillationDataset):
+    """Multimer distillation dataset with AFM-style cropping."""
+
     def __init__(
         self,
         config: base.TrainingDatasetConfig,
@@ -47,6 +51,8 @@ class MultimerDistillationDataset(base.MultimerDistillationDataset):
 
 
 class MonomerTrainingDataset(base.MonomerTrainingDataset):
+    """Monomer distillation dataset with AFM-style cropping."""
+
     def __init__(
         self,
         config: base.TrainingDatasetConfig,
@@ -113,6 +119,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         return int(self.cumulative_sizes[-1])
 
     def __getitem__(self, index: int) -> dict[str, dict[str, torch.Tensor]]:
+        """Return an item and attach metadata used for chain alignment."""
         dataset_index = int(np.searchsorted(self.cumulative_sizes, index, side="right"))
         if dataset_index > 0:
             index -= int(self.cumulative_sizes[dataset_index - 1])

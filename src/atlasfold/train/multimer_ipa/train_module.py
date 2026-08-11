@@ -34,24 +34,37 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
         self.optimizer_config: monomer_train_module.OptimizerConfig = (
             self.config.optimizer
         )
-        self.loss_config = self.config.loss
+        self.loss_config: monomer_train_module.LossConfig = OmegaConf.to_object(
+            OmegaConf.merge(
+                OmegaConf.structured(monomer_train_module.LossConfig),
+                self.config.loss,
+            )
+        )
         self.compile_config: monomer_train_module.CompileConfig = self.config.compile
 
+        if not 0.0 <= self.config.mlm_prob <= 1.0:
+            raise ValueError("train.mlm_prob must be between 0 and 1.")
+
+        # Save hyperparameters
         self.save_hyperparameters(to_dict(self.global_config))
 
+        # Initialize model
         model_cfg = OmegaConf.to_object(
             OmegaConf.merge(AtlasFoldMultimerIPAConfig, self.global_config.model)
         )
         self.model: AtlasFoldMultimerIPAForTrain = AtlasFoldMultimerIPAForTrain(model_cfg)
 
+        # Setup losses and validation metrics
         self.setup_losses()
         self.setup_metrics()
 
+        # Compile model
         if self.compile_config.enabled:
             self.model.compile_train(
                 mode=self.compile_config.mode, dynamic=self.compile_config.dynamic
             )
 
+        # Setup EMA
         self.ema: ExponentialMovingAverage = ExponentialMovingAverage(
             self.model,
             decay=self.optimizer_config.ema_decay,
@@ -60,6 +73,7 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
         )
         self.stored_params: dict[str, torch.Tensor] | None = None
 
+        # Use a shared recycling schedule across all ranks.
         rng = np.random.default_rng(seed=42)
         self.recycles_per_step: np.ndarray = rng.integers(
             0, self.config.num_recycles + 1, size=1_000_000
@@ -67,10 +81,12 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
         self.last_lr_step: int = -1
 
     def setup_losses(self) -> None:
+        """Setup monomer-compatible and multimer-specific losses."""
         super().setup_losses()
         self.chain_com_loss_config = self.loss_config.chain_center_of_mass_loss
 
     def setup_metrics(self) -> None:
+        """Setup complex, chain, interface, and confidence metrics."""
         names = [
             "complex/rmsd",
             "complex/lddt",
@@ -81,17 +97,20 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
             "interface/lddt",
             "interface/lddt-ca",
         ]
-        if self.loss_weights.plddt != 0:
+        if self.loss_weights["plddt"] != 0:
             names.append("confidence/plddt")
-        if self.loss_weights.pae != 0:
+        if self.loss_weights["pae"] != 0:
             names.extend(("confidence/ptm", "confidence/iptm"))
         self.val_metrics = MetricCollection(
             {name: MeanMetric() for name in names}, prefix="val/"
         )
 
     def transfer_batch_to_device(
-        self, batch: Any, device: torch.device, dataloader_idx: int
-    ):
+        self,
+        batch: Any,
+        device: torch.device,
+        dataloader_idx: int,
+    ) -> Any:
         if not isinstance(batch, dict) or "full_label" not in batch:
             return super().transfer_batch_to_device(batch, device, dataloader_idx)
         return {
@@ -109,7 +128,14 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
             ),
         }
 
-    def _align_labels(self, model_out, batch, label, full_label=None):
+    def _align_labels(
+        self,
+        model_out: dict[str, Any],
+        batch: dict[str, torch.Tensor],
+        label: dict[str, torch.Tensor],
+        full_label: list[dict[str, Any]],
+    ) -> dict[str, torch.Tensor]:
+        """Align ground-truth chains to each predicted complex."""
         pred = model_out["structure"]["coords"]
         aligned_coordinates, aligned_masks = [], []
         for i in range(pred.shape[0]):
@@ -128,9 +154,11 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
         }
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
+        # Sample recycling steps from the shared schedule.
         num_recycles = int(
             self.recycles_per_step[self.global_step % len(self.recycles_per_step)]
         )
+        # Compute the forward pass and align chain labels.
         out = self(batch["feat"], num_recycles, "train")
         aligned_label = self._align_labels(
             out,
@@ -155,9 +183,13 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
         label: dict[str, torch.Tensor],
         loss_mask: dict[str, torch.Tensor],
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Compute the weighted multimer IPA training losses."""
+        metrics: dict[str, torch.Tensor] = {}
         with torch.autocast(batch["aatype"].device.type, enabled=False):
             batch_size = batch["seq_mask"].shape[0]
-            zero = out["structure"]["coords"].new_zeros(batch_size)
+            device = batch["aatype"].device
+            zero = torch.zeros(batch_size, device=device, dtype=torch.float32)
+            dummy_loss = torch.zeros((), device=device, dtype=torch.float32)
             structure, structure_metrics, structure_labels = structure_ipa.structure_loss(
                 out["structure"],
                 batch["aatype_int"],
@@ -170,7 +202,7 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
                 use_clamped_fape=None,
                 reduction="none",
             )
-            if self.loss_weights.violation != 0:
+            if self.loss_weights["violation"] != 0:
                 violation, violation_metrics = structure_ipa.violation_loss(
                     out["structure"],
                     structure_labels,
@@ -192,7 +224,7 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
             else:
                 violation = zero
 
-            chain_com_weight = float(self.loss_weights.chain_center_of_mass)
+            chain_com_weight = self.loss_weights["chain_center_of_mass"]
             if chain_com_weight != 0.0:
                 chain_com = structure_ipa.chain_center_of_mass_loss(
                     out["structure"]["coords"],
@@ -202,10 +234,11 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
                     reduction="none",
                     **self.chain_com_loss_config,
                 )
+                metrics["structure/chain_center_of_mass"] = chain_com.mean().detach()
             else:
                 chain_com = zero
 
-            if self.loss_weights.distogram != 0:
+            if self.loss_weights["distogram"] != 0:
                 dgram = self.distogram_loss(
                     out["distogram"]["logits"].float(),
                     out["distogram"]["boundaries"],
@@ -213,12 +246,14 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
                     label["resolved_mask"],
                     batch["pseudo_beta"],
                 )
+                metrics["distogram/loss"] = dgram.mean().detach()
             else:
                 dgram = zero
+                dummy_loss = dummy_loss + (out["distogram"]["logits"] * 0).mean()
 
             confidence_mask = loss_mask["confidence"].float()
             pred_pos = out["structure"]["coords"].float()
-            if self.loss_weights.plddt != 0:
+            if self.loss_weights["plddt"] != 0:
                 plddt = self.plddt_loss(
                     out["confidence"]["plddt"]["logits"].float(),
                     out["confidence"]["plddt"]["bin_centers"],
@@ -227,10 +262,14 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
                     label["resolved_mask"],
                 )
                 plddt = plddt * confidence_mask
+                metrics["confidence/plddt_loss"] = plddt.mean().detach()
             else:
                 plddt = zero
+                dummy_loss = (
+                    dummy_loss + (out["confidence"]["plddt"]["logits"] * 0).mean()
+                )
 
-            if self.loss_weights.pae != 0:
+            if self.loss_weights["pae"] != 0:
                 pae = self.pae_loss(
                     out["confidence"]["pae"]["logits"].float(),
                     out["confidence"]["pae"]["bin_centers"],
@@ -239,10 +278,12 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
                     label["resolved_mask"],
                 )
                 pae = pae * confidence_mask
+                metrics["confidence/pae_loss"] = pae.mean().detach()
             else:
                 pae = zero
+                dummy_loss = dummy_loss + (out["confidence"]["pae"]["logits"] * 0).mean()
 
-            if self.loss_weights.experimentally_resolved != 0:
+            if self.loss_weights["experimentally_resolved"] != 0:
                 exp = self.exp_res_loss(
                     out["confidence"]["experimentally_resolved"]["logits"].float(),
                     structure_ipa.normalize_aatype(batch["aatype_int"]),
@@ -250,37 +291,37 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
                     batch["seq_mask"].bool(),
                 )
                 exp = exp * confidence_mask
+                metrics["confidence/experimentally_resolved_loss"] = exp.mean().detach()
             else:
                 exp = zero
+                dummy_loss = (
+                    dummy_loss
+                    + (out["confidence"]["experimentally_resolved"]["logits"] * 0).mean()
+                )
 
             per_example_total = (
-                self.loss_weights.structure * structure
-                + self.loss_weights.violation * violation
+                self.loss_weights["structure"] * structure
+                + self.loss_weights["violation"] * violation
                 + chain_com_weight * chain_com
-                + self.loss_weights.distogram * dgram
-                + self.loss_weights.plddt * plddt
-                + self.loss_weights.pae * pae
-                + self.loss_weights.experimentally_resolved * exp
+                + self.loss_weights["distogram"] * dgram
+                + self.loss_weights["plddt"] * plddt
+                + self.loss_weights["pae"] * pae
+                + self.loss_weights["experimentally_resolved"] * exp
             )
             length_scale = torch.sqrt(batch["seq_mask"].float().sum(-1).clamp(min=1))
-            total = (per_example_total * length_scale).mean()
+            total = (per_example_total * length_scale).mean() + dummy_loss
 
-        metrics = {
+        metrics |= {
             "loss": total.detach(),
             "unscaled_loss": per_example_total.mean().detach(),
             "structure/loss": structure.mean().detach(),
-            "structure/violation": violation.mean().detach(),
-            "structure/chain_center_of_mass": chain_com.mean().detach(),
-            "distogram/loss": dgram.mean().detach(),
-            "confidence/plddt_loss": plddt.mean().detach(),
-            "confidence/pae_loss": pae.mean().detach(),
-            "confidence/experimentally_resolved_loss": exp.mean().detach(),
         }
-        metrics.update({f"structure/{k}": v for k, v in structure_metrics.items()})
+        metrics |= {f"structure/{k}": v for k, v in structure_metrics.items()}
         return total, metrics
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> None:
         feat, label = batch["feat"], batch["label"]
+        # Use a deterministic per-example seed for stochastic LM masking.
         try:
             devices = [torch.cuda.current_device()] if torch.cuda.is_available() else []
             with torch.random.fork_rng(devices=devices):
@@ -299,10 +340,10 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
         for name, value in metrics.items():
             if name in self.val_metrics:
                 self.val_metrics[name].update(value)
-        if self.loss_weights.plddt != 0:
+        if self.loss_weights["plddt"] != 0:
             mask = feat["seq_mask"].bool()
             self.val_metrics["confidence/plddt"].update(out["plddt"][mask].float().mean())
-        if self.loss_weights.pae != 0:
+        if self.loss_weights["pae"] != 0:
             self.val_metrics["confidence/ptm"].update(out["ptm"].float())
             self.val_metrics["confidence/iptm"].update(out["iptm"].float())
 

@@ -3,12 +3,15 @@ model:
   lm_path: ./weights/atlaslm_3b_base.pth
   trunk:
     blocks_per_ckpt: null
+
 train:
   _yaml_: _train_base.yaml
   name: stage1-256
+
   data:
     max_length: 256
     max_seq_length: 512
+
     data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
     train_datasets:
       - name: rcsb

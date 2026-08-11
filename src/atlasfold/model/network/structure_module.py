@@ -223,6 +223,8 @@ class _PointProjection(nn.Module):
 
 
 class InvariantPointAttention(nn.Module):
+    """Invariant point attention over scalar, point, and pair features."""
+
     def __init__(
         self,
         channel_s: int,
@@ -331,6 +333,8 @@ class InvariantPointAttention(nn.Module):
 
 
 class StructureTransition(nn.Module):
+    """Residual transition applied after invariant point attention."""
+
     def __init__(self, channel: int, depth: int, dropout: float):
         super().__init__()
         layers = []
@@ -348,6 +352,8 @@ class StructureTransition(nn.Module):
 
 
 class TorsionModule(nn.Module):
+    """Predict backbone and side-chain torsion vectors."""
+
     def __init__(
         self,
         channel_s: int,
@@ -386,6 +392,7 @@ def torsion_angles_to_frames(
     aatype: torch.Tensor,
     default_frames: torch.Tensor,
 ) -> Rigid:
+    """Compose residue backbone frames with torsion-dependent rigid groups."""
     aatype = aatype.long()
     defaults = default_frames[aatype]
     default_rigid = Rigid.from_tensor_4x4(defaults)
@@ -437,6 +444,7 @@ def frames_to_atom14_positions(
     ref_atom_pos: torch.Tensor,
     ref_atom_mask: torch.Tensor,
 ) -> torch.Tensor:
+    """Place reference atom14 coordinates into their predicted rigid frames."""
     groups = ref_atom_group[aatype]
     gather_rotation = groups[..., None, None].expand(*groups.shape, 3, 3)
     gather_translation = groups[..., None].expand(*groups.shape, 3)

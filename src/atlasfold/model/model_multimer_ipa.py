@@ -56,24 +56,25 @@ class AtlasFoldMultimerIPAConfig:
 
 
 class AtlasFoldMultimer_IPA(torch.nn.Module):
-    """AtlasFold multimer trunk with Rigid3Array-style regression IPA."""
+    """AtlasFold multimer trunk with an AlphaFold-Multimer-style IPA decoder."""
 
     def __init__(
         self,
         cfg: AtlasFoldMultimerIPAConfig,
         load_lm: bool = True,
     ) -> None:
+        """Initialize the AtlasFold multimer IPA model."""
         super().__init__()
         self.cfg: AtlasFoldMultimerIPAConfig = cfg
         # Trunk dimensions
-        self.channel_s = cfg.channel_s
-        self.channel_s_lm = cfg.channel_s_lm
-        self.channel_z = cfg.channel_z
+        self.channel_s: int = cfg.channel_s
+        self.channel_s_lm: int = cfg.channel_s_lm
+        self.channel_z: int = cfg.channel_z
 
         # Relative position encoding
         self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
 
-        # Language model
+        # === Language model === #
         if load_lm:
             lm = load_model(cfg.lm_name, path=cfg.lm_path, dtype=torch.bfloat16)
         else:
@@ -82,12 +83,12 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         self.lm.requires_grad_(False)
         self.alphabet = self.lm.alphabet
 
-        # Representation initialization
+        # === Representation initialization === #
         self.s_init = LinearNoBias(21, self.channel_s)
         self.z_init = LinearNoBias(21, 2 * self.channel_z)
         self.z_rel_pos = LinearNoBias(self.rel_pos_encoding.dim, self.channel_z)
 
-        # Recycling embedding
+        # === Recycling embedding === #
         self.recycle_s = LayerNorm(self.channel_s)
         self.recycle_z = LayerNorm(self.channel_z)
         self.recycle_pos_cfg = {
@@ -97,7 +98,7 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         }
         self.recycle_pos = Linear(cfg.position_recycling.num_bins, self.channel_z)
 
-        # LM stack
+        # === LM Stack === #
         self.lm_layer_weights = torch.nn.Parameter(torch.zeros(self.lm.n_layers + 1))
         self.layernorm_lm_emb = LayerNorm(self.lm.d_model)
         self.lm_emb_to_s_lm = torch.nn.Sequential(
@@ -135,11 +136,13 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
             LinearNoBias(self.channel_z, self.channel_z),
         )
 
-        # Trunk body
+        # === Template module === #
         self.template_module = template.TemplateModule(
             channel_z=self.channel_z,
             **dataclasses.asdict(cfg.template_module),
         )
+
+        # === Trunk body === #
         self.main_stack = trunk.PairformerStack(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
@@ -151,17 +154,20 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
             blocks_per_ckpt=cfg.trunk.blocks_per_ckpt,
         )
 
+        # === Distogram head === #
         self.distogram_head = distogram_head.DistogramHead(
             channel_z=self.channel_z,
             **dataclasses.asdict(cfg.distogram_head),
         )
-        # Prediction heads
+
+        # === Structure prediction head === #
         self.structure_module = StructureModule(
             channel_s=self.channel_s,
             channel_z=self.channel_z,
             **dataclasses.asdict(cfg.structure_module),
         )
 
+        # === Confidence prediction heads === #
         confidence_cfg = cfg.confidence_head
         self.plddt_head = PredictedLDDTHead(
             self.channel_s, confidence_cfg.hidden_channel, confidence_cfg.num_plddt_bins
@@ -170,10 +176,12 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
             self.channel_z, confidence_cfg.num_pae_bins, confidence_cfg.max_pae_error
         )
         self.experimentally_resolved_head = ExperimentallyResolvedHead(self.channel_s)
-        self.use_kernel = True
+        # Kernel option
+        self.use_kernel: bool = True
 
     @property
     def device(self) -> torch.device:
+        """Device on which the model parameters reside."""
         return next(self.parameters()).device
 
     def set_forward_flags(
@@ -184,6 +192,9 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         if use_cuequiv_kernels is not None:
             self.use_kernel = use_cuequiv_kernels
 
+    # ==================================================
+    # Inference
+    # ==================================================
     @torch.inference_mode()
     def inference(
         self,
@@ -193,6 +204,67 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         mlm_prob: float = 0.15,
         num_recycles: int = 10,
     ) -> dict[str, Any]:
+        """Perform the multimer IPA forward pass.
+
+        Parameters
+        ----------
+        batch: dict[str, torch.Tensor]
+            The input batch with the following keys:
+            # Folding trunk inputs
+            - "aatype"          : [B, L, 21] float
+                One-hot encoded amino acid types for concatenated chains.
+            - "aatype_int"      : [B, L] int
+                Amino acid type indices.
+            - "res_idx"         : [B, L] int
+                Residue indices within each chain.
+            - "asym_id"         : [B, L] int
+                Chain IDs.
+            - "entity_id"       : [B, L] int
+                Entity IDs.
+            - "sym_id"          : [B, L] int
+                Copy IDs within each entity.
+            - "seq_tok_idx"     : [B, L] int
+                LM token index corresponding to each residue.
+            - "seq_mask"        : [B, L] bool
+                Boolean mask for valid residue positions.
+            - "pseudo_beta"     : [B, L] int
+                Atom14 index of C-beta, or C-alpha for glycine.
+            # LM inputs
+            - "lm.input_ids"    : [B, S] int
+                Language model token IDs, including special tokens.
+            - "lm.pos_id"       : [B, S] int
+                Language model position IDs.
+            - "lm.seq_id"       : [B, S] int
+                Language model attention segment IDs.
+            # Optional template inputs, indexed by residues rather than LM tokens
+            - "template.mask"                   : [B, T] bool
+            - "template.aatype"                 : [B, T, L, 21] float
+            - "template.pseudo_beta"            : [B, T, L, 3] float
+            - "template.pseudo_beta_mask"       : [B, T, L] bool
+            - "template.backbone_coords"        : [B, T, L, 3, 3] float
+            - "template.backbone_frame_mask"    : [B, T, L] bool
+                The template update is zero if the complete feature set is absent.
+        return_representations : bool
+            Whether to return the final trunk single and pair representations.
+        return_structure_representations : bool
+            Whether to return the final structure module activation.
+
+        # Advanced options
+        mlm_prob : float
+            Probability of masking amino acid LM tokens. A new mask is sampled for
+            each recycling pass.
+        num_recycles : int
+            Number of recycling steps. The model runs num_recycles + 1 passes.
+
+        Returns
+        -------
+        out: dict[str, torch.Tensor]
+            The output dictionary containing atom14 coordinates, distogram logits,
+            pLDDT, PAE, pTM, ipTM, per-chain pTM, and pairwise interface ipTM.
+            Optional representations are returned under "trunk.s", "trunk.z", and
+            "structure.s". If the input is unbatched, the leading batch dimension is
+            removed from every output.
+        """
         if mlm_prob < 0.0:
             raise ValueError("mlm_prob must be non-negative.")
         if num_recycles < 0:
@@ -252,13 +324,16 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
             out = {key: value.squeeze(0) for key, value in out.items()}
         return out
 
+    # ==================================================
+    # Forward pass components
+    # ==================================================
     def sample_mlm_mask(
         self,
         batch: dict[str, torch.Tensor],
         prob: float,
         synchronized: bool = True,
     ) -> torch.Tensor:
-        """Sample a synchronized random MLM mask for the input batch."""
+        """Sample an LM-token mask, shared across examples by default."""
         input_ids = batch["lm.input_ids"]
         batch_size, sequence_length = input_ids.shape
         shape = (1, sequence_length) if synchronized else (batch_size, sequence_length)
@@ -272,7 +347,7 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         mlm_mask: torch.Tensor | None = None,
         train: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Extract LM features and project them to s and z representations."""
+        """Extract frozen-LM features and keep pair features intra-chain."""
         _add = partial(torch_utils.add, inplace=not train)
 
         # === Prepare LM inputs === #
@@ -337,6 +412,7 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         num_recycles: int,
         mlm_prob: float = 0.15,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+        """Run template-conditioned trunk and structure recycling passes."""
         seq_mask = batch["seq_mask"]
         B, L = seq_mask.shape
         device = seq_mask.device
@@ -388,6 +464,7 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         device: str | torch.device = "cuda",
         strict: bool = True,
     ) -> AtlasFoldMultimer_IPA:
+        """Create an AtlasFold multimer IPA model from a pretrained state dict."""
         config = config if config is not None else AtlasFoldMultimerIPAConfig()
         device = torch.device(device)
         dtype = torch.bfloat16 if device.type == "cuda" else torch.float32

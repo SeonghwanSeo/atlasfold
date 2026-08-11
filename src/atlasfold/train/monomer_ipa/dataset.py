@@ -11,6 +11,8 @@ from atlasfold.train.monomer_ipa.cropper import MonomerIPACropper
 
 
 class TrainingDataset(base.TrainingDataset):
+    """Monomer training dataset with AF2-style cropping and FAPE clamping."""
+
     def __init__(
         self,
         config: base.TrainingDatasetConfig,
@@ -22,6 +24,7 @@ class TrainingDataset(base.TrainingDataset):
         self.cropper = MonomerIPACropper(unclamped_fape_probability)
 
     def sample_item(self, index: int) -> dict[str, dict[str, torch.Tensor]]:
+        # Create a random number generator without a fixed seed.
         rng = np.random.default_rng()
 
         metadata_dict = self.metadatas[index]
@@ -35,25 +38,30 @@ class TrainingDataset(base.TrainingDataset):
         fold_input = {k: v for k, v in feat.items() if not k.startswith("lm.")}
         lm_input = {k: v for k, v in feat.items() if k.startswith("lm.")}
 
-        # AF2 samples the FAPE clamp mode and residue crop jointly.
+        # Crop the folding input and label to the maximum length. AF2 samples
+        # the FAPE clamp mode and residue crop jointly.
         crop = self.cropper.crop(prot, self.max_length, rng)
         crop_indices = crop.indices
         fold_input = {k: v[crop_indices] for k, v in fold_input.items()}
         label = {k: v[crop_indices] for k, v in label.items()}
 
+        # Prepare the LM input with expanded crop indices and BOS/EOS tokens.
         lm_crop_indices = self._expand_crop_indices_for_lm(
             crop_indices, len(prot), self.max_seq_length
         )
         lm_input = {k: v[lm_crop_indices] for k, v in lm_input.items()}
 
+        # Add the LM-to-fold-input mapping after the two inputs are cropped.
         is_in_crop = np.isin(lm_input["lm.pos_id"], fold_input["res_idx"])
         fold_input["seq_tok_idx"] = np.where(is_in_crop)[0]
 
+        # Convert to torch tensors.
         fold_input = {k: torch.from_numpy(v) for k, v in fold_input.items()}
         lm_input = {k: torch.from_numpy(v) for k, v in lm_input.items()}
         label = {k: torch.from_numpy(v) for k, v in label.items()}
         loss_mask = {k: torch.tensor(v) for k, v in loss_mask.items()}
 
+        # Pad the input and label to the maximum length.
         fold_input = base.pad_input(fold_input, max_length=self.max_length)
         fold_input["use_clamped_fape"] = torch.tensor(
             float(crop.use_clamped_fape), dtype=torch.float32
@@ -68,6 +76,8 @@ class TrainingDataset(base.TrainingDataset):
 
 
 class MultiTrainingDataset(torch.utils.data.Dataset):
+    """Combine monomer IPA training datasets for weighted sampling."""
+
     def __init__(
         self,
         configs: list[base.TrainingDatasetConfig],
@@ -94,6 +104,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         return int(self.cumulative_sizes[-1])
 
     def __getitem__(self, index: int) -> dict[str, dict[str, torch.Tensor]]:
+        """Return an item from the component dataset at the given index."""
         dataset_idx = int(np.searchsorted(self.cumulative_sizes, index, side="right"))
         if dataset_idx > 0:
             index -= int(self.cumulative_sizes[dataset_idx - 1])
