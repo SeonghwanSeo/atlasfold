@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import functools
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import torch
@@ -15,6 +15,16 @@ ALA_INDEX = rc.restype_orders["A"]
 PRO_INDEX = rc.restype_orders["P"]
 CYS_INDEX = rc.restype_orders["C"]
 CYS_SG_INDEX = rc.restype_atom14_order["CYS"]["SG"]
+
+Reduction = Literal["mean", "none"]
+
+
+def _reduce_batch(value: torch.Tensor, reduction: Reduction) -> torch.Tensor:
+    if reduction == "mean":
+        return value.mean()
+    if reduction == "none":
+        return value
+    raise ValueError(f"Unknown reduction: {reduction}")
 
 
 def normalize_aatype(aatype: torch.Tensor) -> torch.Tensor:
@@ -235,7 +245,6 @@ def rename_ground_truth(
     B, L = pred.shape[:2]
     pred_flat = pred.reshape(B, L * 14, 3)
     gt_flat = gt.reshape(B, L * 14, 3)
-    exists_flat = exists.reshape(B, L * 14)
     non_ambiguous_flat = (~ambiguous & exists).reshape(B, L * 14)
     original_parts, alternate_parts = [], []
     for start in range(0, L, 16):
@@ -355,6 +364,7 @@ def backbone_fape(
     multimer: bool,
     asym_id: torch.Tensor | None = None,
     use_clamped_fape: torch.Tensor | None = None,
+    reduction: Reduction = "mean",
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     pred = trajectory_to_frames(structure["traj"])
     target = labels["backbone_rigid_tensor"]
@@ -371,7 +381,8 @@ def backbone_fape(
             while use_clamped_fape.ndim < value.ndim:
                 use_clamped_fape = use_clamped_fape.unsqueeze(0)
             value = value * use_clamped_fape + unclamped * (1.0 - use_clamped_fape)
-        return value.mean(), {"backbone_fape": value[-1].mean()}
+        per_example = value.mean(dim=0)
+        return _reduce_batch(per_example, reduction), {"backbone_fape": value[-1].mean()}
     if asym_id is None:
         raise ValueError("asym_id is required for multimer backbone FAPE.")
     valid_chain = asym_id > 0
@@ -395,7 +406,8 @@ def backbone_fape(
         ~intra & valid_chain[..., :, None] & valid_chain[..., None, :],
     )
     value = intra_fape + interface_fape
-    return value.mean(), {
+    per_example = value.mean(dim=0)
+    return _reduce_batch(per_example, reduction), {
         "intra_chain_fape": intra_fape[-1].mean(),
         "interface_fape": interface_fape[-1].mean(),
     }
@@ -405,6 +417,7 @@ def sidechain_fape(
     structure: dict[str, Any],
     labels: dict[str, torch.Tensor],
     renamed: dict[str, torch.Tensor],
+    reduction: Reduction = "mean",
 ) -> torch.Tensor:
     pred_frames = structure["sidechains"]["frames"][-1]
     use_alt = renamed["alt_naming_is_better"]
@@ -413,7 +426,7 @@ def sidechain_fape(
         labels["rigidgroups_alt_gt_frames"],
         labels["rigidgroups_gt_frames"],
     )
-    return compute_fape(
+    per_example = compute_fape(
         pred_frames.flatten(-4, -3),
         target_frames.flatten(-4, -3),
         labels["rigidgroups_gt_exists"].flatten(-2, -1),
@@ -422,7 +435,8 @@ def sidechain_fape(
         renamed["renamed_atom14_gt_exists"].flatten(-2, -1),
         10.0,
         10.0,
-    ).mean()
+    )
+    return _reduce_batch(per_example, reduction)
 
 
 def chain_center_of_mass_loss(
@@ -433,6 +447,7 @@ def chain_center_of_mass_loss(
     distance_scale: float = 20.0,
     tolerance: float = 4.0,
     eps: float = 1e-10,
+    reduction: Reduction = "mean",
 ) -> torch.Tensor:
     """AF-Multimer chain center-of-mass loss from paper section 2.5."""
 
@@ -452,9 +467,7 @@ def chain_center_of_mass_loss(
     pred_centers = centers(pred_ca)
     target_centers = centers(target_ca)
     pred_distances = torch.sqrt(
-        (pred_centers[..., :, None, :] - pred_centers[..., None, :, :])
-        .square()
-        .sum(-1)
+        (pred_centers[..., :, None, :] - pred_centers[..., None, :, :]).square().sum(-1)
         + eps
     )
     target_distances = torch.sqrt(
@@ -472,14 +485,17 @@ def chain_center_of_mass_loss(
     pair_mask = chain_exists[..., :, None] & chain_exists[..., None, :]
     pair_mask &= ~torch.eye(num_chains, dtype=torch.bool, device=asym_id.device)
     pair_mask = pair_mask.to(error.dtype)
-    per_example = (error * pair_mask).sum((-1, -2)) / pair_mask.sum(
-        (-1, -2)
-    ).clamp(min=1.0)
-    return per_example.mean()
+    per_example = (error * pair_mask).sum((-1, -2)) / pair_mask.sum((-1, -2)).clamp(
+        min=1.0
+    )
+    return _reduce_batch(per_example, reduction)
 
 
 def supervised_chi_loss(
-    structure: dict[str, Any], labels: dict[str, torch.Tensor], seq_mask: torch.Tensor
+    structure: dict[str, Any],
+    labels: dict[str, torch.Tensor],
+    seq_mask: torch.Tensor,
+    reduction: Reduction = "mean",
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     pred = structure["sidechains"]["angles"][..., 3:, :].float()
     unnorm = structure["sidechains"]["unnormalized_angles"].float()
@@ -490,13 +506,20 @@ def supervised_chi_loss(
     shifted = true * (1.0 - 2.0 * periodic)
     sq = torch.minimum((pred - true).square().sum(-1), (pred - shifted).square().sum(-1))
     mask = labels["chi_mask"].float().unsqueeze(0)
-    chi = (sq * mask).sum() / (mask.sum() * pred.shape[0] + 1e-8)
+    chi = (sq * mask).sum(dim=(0, 2, 3)) / (
+        mask[0].sum(dim=(-1, -2)) * pred.shape[0] + 1e-8
+    )
     norm_error = torch.abs(torch.sqrt(unnorm.square().sum(-1) + 1e-6) - 1.0)
     norm_mask = seq_mask.float().unsqueeze(0).unsqueeze(-1)
-    angle_norm = (norm_error * norm_mask).sum() / (
-        norm_mask.sum() * unnorm.shape[0] * unnorm.shape[-2] + 1e-8
+    angle_norm = (norm_error * norm_mask).sum(dim=(0, 2, 3)) / (
+        norm_mask[0].sum(dim=(-1, -2)) * unnorm.shape[0] * unnorm.shape[-2] + 1e-8
     )
-    return 0.5 * chi + 0.01 * angle_norm, chi, angle_norm
+    total = 0.5 * chi + 0.01 * angle_norm
+    return (
+        _reduce_batch(total, reduction),
+        _reduce_batch(chi, reduction),
+        _reduce_batch(angle_norm, reduction),
+    )
 
 
 def _between_bond_loss(
@@ -523,14 +546,8 @@ def _between_bond_loss(
     c_ca = F.normalize(ca - c, dim=-1, eps=1e-8)
     c_n = F.normalize(next_n - c, dim=-1, eps=1e-8)
     n_ca = F.normalize(next_ca - next_n, dim=-1, eps=1e-8)
-    a1 = F.relu(
-        torch.abs((c_ca * c_n).sum(-1) + 0.4473)
-        - tolerance_factor * 0.0311
-    )
-    a2 = F.relu(
-        torch.abs(((-c_n) * n_ca).sum(-1) + 0.5203)
-        - tolerance_factor * 0.0353
-    )
+    a1 = F.relu(torch.abs((c_ca * c_n).sum(-1) + 0.4473) - tolerance_factor * 0.0311)
+    a2 = F.relu(torch.abs(((-c_n) * n_ca).sum(-1) + 0.5203) - tolerance_factor * 0.0353)
 
     def mean(x: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
         return (x * m).sum(-1) / (m.sum(-1) + 1e-6)
@@ -552,6 +569,7 @@ def violation_loss(
     clash_overlap_tolerance: float = 1.5,
     violation_tolerance_factor: float = 12.0,
     eps: float = 1e-6,
+    reduction: Reduction = "mean",
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute the AF-Multimer structural-violation objective.
 
@@ -638,10 +656,8 @@ def violation_loss(
     num_atoms = mask.sum((-1, -2)).clamp(min=1).to(pos.dtype)
     within = (per_atom_within_loss * mask).sum((-1, -2)) / num_atoms
 
-    total = (
-        bond + bond_angle_weight * (angle1 + angle2) + clash + within
-    )
-    return total.mean(), {
+    total = bond + bond_angle_weight * (angle1 + angle2) + clash + within
+    return _reduce_batch(total, reduction), {
         "bond": bond.mean(),
         "angle_ca_c_n": angle1.mean(),
         "angle_c_n_ca": angle2.mean(),
@@ -661,6 +677,7 @@ def structure_loss(
     asym_id: torch.Tensor | None = None,
     multimer: bool = False,
     use_clamped_fape: torch.Tensor | None = None,
+    reduction: Reduction = "mean",
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """Compute FAPE and torsion losses, excluding structural violations."""
 
@@ -668,19 +685,26 @@ def structure_loss(
         labels = make_structure_labels(aatype, coordinates, resolved_mask)
         renamed = rename_ground_truth(labels, structure["coords"])
         bb, metrics = backbone_fape(
-            structure, labels, multimer, asym_id, use_clamped_fape
+            structure,
+            labels,
+            multimer,
+            asym_id,
+            use_clamped_fape,
+            reduction=reduction,
         )
-        side = sidechain_fape(structure, labels, renamed)
+        side = sidechain_fape(structure, labels, renamed, reduction=reduction)
         fape = 0.5 * bb + 0.5 * side
-        chi_total, chi, angle_norm = supervised_chi_loss(structure, labels, seq_mask)
+        chi_total, chi, angle_norm = supervised_chi_loss(
+            structure, labels, seq_mask, reduction=reduction
+        )
         total = fape + chi_total
         metrics = {key: value.detach() for key, value in metrics.items()}
         metrics.update(
             {
-                "fape": fape.detach(),
-                "sidechain_fape": side.detach(),
-                "chi": chi.detach(),
-                "angle_norm": angle_norm.detach(),
+                "fape": fape.mean().detach(),
+                "sidechain_fape": side.mean().detach(),
+                "chi": chi.mean().detach(),
+                "angle_norm": angle_norm.mean().detach(),
             }
         )
         return total, metrics, {**labels, **renamed}

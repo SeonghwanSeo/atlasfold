@@ -37,3 +37,6 @@ train = [
   "pandas",
   "zstandard"
 ]
+
+[tool.setuptools.package-data]
+atlasfold = ["resources/stereo_chemical_props.txt"]

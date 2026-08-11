@@ -1,0 +1,26 @@
+model:
+  _yaml_: _model.yaml
+  trunk:
+    blocks_per_ckpt: null
+train:
+  _yaml_: _train_base.yaml
+  name: stage1-256
+  data:
+    max_length: 256
+    max_seq_length: 512
+    data_root: /data/atlasfold_data/
+    train_datasets:
+      - name: rcsb
+        is_distillation: false
+        weight: 0.20
+        sampling_strategy: ["length", "cluster"]
+      - name: long_monomers
+        is_distillation: true
+        weight: 0.78
+        sampling_strategy: ["length", "plddt"]
+      - name: short_monomers
+        is_distillation: true
+        weight: 0.02
+        sampling_strategy: ["length", "plddt"]
+    val_dataset:
+      name: cameo_val

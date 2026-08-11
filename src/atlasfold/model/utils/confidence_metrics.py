@@ -1,5 +1,7 @@
 """Functions for computing confidence metrics from model outputs."""
 
+import math
+
 import numpy as np
 import torch
 
@@ -159,28 +161,7 @@ def compute_iptm(
     mask: torch.Tensor,
     eps: float = 1e-8,
 ) -> torch.Tensor:
-    """Compute the interface predicted TM-score from PAE logits."""
-    length = logits.shape[-2]
-    if mask.shape[-1] != length:
-        raise ValueError(
-            f"Mask shape {mask.shape} does not match logits length {length}."
-        )
-    if mask.ndim != logits.ndim - 2:
-        raise ValueError(
-            f"Mask shape {mask.shape} is not compatible with logits shape {logits.shape}."
-        )
-    if asym_id.shape[-1] != length:
-        raise ValueError(
-            f"asym_id shape {asym_id.shape} does not match logits length {length}."
-        )
-    if asym_id.ndim == mask.ndim - 1:
-        asym_id = asym_id.unsqueeze(-2)
-    elif asym_id.ndim != mask.ndim:
-        raise ValueError(
-            f"asym_id shape {asym_id.shape} is not compatible with mask shape "
-            f"{mask.shape}."
-        )
-
+    """Compute ipTM from PAE logits with shape ``[*, L, L, num_bins]``."""
     probs = torch.softmax(logits, dim=-1)  # [*, L, L, num_bins]
     return compute_iptm_from_probs(probs, bin_centers, asym_id, mask, eps)
 
@@ -192,27 +173,28 @@ def compute_iptm_from_probs(
     mask: torch.Tensor,
     eps: float = 1e-8,
 ) -> torch.Tensor:
-    """Compute ipTM from precomputed PAE-bin probabilities."""
-    length = probs.shape[-2]
-    if mask.shape[-1] != length:
+    """Compute ipTM from probabilities and residue metadata sharing shape ``*``.
+
+    ``probs``, ``asym_id``, and ``mask`` must have shapes
+    ``[*, L, L, num_bins]``, ``[*, L]``, and ``[*, L]``, respectively. The
+    returned score has shape ``[*]``.
+    """
+    if probs.ndim < 3:
         raise ValueError(
-            f"Mask shape {mask.shape} does not match probabilities length {length}."
+            "Expected PAE probabilities with shape [*, L, L, num_bins], "
+            f"got {probs.shape}."
         )
-    if mask.ndim != probs.ndim - 2:
+    length, pair_length = probs.shape[-3:-1]
+    if pair_length != length:
+        raise ValueError(f"PAE probabilities must be square, got {probs.shape}.")
+    expected_metadata_shape = probs.shape[:-3] + (length,)
+    if asym_id.shape != expected_metadata_shape:
         raise ValueError(
-            f"Mask shape {mask.shape} is not compatible with probabilities shape "
-            f"{probs.shape}."
+            f"Expected asym_id shape {expected_metadata_shape}, got {asym_id.shape}."
         )
-    if asym_id.shape[-1] != length:
+    if mask.shape != expected_metadata_shape:
         raise ValueError(
-            f"asym_id shape {asym_id.shape} does not match probabilities length {length}."
-        )
-    if asym_id.ndim == mask.ndim - 1:
-        asym_id = asym_id.unsqueeze(-2)
-    elif asym_id.ndim != mask.ndim:
-        raise ValueError(
-            f"asym_id shape {asym_id.shape} is not compatible with mask shape "
-            f"{mask.shape}."
+            f"Expected mask shape {expected_metadata_shape}, got {mask.shape}."
         )
 
     # Compute d_0(num_res) as defined by TM-score, eqn. (5) in Yang & Skolnick
@@ -244,82 +226,87 @@ def compute_chain_tm_scores_from_probs(
     asym_id: torch.Tensor,
     mask: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute per-chain pTM and pairwise interface ipTM on the current device.
+    """Compute per-chain pTM and pairwise ipTM for arbitrary leading dimensions.
 
     Parameters
     ----------
     probs
-        PAE-bin probabilities with shape ``[B, N, L, L, num_bins]``.
+        PAE-bin probabilities with shape ``[*, L, L, num_bins]``.
     bin_centers
         PAE bin centers with shape ``[num_bins]``.
     asym_id
-        Per-residue chain IDs with shape ``[B, L]``. Padding IDs are ignored.
+        Per-residue chain IDs with shape ``[*, L]``. Padding IDs are ignored.
     mask
-        Residue mask with shape ``[B, 1, L]``.
+        Residue mask with shape ``[*, L]``.
 
     Returns
     -------
     chain_ptm
-        Tensor with shape ``[B, N, C]`` where ``C`` is the maximum number of
-        chains in the batch.
+        Tensor with shape ``[*, C]`` where ``C`` is the maximum number of chains
+        over the leading dimensions.
     interface_iptm
-        Symmetric tensor with shape ``[B, N, C, C]``. Entries without a
+        Symmetric tensor with shape ``[*, C, C]``. Entries without a
         corresponding chain pair are NaN.
     """
-    if probs.ndim != 5:
+    if probs.ndim < 3:
         raise ValueError(
-            "Expected PAE probabilities with shape [B, N, L, L, num_bins], "
+            "Expected PAE probabilities with shape [*, L, L, num_bins], "
             f"got {probs.shape}."
         )
-    batch_size, num_samples, length, pair_length, _ = probs.shape
+    leading_shape = probs.shape[:-3]
+    length, pair_length, num_bins = probs.shape[-3:]
     if pair_length != length:
         raise ValueError(f"PAE probabilities must be square, got {probs.shape}.")
-    if asym_id.shape != (batch_size, length):
+    expected_metadata_shape = leading_shape + (length,)
+    if asym_id.shape != expected_metadata_shape:
         raise ValueError(
-            f"Expected asym_id shape {(batch_size, length)}, got {asym_id.shape}."
+            f"Expected asym_id shape {expected_metadata_shape}, got {asym_id.shape}."
         )
-    if mask.shape != (batch_size, 1, length):
+    if mask.shape != expected_metadata_shape:
         raise ValueError(
-            f"Expected mask shape {(batch_size, 1, length)}, got {mask.shape}."
+            f"Expected mask shape {expected_metadata_shape}, got {mask.shape}."
         )
 
-    valid_mask = mask[:, 0].bool()
-    chain_ids_by_batch = [
-        torch.unique(asym_id[batch_idx][valid_mask[batch_idx]], sorted=True)
-        for batch_idx in range(batch_size)
+    num_items = math.prod(leading_shape)
+    flat_probs = probs.reshape(num_items, length, length, num_bins)
+    flat_asym_id = asym_id.reshape(num_items, length)
+    flat_mask = mask.reshape(num_items, length).bool()
+    chain_ids_by_item = [
+        torch.unique(flat_asym_id[item_idx][flat_mask[item_idx]], sorted=True)
+        for item_idx in range(num_items)
     ]
-    max_chains = max((len(chain_ids) for chain_ids in chain_ids_by_batch), default=0)
+    max_chains = max((len(chain_ids) for chain_ids in chain_ids_by_item), default=0)
     chain_ptm = torch.full(
-        (batch_size, num_samples, max_chains),
+        (num_items, max_chains),
         torch.nan,
         dtype=probs.dtype,
         device=probs.device,
     )
     interface_iptm = torch.full(
-        (batch_size, num_samples, max_chains, max_chains),
+        (num_items, max_chains, max_chains),
         torch.nan,
         dtype=probs.dtype,
         device=probs.device,
     )
 
-    for batch_idx, chain_ids in enumerate(chain_ids_by_batch):
+    for item_idx, chain_ids in enumerate(chain_ids_by_item):
         chain_indices = [
             torch.nonzero(
-                valid_mask[batch_idx] & (asym_id[batch_idx] == chain_id),
+                flat_mask[item_idx] & (flat_asym_id[item_idx] == chain_id),
                 as_tuple=False,
             ).squeeze(-1)
             for chain_id in chain_ids
         ]
 
         for chain_idx, residue_indices in enumerate(chain_indices):
-            chain_probs = probs[batch_idx][:, residue_indices]
-            chain_probs = chain_probs[:, :, residue_indices]
+            chain_probs = flat_probs[item_idx][residue_indices]
+            chain_probs = chain_probs[:, residue_indices]
             chain_mask = torch.ones(
-                (num_samples, len(residue_indices)),
+                len(residue_indices),
                 dtype=torch.bool,
                 device=probs.device,
             )
-            chain_ptm[batch_idx, :, chain_idx] = compute_ptm_from_probs(
+            chain_ptm[item_idx, chain_idx] = compute_ptm_from_probs(
                 chain_probs,
                 bin_centers,
                 chain_mask,
@@ -329,11 +316,11 @@ def compute_chain_tm_scores_from_probs(
             for chain_j in range(chain_i + 1, len(chain_indices)):
                 residue_indices_j = chain_indices[chain_j]
                 pair_indices = torch.cat((residue_indices_i, residue_indices_j))
-                pair_probs = probs[batch_idx][:, pair_indices]
-                pair_probs = pair_probs[:, :, pair_indices]
+                pair_probs = flat_probs[item_idx][pair_indices]
+                pair_probs = pair_probs[:, pair_indices]
                 pair_length = len(pair_indices)
                 pair_mask = torch.ones(
-                    (num_samples, pair_length),
+                    pair_length,
                     dtype=torch.bool,
                     device=probs.device,
                 )
@@ -357,10 +344,13 @@ def compute_chain_tm_scores_from_probs(
                     pair_asym_id,
                     pair_mask,
                 )
-                interface_iptm[batch_idx, :, chain_i, chain_j] = score
-                interface_iptm[batch_idx, :, chain_j, chain_i] = score
+                interface_iptm[item_idx, chain_i, chain_j] = score
+                interface_iptm[item_idx, chain_j, chain_i] = score
 
-    return chain_ptm, interface_iptm
+    return (
+        chain_ptm.reshape(leading_shape + (max_chains,)),
+        interface_iptm.reshape(leading_shape + (max_chains, max_chains)),
+    )
 
 
 def compute_pair_mean(

@@ -236,16 +236,11 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
             out["iptm"] = confidence_metrics.compute_iptm_from_probs(
                 pae_probs, pae_bin_centers, asym_id, mask=mask
             )
-            chain_ptm, interface_iptm = (
+            out["chain_ptm"], out["interface_iptm"] = (
                 confidence_metrics.compute_chain_tm_scores_from_probs(
-                    pae_probs.unsqueeze(1),
-                    pae_bin_centers,
-                    asym_id,
-                    mask=mask.unsqueeze(1),
+                    pae_probs, pae_bin_centers, asym_id, mask=mask
                 )
             )
-            out["chain_ptm"] = chain_ptm.squeeze(1)
-            out["interface_iptm"] = interface_iptm.squeeze(1)
 
         if not is_batched:
             out = {key: value.squeeze(0) for key, value in out.items()}

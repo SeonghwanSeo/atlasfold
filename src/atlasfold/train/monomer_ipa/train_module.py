@@ -28,101 +28,114 @@ def to_dict(config: DictConfig) -> dict:
 
 
 @dataclasses.dataclass(kw_only=True)
-class TrainingConfig:
-    train_trunk: bool = True
-    train_structure_module: bool = True
-    train_distogram_head: bool = True
-    train_confidence_head: bool = True
-    num_recycles: int = 3
-    unclamped_fape_probability: float = 0.1
+class TrainConfig:
+    """Configuration for training and validation steps."""
+
+    name: str
+    out_dir: str
+    seed: int
+    compile: CompileConfig
+    optimizer: OptimizerConfig
+    loss: LossConfig
+    kernel: KernelConfig
+    num_recycles: int = 4
+    # multi-phase training
+    load_opt_state: bool = True
+    # Replace model parameters with EMA parameters
+    init_from_ema: tuple[str] | None = None
+
+
+@dataclasses.dataclass(kw_only=True)
+class OptimizerConfig:
+    """Optimizer and learning-rate schedule configuration."""
+
+    opt: str = "adam"
+    beta_1: float = 0.9
+    beta_2: float = 0.999
+    eps: float = 1e-6
+    lr_scheduler: str = "alphafold"
+    max_lr: float = 1e-3
+    warmup_steps: int = 1000
+    decay_steps: int = 50000
+    lr_decay_factor: float = 0.95
+    ema_decay: float = 0.999
+    ema_ignore_params: tuple[str] | None = ("lm.",)
+    ema_update_params: tuple[str] | None = None
+
+
+@dataclasses.dataclass(kw_only=True)
+class LossConfig:
+    """IPA loss configuration."""
+
+    weights: dict[str, float]
+    distogram_loss: Any
+    violation_loss: Any
+    confidence_loss: Any
+
+
+@dataclasses.dataclass(kw_only=True)
+class CompileConfig:
+    enabled: bool = False
+    mode: str = "default"
+    dynamic: bool = False
+
+
+@dataclasses.dataclass(kw_only=True)
+class KernelConfig:
+    cuequivariance: bool = False
 
 
 class TrainingModuleIPA(pl.LightningModule):
-    model_config_class = AtlasFoldIPAConfig
-    model_class = AtlasFoldIPAForTrain
+    """Lightning module for monomer IPA training and validation."""
 
     def __init__(self, config: DictConfig):
         super().__init__()
-        self.global_config = config
-        self.config = config.train
-        self.training_config = OmegaConf.to_object(
-            OmegaConf.merge(TrainingConfig, self.config.training)
-        )
-        self.validation_config = self.config.validation
-        self.optimizer_config = self.config.optimizer
-        self.loss_config = self.config.loss
-        self.compile_config = self.config.compile
-        self.save_hyperparameters(to_dict(config))
+        self.global_config: DictConfig = config
+        self.config: TrainConfig = config.train
+        self.optimizer_config: OptimizerConfig = self.config.optimizer
+        self.loss_config: LossConfig = self.config.loss
+        self.compile_config: CompileConfig = self.config.compile
+
+        self.save_hyperparameters(to_dict(self.global_config))
 
         model_cfg = OmegaConf.to_object(
-            OmegaConf.merge(self.model_config_class, config.model)
+            OmegaConf.merge(AtlasFoldIPAConfig, self.global_config.model)
         )
-        self.model = self.model_class(model_cfg)
-        kernel_config = self.config.get("kernel", {})
-        self.model.set_forward_flags(
-            use_cuequiv_kernels=bool(kernel_config.get("cuequivariance", False))
-        )
-        self.train_trunk = self.training_config.train_trunk
-        self.train_structure_module = self.training_config.train_structure_module
-        self.train_distogram_head = self.training_config.train_distogram_head
-        self.train_confidence_head = self.training_config.train_confidence_head
-        if not 0.0 <= self.training_config.unclamped_fape_probability <= 1.0:
-            raise ValueError("unclamped_fape_probability must be between 0 and 1.")
-        self.freeze_submodules()
+        self.model: AtlasFoldIPAForTrain = AtlasFoldIPAForTrain(model_cfg)
+
+        # Setup losses and validation metrics before optional compilation.
         self.setup_losses()
         self.setup_metrics()
+
         if self.compile_config.enabled:
             self.model.compile_train(
                 mode=self.compile_config.mode, dynamic=self.compile_config.dynamic
             )
 
-        self.ema = ExponentialMovingAverage(
+        self.ema: ExponentialMovingAverage = ExponentialMovingAverage(
             self.model,
             decay=self.optimizer_config.ema_decay,
             submodules_to_ignore=self.optimizer_config.ema_ignore_params,
             submodules_to_update=self.optimizer_config.ema_update_params,
         )
         self.stored_params: dict[str, torch.Tensor] | None = None
-        rng = np.random.default_rng(seed=42)
-        self.recycles_per_step = rng.integers(
-            0, self.training_config.num_recycles + 1, size=1_000_000
-        )
-        self.last_lr_step = -1
 
-    def freeze_submodules(self) -> None:
-        groups = self.model.get_module_groups()
-        frozen = ["lm"]
-        if not self.train_trunk:
-            frozen.append("trunk")
-        if not self.train_structure_module:
-            frozen.append("structure_module")
-        if not self.train_distogram_head:
-            frozen.append("distogram_head")
-        if not self.train_confidence_head:
-            frozen.append("confidence_head")
-        self.modules_to_freeze = frozen
-        for name in frozen:
-            for module in groups[name]:
-                if isinstance(module, torch.nn.Parameter):
-                    module.requires_grad_(False)
-                else:
-                    module.requires_grad_(False)
+        # Pre-sampling keeps the recycle schedule synchronized across ranks.
+        rng = np.random.default_rng(seed=42)
+        self.recycles_per_step: np.ndarray = rng.integers(
+            0, self.config.num_recycles + 1, size=1_000_000
+        )
+        self.last_lr_step: int = -1
 
     def train(self, mode: bool = True):
         result = super().train(mode)
-        groups = self.model.get_module_groups()
-        for name in self.modules_to_freeze:
-            for module in groups[name]:
-                if isinstance(module, torch.nn.Module):
-                    module.eval()
+        # The pretrained LM is the only permanently frozen component.
+        self.model.lm.eval()
         return result
 
     def setup_losses(self) -> None:
         self.loss_weights = self.loss_config.weights
         self.violation_loss_config = self.loss_config.violation_loss
-        self.chain_com_loss_config = self.loss_config.get(
-            "chain_center_of_mass_loss", {}
-        )
         self.distogram_loss = losses.distogram.DistogramLoss(
             **self.loss_config.distogram_loss
         )
@@ -134,53 +147,28 @@ class TrainingModuleIPA(pl.LightningModule):
         )
 
     def setup_metrics(self) -> None:
+        names = ["rmsd", "lddt", "lddt-ca"]
+        if self.loss_weights.plddt != 0:
+            names.extend(("plddt", "plddt_mae"))
+        if self.loss_weights.pae != 0:
+            names.extend(("pae_mae", "ptm"))
         self.val_metrics = MetricCollection(
-            {
-                name: MeanMetric()
-                for name in (
-                    "rmsd",
-                    "lddt",
-                    "lddt-ca",
-                    "plddt",
-                    "plddt_mae",
-                    "pae_mae",
-                    "ptm",
-                )
-            },
+            {name: MeanMetric() for name in names},
             prefix="val/",
         )
 
     def forward(self, batch: dict[str, torch.Tensor], num_recycles: int, mode: str):
         if mode == "train":
-            return self.model.forward_train(
-                batch,
-                num_recycles,
-                train_trunk=self.train_trunk,
-                train_structure_module=self.train_structure_module,
-                run_distogram_head=self.train_distogram_head,
-                run_confidence_head=self.train_confidence_head,
-            )
+            return self.model.forward_train(batch, num_recycles)
         return self.model.inference(batch, num_recycles=num_recycles)
-
-    def _align_labels(
-        self,
-        model_out: dict[str, Any],
-        batch: dict[str, torch.Tensor],
-        label: dict[str, torch.Tensor],
-        full_label: Any = None,
-    ) -> dict[str, torch.Tensor]:
-        return label
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
         num_recycles = int(
             self.recycles_per_step[self.global_step % len(self.recycles_per_step)]
         )
         out = self(batch["feat"], num_recycles, "train")
-        aligned = self._align_labels(
-            out, batch["feat"], batch["label"], batch.get("full_label")
-        )
         loss, metrics = self.compute_losses(
-            out, batch["feat"], aligned, batch["loss_mask"]
+            out, batch["feat"], batch["label"], batch["loss_mask"]
         )
         for name, value in metrics.items():
             self.log(f"train/{name}", value, prog_bar=name == "loss", sync_dist=False)
@@ -194,77 +182,58 @@ class TrainingModuleIPA(pl.LightningModule):
         loss_mask: dict[str, torch.Tensor],
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         with torch.autocast(batch["aatype"].device.type, enabled=False):
-            zero = out["z"].new_zeros(())
-            if self.train_structure_module:
-                use_clamped_fape = batch.get("use_clamped_fape")
-                if use_clamped_fape is None and not self.is_multimer and self.training:
-                    use_clamped_fape = (
-                        torch.rand((), device=out["z"].device)
-                        >= self.training_config.unclamped_fape_probability
-                    ).to(out["z"].dtype)
-                structure, structure_metrics, structure_labels = (
-                    structure_ipa.structure_loss(
-                        out["structure"],
-                        batch["aatype_int"],
-                        label["coordinates"],
-                        label["resolved_mask"],
-                        batch["seq_mask"],
-                        batch["res_idx"],
-                        batch.get("asym_id") if self.is_multimer else None,
-                        multimer=self.is_multimer,
-                        use_clamped_fape=use_clamped_fape,
-                    )
+            batch_size = batch["seq_mask"].shape[0]
+            zero = out["structure"]["coords"].new_zeros(batch_size)
+            use_clamped_fape = batch.get("use_clamped_fape")
+            if use_clamped_fape is None and self.training:
+                raise KeyError(
+                    "Monomer IPA training requires use_clamped_fape from the "
+                    "dataset so FAPE mode and residue cropping are sampled together."
                 )
-                if self.loss_weights.violation != 0:
-                    violation, violation_metrics = structure_ipa.violation_loss(
-                        out["structure"],
-                        structure_labels,
-                        batch["res_idx"],
-                        batch["seq_mask"],
-                        batch.get("asym_id") if self.is_multimer else None,
-                        **self.violation_loss_config,
-                    )
-                    structure_metrics.update(
-                        {
-                            "violation": violation.detach(),
-                            **{
-                                f"violation_{name}": value.detach()
-                                for name, value in violation_metrics.items()
-                            },
-                        }
-                    )
-                else:
-                    violation = zero
-                chain_com_weight = float(
-                    self.loss_weights.get("chain_center_of_mass", 0.0)
+            structure, structure_metrics, structure_labels = structure_ipa.structure_loss(
+                out["structure"],
+                batch["aatype_int"],
+                label["coordinates"],
+                label["resolved_mask"],
+                batch["seq_mask"],
+                batch["res_idx"],
+                use_clamped_fape=use_clamped_fape,
+                reduction="none",
+            )
+            if self.loss_weights.violation != 0:
+                violation, violation_metrics = structure_ipa.violation_loss(
+                    out["structure"],
+                    structure_labels,
+                    batch["res_idx"],
+                    batch["seq_mask"],
+                    None,
+                    reduction="none",
+                    **self.violation_loss_config,
                 )
-                if self.is_multimer and chain_com_weight != 0.0:
-                    chain_com = structure_ipa.chain_center_of_mass_loss(
-                        out["structure"]["coords"],
-                        label["coordinates"],
-                        label["resolved_mask"],
-                        batch["asym_id"],
-                        **self.chain_com_loss_config,
-                    )
-                else:
-                    chain_com = zero
+                structure_metrics.update(
+                    {
+                        "violation": violation.mean().detach(),
+                        **{
+                            f"violation_{name}": value.detach()
+                            for name, value in violation_metrics.items()
+                        },
+                    }
+                )
             else:
-                structure = violation = chain_com = zero
-                structure_metrics = {}
-            if self.train_distogram_head:
+                violation = zero
+            if self.loss_weights.distogram != 0:
                 dgram = self.distogram_loss(
                     out["distogram"]["logits"].float(),
                     out["distogram"]["boundaries"],
                     label["coordinates"].float(),
                     label["resolved_mask"],
                     batch["pseudo_beta"],
-                ).mean()
+                )
             else:
                 dgram = zero
-            if self.train_confidence_head:
-                confidence_mask = loss_mask["confidence"].float()
-                confidence_denominator = confidence_mask.sum().clamp(min=1.0)
-                pred_pos = out["structure"]["coords"].float()
+            confidence_mask = loss_mask["confidence"].float()
+            pred_pos = out["structure"]["coords"].float()
+            if self.loss_weights.plddt != 0:
                 plddt = self.plddt_loss(
                     out["confidence"]["plddt"]["logits"].float(),
                     out["confidence"]["plddt"]["bin_centers"],
@@ -272,7 +241,10 @@ class TrainingModuleIPA(pl.LightningModule):
                     label["coordinates"].float(),
                     label["resolved_mask"],
                 )
-                plddt = (plddt * confidence_mask).sum() / confidence_denominator
+                plddt = plddt * confidence_mask
+            else:
+                plddt = zero
+            if self.loss_weights.pae != 0:
                 pae = self.pae_loss(
                     out["confidence"]["pae"]["logits"].float(),
                     out["confidence"]["pae"]["bin_centers"],
@@ -280,47 +252,42 @@ class TrainingModuleIPA(pl.LightningModule):
                     label["coordinates"].float(),
                     label["resolved_mask"],
                 )
-                pae = (pae * confidence_mask).sum() / confidence_denominator
+                pae = pae * confidence_mask
+            else:
+                pae = zero
+            if self.loss_weights.experimentally_resolved != 0:
                 exp = self.exp_res_loss(
-                    out["confidence"]["experimentally_resolved_logits"].float(),
+                    out["confidence"]["experimentally_resolved"]["logits"].float(),
                     structure_ipa.normalize_aatype(batch["aatype_int"]),
                     label["resolved_mask"],
                     batch["seq_mask"].bool(),
                 )
-                exp = (exp * confidence_mask).sum() / confidence_denominator
+                exp = exp * confidence_mask
             else:
-                plddt = pae = exp = zero
-            total = (
+                exp = zero
+            per_example_total = (
                 self.loss_weights.structure * structure
                 + self.loss_weights.violation * violation
-                + float(self.loss_weights.get("chain_center_of_mass", 0.0))
-                * chain_com
                 + self.loss_weights.distogram * dgram
                 + self.loss_weights.plddt * plddt
                 + self.loss_weights.pae * pae
                 + self.loss_weights.experimentally_resolved * exp
             )
-            length_scale = torch.sqrt(
-                batch["seq_mask"].float().sum(-1).clamp(min=1)
-            ).mean()
-            total = total * length_scale
+            length_scale = torch.sqrt(batch["seq_mask"].float().sum(-1).clamp(min=1))
+            scaled_per_example = per_example_total * length_scale
+            total = scaled_per_example.mean()
         metrics = {
             "loss": total.detach(),
-            "unscaled_loss": (total / length_scale).detach(),
-            "structure/loss": structure.detach(),
-            "structure/violation": violation.detach(),
-            "structure/chain_center_of_mass": chain_com.detach(),
-            "distogram/loss": dgram.detach(),
-            "confidence/plddt_loss": plddt.detach(),
-            "confidence/pae_loss": pae.detach(),
-            "confidence/experimentally_resolved_loss": exp.detach(),
+            "unscaled_loss": per_example_total.mean().detach(),
+            "structure/loss": structure.mean().detach(),
+            "structure/violation": violation.mean().detach(),
+            "distogram/loss": dgram.mean().detach(),
+            "confidence/plddt_loss": plddt.mean().detach(),
+            "confidence/pae_loss": pae.mean().detach(),
+            "confidence/experimentally_resolved_loss": exp.mean().detach(),
         }
         metrics.update({f"structure/{k}": v for k, v in structure_metrics.items()})
         return total, metrics
-
-    @property
-    def is_multimer(self) -> bool:
-        return False
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> None:
         feat, label = batch["feat"], batch["label"]
@@ -328,7 +295,7 @@ class TrainingModuleIPA(pl.LightningModule):
             devices = [torch.cuda.current_device()] if torch.cuda.is_available() else []
             with torch.random.fork_rng(devices=devices):
                 torch.manual_seed(batch_idx)
-                out = self(feat, int(self.validation_config.num_recycles), "validation")
+                out = self(feat, int(self.config.num_recycles), "validation")
         except RuntimeError as error:
             if "out of memory" not in str(error).lower():
                 raise
@@ -341,48 +308,67 @@ class TrainingModuleIPA(pl.LightningModule):
         )
         for name in ("rmsd", "lddt", "lddt-ca"):
             self.val_metrics[name].update(raw[f"avg/{name}"])
-        seq_mask = feat["seq_mask"].bool()
-        mean_plddt = out["plddt"][seq_mask].float().mean()
-        self.val_metrics["plddt"].update(mean_plddt)
-        self.val_metrics["plddt_mae"].update(
-            torch.abs(mean_plddt - mean_plddt.new_tensor(raw["avg/lddt-ca"]))
-        )
-        target_pae = self.pae_loss.get_alignment_error(
-            out["coords"].unsqueeze(0).float(),
-            label["coordinates"].unsqueeze(0).float(),
-            label["resolved_mask"].unsqueeze(0),
-        )[0]
-        pae_mask = self.pae_loss.get_pair_mask(label["resolved_mask"].unsqueeze(0))[0]
-        pae_mae = torch.abs(out["pae"].float() - target_pae)
-        pae_mae = (pae_mae * pae_mask).sum() / pae_mask.sum().clamp(min=1)
-        self.val_metrics["pae_mae"].update(pae_mae)
-        self.val_metrics["ptm"].update(out["ptm"].float())
+        if self.loss_weights.plddt != 0:
+            seq_mask = feat["seq_mask"].bool()
+            mean_plddt = out["plddt"][seq_mask].float().mean()
+            self.val_metrics["plddt"].update(mean_plddt)
+            self.val_metrics["plddt_mae"].update(
+                torch.abs(mean_plddt - mean_plddt.new_tensor(raw["avg/lddt-ca"]))
+            )
+        if self.loss_weights.pae != 0:
+            target_pae = self.pae_loss.get_alignment_error(
+                out["coords"].unsqueeze(0).float(),
+                label["coordinates"].unsqueeze(0).float(),
+                label["resolved_mask"].unsqueeze(0),
+            )[0]
+            pae_mask = self.pae_loss.get_pair_mask(label["resolved_mask"].unsqueeze(0))[0]
+            pae_mae = torch.abs(out["pae"].float() - target_pae)
+            pae_mae = (pae_mae * pae_mask).sum() / pae_mask.sum().clamp(min=1)
+            self.val_metrics["pae_mae"].update(pae_mae)
+            self.val_metrics["ptm"].update(out["ptm"].float())
 
     def on_validation_epoch_end(self) -> None:
+        torch.backends.cudnn.benchmark = True
         if not self.trainer.sanity_checking:
             for name, value in self.val_metrics.compute().items():
                 self.log(name, value, prog_bar=name == "val/lddt", sync_dist=True)
         self.val_metrics.reset()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def on_validation_epoch_start(self) -> None:
+        torch.backends.cudnn.benchmark = False
 
     def configure_optimizers(self):
         cfg = self.optimizer_config
-        optimizer = torch.optim.Adam(
-            [p for p in self.parameters() if p.requires_grad],
-            lr=cfg.max_lr,
-            betas=(cfg.beta_1, cfg.beta_2),
-            eps=cfg.eps,
-        )
+        if cfg.opt.lower() == "adam":
+            optimizer = torch.optim.Adam(
+                [p for p in self.parameters() if p.requires_grad],
+                lr=cfg.max_lr,
+                betas=(cfg.beta_1, cfg.beta_2),
+                eps=cfg.eps,
+            )
+        else:
+            raise NotImplementedError(f"Optimizer {cfg.opt} not implemented yet.")
+
         if self.last_lr_step != -1:
             for group in optimizer.param_groups:
                 group.setdefault("initial_lr", cfg.max_lr)
-        scheduler = AlphaFoldLRScheduler(
-            optimizer,
-            max_lr=cfg.max_lr,
-            warmup_steps=cfg.warmup_steps,
-            decay_steps=cfg.decay_steps,
-            decay_factor=cfg.lr_decay_factor,
-            last_epoch=self.last_lr_step,
-        )
+
+        if cfg.lr_scheduler == "alphafold":
+            scheduler = AlphaFoldLRScheduler(
+                optimizer,
+                max_lr=cfg.max_lr,
+                warmup_steps=cfg.warmup_steps,
+                decay_steps=cfg.decay_steps,
+                decay_factor=cfg.lr_decay_factor,
+                last_epoch=self.last_lr_step,
+            )
+        else:
+            raise NotImplementedError(
+                f"LR scheduler {cfg.lr_scheduler} not implemented yet."
+            )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
     def on_before_optimizer_step(self, optimizer) -> None:

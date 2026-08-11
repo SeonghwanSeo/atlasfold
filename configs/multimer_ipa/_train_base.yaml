@@ -1,0 +1,75 @@
+name: multimer-ipa
+out_dir: ./experiments/
+seed: 1
+compile: {enabled: false, mode: default, dynamic: false}
+kernel: {cuequivariance: false}
+data:
+  max_length: ???
+  max_seq_length: ???
+  max_templates: 2
+  max_contiguous_chains: 6
+  batch_size: 1
+  global_batch_size: 128
+  num_workers: 8
+  persistent_workers: true
+  pin_memory: true
+  data_root: ???
+  train_datasets: []
+  val_dataset: {}
+trainer:
+  accelerator: auto
+  strategy: auto
+  devices: auto
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: -1
+  limit_train_batches: 1000
+  limit_val_batches: null
+  log_every_n_steps: 10
+  enable_checkpointing: true
+  accumulate_grad_batches: null
+  # AF2 clips each example at global norm 0.1 before batch aggregation. Lightning's
+  # automatic optimization applies the same threshold to the accumulated gradient.
+  gradient_clip_val: 0.1
+  gradient_clip_algorithm: norm
+num_recycles: 4
+optimizer:
+  opt: adam
+  beta_1: 0.9
+  beta_2: 0.999
+  eps: 1.0e-6
+  lr_scheduler: alphafold
+  max_lr: 0.001
+  warmup_steps: 1000
+  decay_steps: 50000
+  lr_decay_factor: 0.95
+  ema_decay: 0.999
+  ema_ignore_params: ["lm."]
+  ema_update_params: null
+loss:
+  weights:
+    structure: 1.0
+    violation: 0.03
+    chain_center_of_mass: 1.0
+    distogram: 0.3
+    plddt: 0.01
+    pae: 0.1
+    experimentally_resolved: 0.01
+  distogram_loss:
+    include_self_pairs: true
+  violation_loss:
+    bond_angle_weight: 0.3
+    clash_overlap_tolerance: 1.5
+    violation_tolerance_factor: 12.0
+  chain_center_of_mass_loss:
+    distance_scale: 20.0
+    tolerance: 4.0
+  confidence_loss:
+    plddt_loss: {}
+    pae_loss:
+      frame_style: af2
+    experimentally_resolved_loss: {}
+wandb:
+  use: false
+  project: AtlasFold_IPA_Multimer
+  entity: null

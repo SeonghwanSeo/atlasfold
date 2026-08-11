@@ -5,7 +5,6 @@ from functools import partial
 
 import torch
 
-from atlasfold.model.model import AtlasFoldConfig
 from atlasfold.model.network import (
     confidence_head,
     diffusion_head,
@@ -86,7 +85,7 @@ class ConfidenceHeadConfig:
 
 
 @dataclasses.dataclass(kw_only=True)
-class AtlasFoldMultimerConfig(AtlasFoldConfig):
+class AtlasFoldMultimerConfig:
     name: str = "atlasfold-multimer-base"
     lm_name: str = "atlaslm-3b"
     lm_path: str | None = None
@@ -390,6 +389,7 @@ class AtlasFold_Multimer(torch.nn.Module):
         # Compute confidence metrics
         with torch.autocast(self.device.type, enabled=False):
             mask = batch["seq_mask"].unsqueeze(1)  # [B, 1, L]
+            asym_id = batch["asym_id"]
             out["plddt"] = confidence_metrics.compute_plddt(
                 **confidence_out["plddt"], mask=mask
             )
@@ -399,31 +399,23 @@ class AtlasFold_Multimer(torch.nn.Module):
             pae_logits = confidence_out["pae"]["logits"]
             pae_bin_centers = confidence_out["pae"]["bin_centers"]
             pae_probs = torch.softmax(pae_logits, dim=-1)
+            tm_mask = mask.expand(pae_probs.shape[:-3] + (-1,))
+            tm_asym_id = asym_id.unsqueeze(1).expand_as(tm_mask)
             out["pae"] = confidence_metrics.compute_pae_from_probs(
-                pae_probs,
-                pae_bin_centers,
-                mask,
+                pae_probs, pae_bin_centers, mask
             )
             out["ptm"] = confidence_metrics.compute_ptm_from_probs(
-                pae_probs,
-                pae_bin_centers,
-                mask,
+                pae_probs, pae_bin_centers, mask
             )
             out["iptm"] = confidence_metrics.compute_iptm_from_probs(
-                pae_probs,
-                pae_bin_centers,
-                batch["asym_id"],
-                mask,
+                pae_probs, pae_bin_centers, tm_asym_id, tm_mask
             )
             out["chain_ptm"], out["interface_iptm"] = (
                 confidence_metrics.compute_chain_tm_scores_from_probs(
-                    pae_probs,
-                    pae_bin_centers,
-                    batch["asym_id"],
-                    mask,
+                    pae_probs, pae_bin_centers, tm_asym_id, tm_mask
                 )
             )
-        del confidence_out, mask, pae_logits, pae_probs
+        del confidence_out, mask, tm_mask, tm_asym_id, pae_logits, pae_probs
 
         # Remove batch dimension if the input was not originally batched
         if not is_batched:
