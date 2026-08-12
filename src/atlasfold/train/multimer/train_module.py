@@ -95,7 +95,7 @@ class TrainingModule(monomer_train_module.TrainingModule):
         }
 
     def setup_metrics(self):
-        val_metrics = {"distogram/loss": MeanMetric()}
+        val_metrics = {"distogram_loss": MeanMetric()}
         metric_names = [
             "complex/rmsd",
             "complex/lddt",
@@ -161,7 +161,7 @@ class TrainingModule(monomer_train_module.TrainingModule):
                 model_out["distogram"], batch, label
             )
             loss += loss_weights["distogram"] * distogram_loss
-            metrics |= {f"distogram/{k}": v for k, v in distogram_metrics.items()}
+            metrics |= {f"distogram_{k}": v for k, v in distogram_metrics.items()}
 
         if self.train_diffusion_head:
             diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
@@ -238,7 +238,7 @@ class TrainingModule(monomer_train_module.TrainingModule):
             raise e
 
         distogram_loss = self._compute_validation_distogram_loss(sample_out, feat, label)
-        self.val_metrics["distogram/loss"].update(distogram_loss)
+        self.val_metrics["distogram_loss"].update(distogram_loss)
 
         x_pred = sample_out["sample_coords"]  # [N, L, 14, 3]
         sanity_error = self._validation_rollout_sanity_error(sample_out, feat)

@@ -237,7 +237,7 @@ class TrainingModule(pl.LightningModule):
 
     def setup_metrics(self):
         """Setup metrics for validation"""
-        val_metrics = {}
+        val_metrics = {"distogram_loss": MeanMetric()}
         for prefix in ["top", "avg", "rank"]:
             for k in ["rmsd", "lddt", "lddt-ca"]:
                 val_metrics[f"{prefix}/{k}"] = MeanMetric()
@@ -361,7 +361,7 @@ class TrainingModule(pl.LightningModule):
                 model_out["distogram"], batch, label
             )
             loss += loss_weights["distogram"] * distogram_loss
-            metrics |= {f"distogram/{k}": v for k, v in distogram_metrics.items()}
+            metrics |= {f"distogram_{k}": v for k, v in distogram_metrics.items()}
 
         if self.train_diffusion_head:
             diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
@@ -432,6 +432,9 @@ class TrainingModule(pl.LightningModule):
             else:
                 raise e
 
+        distogram_loss = self._compute_validation_distogram_loss(sample_out, feat, label)
+        self.val_metrics["distogram_loss"].update(distogram_loss)
+
         x_pred = sample_out["sample_coords"]  # [N, L, 14, 3]
 
         # Compute diffusion sample rank based on pLDDT.
@@ -451,6 +454,22 @@ class TrainingModule(pl.LightningModule):
         val_metrics: MetricCollection = self.val_metrics
         for k, v in metrics.items():
             val_metrics[k].update(v)
+
+    def _compute_validation_distogram_loss(
+        self,
+        sample_out: dict[str, torch.Tensor],
+        feat: dict[str, torch.Tensor],
+        label: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Compute distogram loss for an unbatched validation example."""
+        loss = self.distogram_loss(
+            logits=sample_out["distogram.logits"].unsqueeze(0),
+            boundaries=sample_out["distogram.boundaries"],
+            x_gt=label["coordinates"].unsqueeze(0),
+            mask_gt=label["resolved_mask"].unsqueeze(0),
+            cbeta_idx=feat["pseudo_beta"].unsqueeze(0),
+        )
+        return loss.mean()
 
     def on_validation_epoch_start(self):
         torch.backends.cudnn.benchmark = False

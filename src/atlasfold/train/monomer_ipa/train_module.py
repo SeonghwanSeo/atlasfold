@@ -171,7 +171,7 @@ class TrainingModuleIPA(pl.LightningModule):
 
     def setup_metrics(self) -> None:
         """Setup metrics for validation."""
-        names = ["rmsd", "lddt", "lddt-ca"]
+        names = ["distogram_loss", "rmsd", "lddt", "lddt-ca"]
         if self.loss_weights["plddt"] != 0:
             names.extend(("plddt", "plddt_mae"))
         if self.loss_weights["pae"] != 0:
@@ -268,7 +268,7 @@ class TrainingModuleIPA(pl.LightningModule):
                     label["resolved_mask"],
                     batch["pseudo_beta"],
                 )
-                metrics["distogram/loss"] = dgram.mean().detach()
+                metrics["distogram_loss"] = dgram.mean().detach()
             else:
                 dgram = zero
                 dummy_loss = dummy_loss + (out["distogram"]["logits"] * 0).mean()
@@ -350,6 +350,9 @@ class TrainingModuleIPA(pl.LightningModule):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             return
+        distogram_loss = self._compute_validation_distogram_loss(out, feat, label)
+        self.val_metrics["distogram_loss"].update(distogram_loss)
+
         raw = validation_metrics.compute_validation_metric(
             out["coords"].unsqueeze(0), feat, label
         )
@@ -373,6 +376,22 @@ class TrainingModuleIPA(pl.LightningModule):
             pae_mae = (pae_mae * pae_mask).sum() / pae_mask.sum().clamp(min=1)
             self.val_metrics["pae_mae"].update(pae_mae)
             self.val_metrics["ptm"].update(out["ptm"].float())
+
+    def _compute_validation_distogram_loss(
+        self,
+        out: dict[str, torch.Tensor],
+        feat: dict[str, torch.Tensor],
+        label: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Compute distogram loss for an unbatched validation example."""
+        loss = self.distogram_loss(
+            logits=out["distogram.logits"].unsqueeze(0),
+            boundaries=out["distogram.boundaries"],
+            x_gt=label["coordinates"].unsqueeze(0),
+            mask_gt=label["resolved_mask"].unsqueeze(0),
+            cbeta_idx=feat["pseudo_beta"].unsqueeze(0),
+        )
+        return loss.mean()
 
     def on_validation_epoch_end(self) -> None:
         torch.backends.cudnn.benchmark = True
