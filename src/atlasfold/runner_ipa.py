@@ -86,7 +86,7 @@ class IPAFoldingOutput:
 
     outputs: dict[int, IPAProteinOutput]
     ranking: list[int]
-    recycle_metrics: dict[int, list[RecycleMetric]]
+    recycle_counts: dict[int, int] = dataclasses.field(default_factory=dict)
     distogram_logits: dict[int, np.ndarray] = dataclasses.field(default_factory=dict)
     distogram_boundaries: np.ndarray | None = None
 
@@ -187,8 +187,8 @@ class IPAFoldingRunner:
             raise ValueError("No inputs provided.")
         if not seeds:
             raise ValueError("No seeds provided.")
-        if max_tokens_per_batch <= 0:
-            raise ValueError("max_tokens_per_batch must be positive.")
+        if max_tokens_per_batch < 0:
+            raise ValueError("max_tokens_per_batch must be non-negative.")
 
         normalized = self._normalize_inputs(inputs)
         bucketed = self._bucket_inputs(normalized, length_buckets)
@@ -211,12 +211,11 @@ class IPAFoldingRunner:
                 [item.sequence for item in chunk], bucket_length
             )
             predictions: list[dict[int, IPAProteinOutput]] = [{} for _ in chunk]
-            histories: list[dict[int, list[RecycleMetric]]] = [{} for _ in chunk]
+            recycle_counts: list[dict[int, int]] = [{} for _ in chunk]
             distograms: list[dict[int, np.ndarray]] = [{} for _ in chunk]
             boundaries = None
 
             for seed in seeds:
-                seed_histories: list[list[RecycleMetric]] = [[] for _ in chunk]
 
                 def model_recycle_callback(
                     recycle_index: int,
@@ -224,7 +223,6 @@ class IPAFoldingRunner:
                     *,
                     _seed: int = seed,
                     _chunk: list[IPAFoldingInput] = chunk,
-                    _histories: list[list[RecycleMetric]] = seed_histories,
                 ) -> None:
                     for batch_index, item in enumerate(_chunk):
                         record = self._make_live_recycle_metric(
@@ -233,14 +231,13 @@ class IPAFoldingRunner:
                             recycle_index,
                             len(item.sequence),
                         )
-                        _histories[batch_index].append(record)
-                        if recycle_callback is not None:
-                            recycle_callback(
-                                item.name,
-                                _seed,
-                                recycle_index,
-                                record.copy(),
-                            )
+                        assert recycle_callback is not None
+                        recycle_callback(
+                            item.name,
+                            _seed,
+                            recycle_index,
+                            record,
+                        )
 
                 out = self.model_run(
                     features,
@@ -249,7 +246,9 @@ class IPAFoldingRunner:
                     mlm_prob=mlm_prob,
                     recycle_early_stop_tolerance=recycle_early_stop_tolerance,
                     return_distogram=return_distogram,
-                    recycle_callback=model_recycle_callback,
+                    recycle_callback=(
+                        model_recycle_callback if recycle_callback is not None else None
+                    ),
                 )
                 if return_distogram:
                     boundaries = out["distogram.boundaries"]
@@ -257,7 +256,9 @@ class IPAFoldingRunner:
                     predictions[batch_index][seed] = self._make_output(
                         item, out, batch_index, seed
                     )
-                    histories[batch_index][seed] = seed_histories[batch_index]
+                    recycle_counts[batch_index][seed] = int(
+                        out["num_recycles"][batch_index]
+                    )
                     if return_distogram:
                         length = len(item.sequence)
                         distograms[batch_index][seed] = out["distogram.logits"][
@@ -272,7 +273,7 @@ class IPAFoldingRunner:
                         key=lambda seed: outputs[seed].ranking_score,
                         reverse=True,
                     ),
-                    recycle_metrics=histories[index],
+                    recycle_counts=recycle_counts[index],
                     distogram_logits=distograms[index],
                     distogram_boundaries=boundaries,
                 )
@@ -348,13 +349,11 @@ class IPAFoldingRunner:
         length: int,
     ) -> RecycleMetric:
         plddt = output["plddt"][batch_index, :length].detach().float()
-        pae = output["pae"][batch_index, :length, :length].detach().float()
         tol = float(output["tol"][batch_index].detach().float().cpu().item())
         return {
             "recycle": recycle_index,
             "tol": None if np.isnan(tol) else tol,
-            "avg_plddt": float((plddt.mean() * 100).cpu().item()),
-            "avg_pae": float(pae.mean().cpu().item()),
+            "plddt": float((plddt.mean() * 100).cpu().item()),
             "ptm": float(output["ptm"][batch_index].detach().float().cpu().item()),
         }
 
@@ -389,7 +388,11 @@ class IPAFoldingRunner:
     ) -> Iterator[tuple[int, list[IPAFoldingInput]]]:
         for bucket_length in sorted(bucketed):
             items = bucketed[bucket_length]
-            batch_size = max(1, max_tokens_per_batch // bucket_length)
+            batch_size = (
+                1
+                if max_tokens_per_batch == 0
+                else max(1, max_tokens_per_batch // bucket_length)
+            )
             for start in range(0, len(items), batch_size):
                 yield bucket_length, items[start : start + batch_size]
 

@@ -124,7 +124,7 @@ class MultimerIPAFoldingOutput:
 
     outputs: dict[int, MultimerIPAProteinOutput]
     ranking: list[int]
-    recycle_metrics: dict[int, list[RecycleMetric]]
+    recycle_counts: dict[int, int] = dataclasses.field(default_factory=dict)
     distogram_logits: dict[int, np.ndarray] = dataclasses.field(default_factory=dict)
     distogram_boundaries: np.ndarray | None = None
 
@@ -225,8 +225,8 @@ class MultimerIPAFoldingRunner:
             raise ValueError("No inputs provided.")
         if not seeds:
             raise ValueError("No seeds provided.")
-        if max_tokens_per_batch <= 0:
-            raise ValueError("max_tokens_per_batch must be positive.")
+        if max_tokens_per_batch < 0:
+            raise ValueError("max_tokens_per_batch must be non-negative.")
 
         normalized = self._normalize_inputs(inputs)
         bucketed = self._bucket_inputs(normalized, length_buckets)
@@ -250,12 +250,11 @@ class MultimerIPAFoldingRunner:
             predictions: list[dict[int, MultimerIPAProteinOutput]] = [
                 {} for _ in complexes
             ]
-            histories: list[dict[int, list[RecycleMetric]]] = [{} for _ in complexes]
+            recycle_counts: list[dict[int, int]] = [{} for _ in complexes]
             distograms: list[dict[int, np.ndarray]] = [{} for _ in complexes]
             boundaries = None
 
             for seed in seeds:
-                seed_histories: list[list[RecycleMetric]] = [[] for _ in complexes]
 
                 def model_recycle_callback(
                     recycle_index: int,
@@ -263,7 +262,6 @@ class MultimerIPAFoldingRunner:
                     *,
                     _seed: int = seed,
                     _complexes: list[protein.ProteinMultimer] = complexes,
-                    _histories: list[list[RecycleMetric]] = seed_histories,
                 ) -> None:
                     for batch_index, complex_input in enumerate(_complexes):
                         record = self._make_live_recycle_metric(
@@ -272,14 +270,13 @@ class MultimerIPAFoldingRunner:
                             recycle_index,
                             complex_input.num_residues,
                         )
-                        _histories[batch_index].append(record)
-                        if recycle_callback is not None:
-                            recycle_callback(
-                                complex_input.name,
-                                _seed,
-                                recycle_index,
-                                record.copy(),
-                            )
+                        assert recycle_callback is not None
+                        recycle_callback(
+                            complex_input.name,
+                            _seed,
+                            recycle_index,
+                            record,
+                        )
 
                 out = self.model_run(
                     features,
@@ -288,7 +285,9 @@ class MultimerIPAFoldingRunner:
                     mlm_prob=mlm_prob,
                     recycle_early_stop_tolerance=recycle_early_stop_tolerance,
                     return_distogram=return_distogram,
-                    recycle_callback=model_recycle_callback,
+                    recycle_callback=(
+                        model_recycle_callback if recycle_callback is not None else None
+                    ),
                 )
                 if return_distogram:
                     boundaries = out["distogram.boundaries"]
@@ -296,7 +295,9 @@ class MultimerIPAFoldingRunner:
                     predictions[batch_index][seed] = self._make_output(
                         complex_input, out, batch_index, seed
                     )
-                    histories[batch_index][seed] = seed_histories[batch_index]
+                    recycle_counts[batch_index][seed] = int(
+                        out["num_recycles"][batch_index]
+                    )
                     if return_distogram:
                         length = complex_input.num_residues
                         distograms[batch_index][seed] = out["distogram.logits"][
@@ -311,7 +312,7 @@ class MultimerIPAFoldingRunner:
                         key=lambda seed: outputs[seed].ranking_score,
                         reverse=True,
                     ),
-                    recycle_metrics=histories[index],
+                    recycle_counts=recycle_counts[index],
                     distogram_logits=distograms[index],
                     distogram_boundaries=boundaries,
                 )
@@ -423,18 +424,13 @@ class MultimerIPAFoldingRunner:
         length: int,
     ) -> RecycleMetric:
         plddt = output["plddt"][batch_index, :length].detach().float()
-        pae = output["pae"][batch_index, :length, :length].detach().float()
         tol = float(output["tol"][batch_index].detach().float().cpu().item())
         ptm = float(output["ptm"][batch_index].detach().float().cpu().item())
-        iptm = float(output["iptm"][batch_index].detach().float().cpu().item())
         return {
             "recycle": recycle_index,
             "tol": None if np.isnan(tol) else tol,
-            "avg_plddt": float((plddt.mean() * 100).cpu().item()),
-            "avg_pae": float(pae.mean().cpu().item()),
+            "plddt": float((plddt.mean() * 100).cpu().item()),
             "ptm": ptm,
-            "iptm": iptm,
-            "ranking_score": 0.8 * iptm + 0.2 * ptm,
         }
 
     @staticmethod
@@ -472,7 +468,11 @@ class MultimerIPAFoldingRunner:
     ) -> Iterator[tuple[int, list[protein.ProteinMultimer]]]:
         for bucket_length in sorted(bucketed):
             items = bucketed[bucket_length]
-            batch_size = max(1, max_tokens_per_batch // bucket_length)
+            batch_size = (
+                1
+                if max_tokens_per_batch == 0
+                else max(1, max_tokens_per_batch // bucket_length)
+            )
             for start in range(0, len(items), batch_size):
                 yield (
                     bucket_length,

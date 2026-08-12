@@ -4,6 +4,32 @@ AtlasFold provides separate runners for monomer and multimer inference. A
 runner wraps an already loaded model and handles input normalization, length
 bucketing, batching, sampling, ranking, and conversion to structure objects.
 
+## Command-line inference
+
+An installed AtlasFold package provides model-specific CLI subcommands:
+
+```bash
+atlasfold monomer --input-fasta monomers.fasta --out-dir predictions/monomers
+atlasfold multimer --input-fasta multimers.fasta --out-dir predictions/multimers
+atlasfold monomer-ipa --input-fasta monomers.fasta --out-dir predictions/monomer-ipa --model-path weights/monomer-ipa.pt
+atlasfold multimer-ipa --input-fasta multimers.fasta --out-dir predictions/multimer-ipa --model-path weights/multimer-ipa.pt
+```
+
+Use `atlasfold <model> --help` for model-specific options and defaults. The `--stochastic` option is available only for monomer diffusion inference, while the IPA variants require `--model-path` and do not accept diffusion sampling options.
+
+Positive values are required for sample counts, diffusion steps, diffusion-runner token budgets, and explicit length buckets. IPA token budgets may be zero to disable batching. Recycling counts may be zero, monomer MLM probability must be between zero and one, and multimer MLM probability must be greater than zero and at most one.
+
+IPA inference supports optional convergence stopping with `--recycle-early-stop-tolerance` and per-recycle console output with `--print-recycle-metrics`. Token-based batching is enabled by default, while `--max-tokens-per-batch 0` disables it. Enabling convergence stopping or recycle metric printing makes the CLI warn and use a zero token budget, keeping convergence and metric state independent for each target. Summary CSV files retain the completed recycle count but not the internal tolerance value.
+
+The repository-level `run_atlasfold.py` entry point provides the same subcommands:
+
+```bash
+python run_atlasfold.py monomer --input-fasta monomers.fasta --out-dir predictions/monomers
+python run_atlasfold.py multimer --input-fasta multimers.fasta --out-dir predictions/multimers
+python run_atlasfold.py monomer-ipa --input-fasta monomers.fasta --out-dir predictions/monomer-ipa --model-path weights/monomer-ipa.pt
+python run_atlasfold.py multimer-ipa --input-fasta multimers.fasta --out-dir predictions/multimer-ipa --model-path weights/multimer-ipa.pt
+```
+
 ## Inputs
 
 Monomer methods accept a `FoldingInput` or an equivalent `(name, sequence)`
@@ -30,9 +56,7 @@ inputs = [
 ]
 ```
 
-The multimer runner does not split strings on `:`. Colon-delimited chains are a
-FASTA convention handled by `python run_atlasfold.py --model multimer`; callers
-of the Python API must pass pre-split chains.
+The multimer runners do not split strings on `:`. Colon-delimited chains are a FASTA convention handled by the `multimer` and `multimer-ipa` CLI subcommands; callers of the Python API must pass pre-split chains.
 
 For both runners, sequence whitespace is removed and residues are uppercased.
 Nonstandard residues are replaced with `X`, with a warning containing the
@@ -66,8 +90,10 @@ Common keyword arguments are:
 | `mlm_prob` | LM masking probability used during recycling. |
 | `sampling_config` | Optional `SamplingConfig` overriding diffusion sampling settings. |
 | `length_buckets` | Optional explicit residue-length buckets. |
-| `max_tokens_per_batch` | Token budget for `fold_iter()` and `fold_iter_batch()`. |
+| `max_tokens_per_batch` | Token budget for `fold_iter()` and `fold_iter_batch()`; IPA runners accept zero to disable batching. |
 | `return_distogram` | Whether to return raw distogram logits and boundaries. |
+| `recycle_early_stop_tolerance` | IPA-only convergence threshold; zero disables early stopping. |
+| `recycle_callback` | IPA-only callback invoked with live metrics after each recycle. |
 
 The monomer runner additionally accepts `stochastic`, which enables stochastic
 LM features during all recycling iterations.
@@ -144,6 +170,26 @@ inputs = [
 for result in runner.fold_iter(inputs, max_tokens_per_batch=1024):
     print(result.name, result.best.iptm)
 ```
+
+## IPA inference
+
+The IPA regression runners return one prediction per seed and do not accept diffusion sampling options:
+
+```python
+from atlasfold.runner_ipa import IPAFoldingRunner
+
+runner = IPAFoldingRunner(ipa_model)
+result = runner.fold(
+    "protein_a",
+    "MKTAYIAKQRQISFVKSHFS",
+    seeds=[1, 2],
+    num_recycles=4,
+    recycle_early_stop_tolerance=0.0,
+)
+print(result.best.avg_plddt, result.recycle_counts)
+```
+
+Use `MultimerIPAFoldingRunner` from `atlasfold.runner_multimer_ipa` for IPA complex prediction. Leaving `recycle_callback=None` removes the model recycle callback and enables the plain batched path. Early stopping is synchronized when the Python API receives multiple targets in one batch; callers that need independent convergence should submit one target per batch, as the CLI does automatically.
 
 ## Results and ranking
 

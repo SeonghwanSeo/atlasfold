@@ -17,6 +17,9 @@ dependencies = [
   "huggingface_hub",
 ]
 
+[project.scripts]
+atlasfold = "atlasfold.cli:main"
+
 [project.optional-dependencies]
 fold = [
   "scipy",
