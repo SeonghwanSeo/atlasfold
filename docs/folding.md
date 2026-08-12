@@ -4,6 +4,26 @@ AtlasFold provides separate runners for monomer and multimer inference. A
 runner wraps an already loaded model and handles input normalization, length
 bucketing, batching, sampling, ranking, and conversion to structure objects.
 
+## Command-line inference
+
+An installed AtlasFold package provides model-specific CLI subcommands:
+
+```bash
+atlasfold monomer --input-fasta monomers.fasta --out-dir predictions/monomers
+atlasfold multimer --input-fasta multimers.fasta --out-dir predictions/multimers
+```
+
+Use `atlasfold monomer --help` or `atlasfold multimer --help` for model-specific options and defaults. The `--stochastic` option is available only for monomer inference.
+
+Positive values are required for sample counts, diffusion steps, token budgets, and explicit length buckets. Recycling counts may be zero, monomer MLM probability must be between zero and one, and multimer MLM probability must be greater than zero and at most one.
+
+The repository-level `run_atlasfold.py` entry point provides the same subcommands:
+
+```bash
+python run_atlasfold.py monomer --input-fasta monomers.fasta --out-dir predictions/monomers
+python run_atlasfold.py multimer --input-fasta multimers.fasta --out-dir predictions/multimers
+```
+
 ## Inputs
 
 Monomer methods accept a `FoldingInput` or an equivalent `(name, sequence)`
@@ -30,9 +50,7 @@ inputs = [
 ]
 ```
 
-The multimer runner does not split strings on `:`. Colon-delimited chains are a
-FASTA convention handled by `python run_atlasfold.py --model multimer`; callers
-of the Python API must pass pre-split chains.
+The multimer runner does not split strings on `:`. Colon-delimited chains are a FASTA convention handled by `atlasfold multimer` and `python run_atlasfold.py multimer`; callers of the Python API must pass pre-split chains.
 
 For both runners, sequence whitespace is removed and residues are uppercased.
 Nonstandard residues are replaced with `X`, with a warning containing the

@@ -95,7 +95,9 @@ hidden_states = out.hidden_states  # List of hidden states per layer
 # 2. Get Attention Maps
 # Requires return_attentions=True. Note that this increases memory usage.
 out = model.embed_sequences(sequences, return_attentions=True)
-attentions = out.attentions  # List of attention maps: (batch_size, n_heads, seq_len, seq_len)
+attentions = (
+    out.attentions
+)  # List of attention maps: (batch_size, n_heads, seq_len, seq_len)
 ```
 
 ## AtlasFold protein structure prediction
@@ -126,7 +128,7 @@ GILGYTEHQVVSSDFQKAAQQLLQYFQKAGY
 
 ```bash
 python run_atlasfold.py \
-    --model monomer \
+    monomer \
     --input-fasta monomers.fasta \
     --out-dir predictions/monomers
 ```
@@ -142,12 +144,19 @@ GILGYTEHQVVSSDFQKAA:QQLLQYFQKAGY
 
 ```bash
 python run_atlasfold.py \
-    --model multimer \
+    multimer \
     --input-fasta multimers.fasta \
     --out-dir predictions/multimers
 ```
 
-The scripts use the first whitespace-delimited token in each FASTA header as the target name. Target names must be unique and suitable for use in directory and file names. Sequences are uppercased and whitespace is removed; nonstandard residues are replaced with `X` with a warning that identifies the target and, for multimers, the chain.
+When AtlasFold is installed, the same pipelines are also available as CLI subcommands:
+
+```bash
+atlasfold monomer --input-fasta monomers.fasta --out-dir predictions/monomers
+atlasfold multimer --input-fasta multimers.fasta --out-dir predictions/multimers
+```
+
+Both CLI entry points use the first whitespace-delimited token in each FASTA header as the target name. Target names must be unique and cannot be empty, `.`, `..`, or contain path separators. Sequences are uppercased and whitespace is removed; nonstandard residues are replaced with `X` with a warning that identifies the target and, for multimers, the chain.
 
 Common inference options and their model-specific defaults are:
 
@@ -158,8 +167,8 @@ Common inference options and their model-specific defaults are:
 | `--stochastic` | `off` | Not supported | Increase sampling diversity across seeds. |
 | `--num-samples N` | `5` | `5` | Generate `N` diffusion samples for every seed. |
 | `--seed S [S ...]` | `[1]` | `[1]` | Run one or more random seeds. |
-| `--num-steps N` | Auto | `100` | Set the number of diffusion steps. |
-| `--device {cpu,cuda}` | Auto | Auto | Use CUDA when available, otherwise CPU. |
+| `--num-steps N` | Auto | `200` | Set the number of diffusion steps. |
+| `--device DEVICE` | Auto | Auto | Use CUDA when available, otherwise CPU. Accepts Torch device strings such as `cpu`, `cuda`, or `cuda:0`. |
 | `--no-kernel` | `off` | `off` | Disable optional cuEquivariance kernels. |
 | `--max-tokens-per-batch N` | `1024` | `1024` | Limit bucketed residue tokens in each model call; reduce this after a CUDA out-of-memory error. |
 | `--format {cif,pdb}` | `cif` | `cif` | Select the output structure format. |
@@ -169,7 +178,7 @@ Common inference options and their model-specific defaults are:
 
 > **Note:** The automatic monomer diffusion schedule uses `20` steps for L <= 512, `30` steps for L <= 1024, and `100` steps otherwise, where L is the runner's bucketed residue length.
 
-Use `python run_atlasfold.py --help` for the complete option list and current defaults.
+Use `atlasfold monomer --help`, `atlasfold multimer --help`, or the equivalent `python run_atlasfold.py <model> --help` command for the complete model-specific option lists and current defaults.
 
 ### Output files
 
@@ -193,7 +202,9 @@ print(monomer.best.avg_plddt)
 
 multimer_model = load_model("atlasfold-m-260725", device="cuda")
 multimer_runner = MultimerFoldingRunner(multimer_model)
-multimer = multimer_runner.fold("complex_a", ["MKTAYIAKQRQISFVKSHFS", "GGHVDHGKSTTTGHLIYK"], num_samples=5)
+multimer = multimer_runner.fold(
+    "complex_a", ["MKTAYIAKQRQISFVKSHFS", "GGHVDHGKSTTTGHLIYK"], num_samples=5
+)
 print(multimer.best.iptm)
 ```
 
