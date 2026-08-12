@@ -1,8 +1,9 @@
-"""AtlasFold multimer with the AlphaFold-style IPA decoder."""
+"""AtlasFold multimer with an AlphaFold-Multimer-style IPA regression decoder."""
 
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from functools import partial
 from typing import Any
 
@@ -17,6 +18,7 @@ from atlasfold.model.model_ipa import (
     PredictedLDDTHead,
     StructureModuleConfig,
     TrunkConfig,
+    compute_recycle_tolerance,
     get_distogram,
 )
 from atlasfold.model.model_multimer import TemplateModuleConfig
@@ -56,13 +58,9 @@ class AtlasFoldMultimerIPAConfig:
 
 
 class AtlasFoldMultimer_IPA(torch.nn.Module):
-    """AtlasFold multimer trunk with an AlphaFold-Multimer-style IPA decoder."""
+    """AtlasFold multimer trunk with an AlphaFold-style IPA structure decoder."""
 
-    def __init__(
-        self,
-        cfg: AtlasFoldMultimerIPAConfig,
-        load_lm: bool = True,
-    ) -> None:
+    def __init__(self, cfg: AtlasFoldMultimerIPAConfig, load_lm: bool = True) -> None:
         """Initialize the AtlasFold multimer IPA model."""
         super().__init__()
         self.cfg: AtlasFoldMultimerIPAConfig = cfg
@@ -200,9 +198,10 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         self,
         batch: dict[str, torch.Tensor],
         return_representations: bool = False,
-        return_structure_representations: bool = False,
+        recycle_callback: Callable[[int, dict[str, torch.Tensor]], None] | None = None,
         mlm_prob: float = 0.15,
         num_recycles: int = 10,
+        recycle_early_stop_tolerance: float = 0.0,
     ) -> dict[str, Any]:
         """Perform the multimer IPA forward pass.
 
@@ -245,9 +244,10 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
             - "template.backbone_frame_mask"    : [B, T, L] bool
                 The template update is zero if the complete feature set is absent.
         return_representations : bool
-            Whether to return the final trunk single and pair representations.
-        return_structure_representations : bool
-            Whether to return the final structure module activation.
+            Whether to return the intermediate representations.
+        recycle_callback : callable, optional
+            Called after every pass as `callback(recycle_idx, output)` with
+            coordinates, confidence outputs, and convergence tolerance.
 
         # Advanced options
         mlm_prob : float
@@ -255,13 +255,17 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
             each recycling pass.
         num_recycles : int
             Number of recycling steps. The model runs num_recycles + 1 passes.
+        recycle_early_stop_tolerance : float
+            Stop after all batch items have a pseudo-beta distance-matrix RMS change
+            below this positive threshold. `0` disables early stopping.
 
         Returns
         -------
         out: dict[str, torch.Tensor]
             The output dictionary containing atom14 coordinates, distogram logits,
-            pLDDT, PAE, pTM, ipTM, per-chain pTM, and pairwise interface ipTM.
-            Optional representations are returned under "trunk.s", "trunk.z", and
+            pLDDT, PAE, pTM, ipTM, per-chain pTM, pairwise interface ipTM, the number
+            of completed recycles, and the final convergence tolerance. Optional
+            representations are returned under "trunk.s", "trunk.z", and
             "structure.s". If the input is unbatched, the leading batch dimension is
             removed from every output.
         """
@@ -269,55 +273,77 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
             raise ValueError("mlm_prob must be non-negative.")
         if num_recycles < 0:
             raise ValueError("num_recycles must be non-negative.")
+        if recycle_early_stop_tolerance < 0:
+            raise ValueError("recycle_early_stop_tolerance must be non-negative.")
 
         is_batched = batch["aatype"].ndim == 3
         if not is_batched:
             batch = {key: value.unsqueeze(0) for key, value in batch.items()}
 
-        out: dict[str, Any] = {}
-
         # Compute positional encodings
         batch["rel_pos"] = self.rel_pos_encoding(batch)
 
-        # Run trunk and structure module
-        s, z, structure = self.run_trunk(batch, num_recycles, mlm_prob)
-        s, z = s.float(), z.float()
+        # Run the recycling loop
+        mask = batch["seq_mask"].bool()
+        B, L = mask.shape
+        device = mask.device
+        dtype = torch_utils.get_context_dtype(device.type)
+        s_prev = torch.zeros(B, L, self.channel_s, device=device, dtype=dtype)
+        z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
+        x_prev = torch.zeros(B, L, 14, 3, device=device, dtype=torch.float32)
 
-        out["coords"] = structure["coords"]
-        if return_representations:
-            out["trunk.s"] = s
-            out["trunk.z"] = z
-        if return_structure_representations:
-            out["structure.s"] = structure["act"]
-
-        # Run output heads and confidence metrics in float32.
-        with torch.autocast(device_type=self.device.type, enabled=False):
-            distogram = self.distogram_head(z)
-            out["distogram.logits"] = distogram["logits"]
-            out["distogram.boundaries"] = distogram["boundaries"]
-
-            plddt = self.plddt_head(structure["act"].float())
-            pae = self.pae_head(z)
-            mask = batch["seq_mask"].bool()
-            asym_id = batch["asym_id"]
-            out["plddt"] = confidence_metrics.compute_plddt(**plddt, mask=mask)
-
-            pae_probs = torch.softmax(pae["logits"], dim=-1)
-            pae_bin_centers = pae["bin_centers"]
-            out["pae"] = confidence_metrics.compute_pae_from_probs(
-                pae_probs, pae_bin_centers, mask=mask
+        for recycle_idx in range(num_recycles + 1):
+            # Run the folding trunk
+            s, z, structure, confidence = self.run_trunk(
+                batch, s_prev, z_prev, x_prev, mlm_prob
             )
-            out["ptm"] = confidence_metrics.compute_ptm_from_probs(
-                pae_probs, pae_bin_centers, mask=mask
-            )
-            out["iptm"] = confidence_metrics.compute_iptm_from_probs(
-                pae_probs, pae_bin_centers, asym_id, mask=mask
-            )
-            out["chain_ptm"], out["interface_iptm"] = (
-                confidence_metrics.compute_chain_tm_scores_from_probs(
-                    pae_probs, pae_bin_centers, asym_id, mask=mask
+
+            # Compute convergence tolerance
+            if recycle_idx == 0:
+                tol = torch.full((B,), float("nan"), device=device, dtype=torch.float32)
+            else:
+                tol = compute_recycle_tolerance(
+                    structure["coords"], x_prev, batch["pseudo_beta"], mask
                 )
-            )
+
+            # Call the recycle callback if provided
+            if recycle_callback is not None:
+                callback_output = {
+                    "coords": structure["coords"],
+                    "tol": tol,
+                    **confidence,
+                }
+                recycle_callback(recycle_idx, callback_output)
+
+            # Stop recycling if all batch items have converged
+            if (
+                recycle_idx > 0
+                and recycle_early_stop_tolerance > 0
+                and bool(torch.all(tol < recycle_early_stop_tolerance).item())
+            ):
+                break
+            s_prev, z_prev, x_prev = s, z, structure["coords"]
+
+        # Prepare the output dictionary
+        out = {
+            "coords": structure["coords"],
+            "num_recycles": torch.full(
+                (B,), recycle_idx, dtype=torch.int64, device=device
+            ),
+            "tol": tol,
+            **confidence,
+        }
+
+        # Return intermediate representations if requested
+        if return_representations:
+            out["trunk.s"] = s.float()
+            out["trunk.z"] = z.float()
+            out["structure.s"] = structure["act"].float()
+
+        # Compute distogram logits and boundaries
+        distogram = self.distogram_head(z)
+        out["distogram.logits"] = distogram["logits"].float()
+        out["distogram.boundaries"] = distogram["boundaries"].float()
 
         # Remove batch dimension if the input was not originally batched
         if not is_batched:
@@ -335,8 +361,8 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
     ) -> torch.Tensor:
         """Sample an LM-token mask, shared across examples by default."""
         input_ids = batch["lm.input_ids"]
-        batch_size, sequence_length = input_ids.shape
-        shape = (1, sequence_length) if synchronized else (batch_size, sequence_length)
+        B, L = input_ids.shape
+        shape = (1, L) if synchronized else (B, L)
         if prob <= 0.0:
             return torch.zeros(shape, dtype=torch.bool, device=input_ids.device)
         return torch.rand(shape, device=input_ids.device) < prob
@@ -351,14 +377,14 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         _add = partial(torch_utils.add, inplace=not train)
 
         # === Prepare LM inputs === #
-        input_ids = batch["lm.input_ids"]
-        pos_id = batch["lm.pos_id"]
-        seq_id = batch["lm.seq_id"]
+        input_ids = batch["lm.input_ids"]  # [B, S]
+        pos_id = batch["lm.pos_id"]  # [B, S]
+        seq_id = batch["lm.seq_id"]  # [B, S]. 1 for valid, 0 for padding
 
         # Apply MLM mask to input IDs for stochastic feature extraction
         if mlm_mask is not None:
             assert mlm_mask.shape[1] == input_ids.shape[1], (
-                "MLM mask must have the same length dimension as input_ids. "
+                f"MLM mask must have the same length dimension as input_ids. "
                 f"Got {mlm_mask.shape} and {input_ids.shape}."
             )
             aa_idxs = torch.tensor(self.alphabet.aa_idxs, device=input_ids.device)
@@ -372,7 +398,7 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         lm_attn = torch.zeros(
             (B, S, S, self.channel_z), device=device, dtype=torch.float32
         )
-        w_layers = self.lm_layer_weights.softmax(dim=0)
+        w_layers = self.lm_layer_weights.softmax(dim=0)  # [n_layers+1,]
 
         with torch.no_grad():
             x = self.lm.embed(input_ids)
@@ -381,80 +407,117 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         for i, block in enumerate(self.lm.transformer.blocks):
             with torch.no_grad():
                 x, attn = block(x, seq_id, pos_id, return_attn_logits=True)
+                # neginf will be set to 0 at the end of this function.
                 attn = attn.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
                 attn = attn.clamp_(-100.0, 100.0).div_(100)
-                attn = attn.moveaxis(1, -1)
+                attn = attn.moveaxis(1, -1)  # [B, S, S, n_heads]
             lm_emb = _add(lm_emb, w_layers[i + 1] * self.layernorm_lm_emb(x))
             lm_attn = _add(lm_attn, self.proj_lm_attn[i](attn))
 
+        # Extract the s and z representations for the valid sequence positions
+        # [B, S, c_s], [B, S, S, c_z] -> [B, L, c_s], [B, L, L, c_z]
         b_i = torch.arange(input_ids.shape[0], device=input_ids.device)
         b_i_s, b_i_z = b_i[:, None], b_i[:, None, None]
-        row_s = batch["seq_tok_idx"]
+        row_s = batch["seq_tok_idx"]  # [B, L]
         row_z, col_z = row_s[:, :, None], row_s[:, None, :]
-        lm_emb = lm_emb[b_i_s, row_s]
-        lm_attn = lm_attn[b_i_z, row_z, col_z]
+        lm_emb = lm_emb[b_i_s, row_s]  # [B, L, c_s]
+        lm_attn = lm_attn[b_i_z, row_z, col_z]  # [B, L, L, c_z]
 
         s_lm = self.lm_emb_to_s_lm(lm_emb)
         z_lm = self.lm_attn_to_z_lm(lm_attn)
         del lm_emb, lm_attn, row_s, row_z, col_z, b_i_s, b_i_z
 
-        seq_mask = batch["seq_mask"]
+        # Run LM stack with inter-chain pairs masked out
+        seq_mask = batch["seq_mask"]  # [B, L]
         z_mask = seq_mask[:, None, :] & seq_mask[:, :, None]
         intra_chain_mask = batch["asym_id"][:, None, :] == batch["asym_id"][:, :, None]
         intra_chain_mask &= z_mask
         s_lm = s_lm * seq_mask[:, :, None]
         z_lm = z_lm * intra_chain_mask[:, :, :, None]
-        return self.lm_stack(s_lm, z_lm, seq_mask, self.use_kernel)
+        s_lm, z_lm = self.lm_stack(s_lm, z_lm, seq_mask, self.use_kernel)
+        return s_lm, z_lm
 
     def run_trunk(
         self,
         batch: dict[str, torch.Tensor],
-        num_recycles: int,
+        s_prev: torch.Tensor,
+        z_prev: torch.Tensor,
+        x_prev: torch.Tensor,
         mlm_prob: float = 0.15,
-    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        """Run template-conditioned trunk and structure recycling passes."""
-        seq_mask = batch["seq_mask"]
-        B, L = seq_mask.shape
-        device = seq_mask.device
-        dtype = torch_utils.get_context_dtype(device.type)
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        dict[str, Any],
+        dict[str, torch.Tensor],
+    ]:
+        """Run one trunk, structure-module, and confidence-head pass."""
+        mask = batch["seq_mask"]
 
-        s_prev = torch.zeros(B, L, self.channel_s, device=device, dtype=dtype)
-        z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
-        x_prev = torch.zeros(B, L, 14, 3, device=device, dtype=torch.float32)
+        # Prepare the initial representations
+        s = self.s_init(batch["aatype"])
+        a, b = self.z_init(batch["aatype"]).chunk(2, dim=-1)
+        z = a[..., :, None, :] + b[..., None, :, :]
+        z = z + self.z_rel_pos(batch["rel_pos"])
 
-        structure: dict[str, Any] = {}
-        for _ in range(num_recycles + 1):
-            # Prepare the initial s and z representations
-            s = self.s_init(batch["aatype"])
-            z_i, z_j = self.z_init(batch["aatype"]).chunk(2, dim=-1)
-            z = z_i[..., :, None, :] + z_j[..., None, :, :]
-            z = z + self.z_rel_pos(batch["rel_pos"])
+        # Recycling embedding
+        s = s + self.recycle_s(s_prev)
+        z = z + self.recycle_z(z_prev)
+        dgram = get_distogram(x_prev, batch["pseudo_beta"], **self.recycle_pos_cfg)
+        z = z + self.recycle_pos(dgram.to(z.dtype))
 
-            # Add recycling information from previous iteration
-            s = s + self.recycle_s(s_prev)
-            z = z + self.recycle_z(z_prev)
-            dgram = get_distogram(x_prev, batch["pseudo_beta"], **self.recycle_pos_cfg)
-            z = z + self.recycle_pos(dgram.to(dtype))
+        # Run LM module with stochastic masking
+        mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
+        s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask)
+        s = s + self.proj_s_lm(s_lm)
+        z = z + self.proj_z_lm(z_lm)
 
-            # Run LM embedder with stochastic masking
-            mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
-            s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask)
-            s = s + self.proj_s_lm(s_lm)
-            z = z + self.proj_z_lm(z_lm)
+        # Add template information
+        if self.template_module is not None:
+            z = z + self.template_module(batch, z, mask, self.use_kernel)
 
-            # Add template information if available
-            if self.template_module is not None:
-                z = z + self.template_module(batch, z, seq_mask, self.use_kernel)
+        # Run the main trunk
+        s, z = self.main_stack(s, z, mask, self.use_kernel)
 
-            # Run the main trunk
-            s, z = self.main_stack(s, z, seq_mask, self.use_kernel)
+        # Run the structure module
+        structure = self.structure_module(s, z, batch["aatype_int"], mask)
 
-            # Run the structure module
-            structure = self.structure_module(s, z, batch["aatype_int"], seq_mask)
+        # Compute confidence metrics
+        confidence = self._compute_confidence(batch, z, structure)
+        return s, z, structure, confidence
 
-            s_prev, z_prev = s, z
-            x_prev = structure["coords"]
-        return s, z, structure
+    def _compute_confidence(
+        self,
+        batch: dict[str, torch.Tensor],
+        z: torch.Tensor,
+        structure: dict[str, Any],
+    ) -> dict[str, torch.Tensor]:
+        """Compute confidence arrays and scores for one recycling pass."""
+        with torch.autocast(device_type=self.device.type, enabled=False):
+            mask = batch["seq_mask"].bool()
+            asym_id = batch["asym_id"]
+            plddt_head = self.plddt_head(structure["act"].float())
+            pae_head = self.pae_head(z.float())
+            pae_probs = torch.softmax(pae_head["logits"], dim=-1)
+            bin_centers = pae_head["bin_centers"]
+            chain_ptm, interface_iptm = (
+                confidence_metrics.compute_chain_tm_scores_from_probs(
+                    pae_probs, bin_centers, asym_id, mask
+                )
+            )
+            return {
+                "plddt": confidence_metrics.compute_plddt(**plddt_head, mask=mask),
+                "pae": confidence_metrics.compute_pae_from_probs(
+                    pae_probs, bin_centers, mask
+                ),
+                "ptm": confidence_metrics.compute_ptm_from_probs(
+                    pae_probs, bin_centers, mask
+                ),
+                "iptm": confidence_metrics.compute_iptm_from_probs(
+                    pae_probs, bin_centers, asym_id, mask
+                ),
+                "chain_ptm": chain_ptm,
+                "interface_iptm": interface_iptm,
+            }
 
     @classmethod
     def from_pretrained(

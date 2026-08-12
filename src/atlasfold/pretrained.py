@@ -4,28 +4,45 @@ from pathlib import Path
 import torch
 
 from atlasfold.configs.atlasfold import monomer_config
+from atlasfold.configs.atlasfold_ipa import monomer_ipa_config
 from atlasfold.configs.atlasfold_multimer import multimer_config
+from atlasfold.configs.atlasfold_multimer_ipa import multimer_ipa_config
 from atlasfold.model import (
     AtlasFold,
+    AtlasFold_IPA,
     AtlasFold_Multimer,
     AtlasFoldConfig,
+    AtlasFoldIPAConfig,
+    AtlasFoldMultimer_IPA,
     AtlasFoldMultimerConfig,
+    AtlasFoldMultimerIPAConfig,
 )
 from atlaslm.pretrained import download_model_weights as download_lm_weights
 
 ATLASFOLD_260703 = "atlasfold-260703"
 ATLASFOLD_M_260725 = "atlasfold-m-260725"
+ATLASFOLD_IPA = "atlasfold-ipa"
+ATLASFOLD_MULTIMER_IPA = "atlasfold-multimer-ipa"
 
-SUPPORTED_MODELS = [ATLASFOLD_260703, ATLASFOLD_M_260725]
+SUPPORTED_MODELS = [
+    ATLASFOLD_260703,
+    ATLASFOLD_M_260725,
+    ATLASFOLD_IPA,
+    ATLASFOLD_MULTIMER_IPA,
+]
 
 MODEL_NAME_MAP = {
     "atlasfold-260703": ATLASFOLD_260703,
     "atlasfold-m-260725": ATLASFOLD_M_260725,
+    "atlasfold-ipa": ATLASFOLD_IPA,
+    "atlasfold-multimer-ipa": ATLASFOLD_MULTIMER_IPA,
 }
 
 MODEL_CONFIGS = {
     ATLASFOLD_260703: monomer_config,
     ATLASFOLD_M_260725: multimer_config,
+    ATLASFOLD_IPA: monomer_ipa_config,
+    ATLASFOLD_MULTIMER_IPA: multimer_ipa_config,
 }
 
 WEIGHT_PATHS = {
@@ -56,6 +73,11 @@ def download_model_weights(
     from huggingface_hub import hf_hub_download
 
     model_name = get_model_name(model_name)
+    if model_name not in WEIGHT_PATHS:
+        raise ValueError(
+            f"No published weights are configured for {model_name!r}; "
+            "provide model_path when loading this model."
+        )
     repo_id, filename = WEIGHT_PATHS[model_name]
     return hf_hub_download(
         repo_id=repo_id,
@@ -80,7 +102,7 @@ def load_model(
     cache_dir: str | Path | None = None,
     lm_path: str | Path | None = None,
     model_path: str | Path | None = None,
-) -> AtlasFold | AtlasFold_Multimer:
+) -> AtlasFold | AtlasFold_Multimer | AtlasFold_IPA | AtlasFoldMultimer_IPA:
     """Load a pretrained AtlasFold model by name.
 
     Parameters
@@ -89,6 +111,8 @@ def load_model(
         The name of the pretrained model to load. Options include:
             - "atlasfold-260703"
             - "atlasfold-m-260725"
+            - "atlasfold-ipa" (requires model_path)
+            - "atlasfold-multimer-ipa" (requires model_path)
     device : str | torch.device, optional
         The device to load the model onto.
     cache_dir : str, optional
@@ -102,7 +126,7 @@ def load_model(
 
     Returns
     -------
-    model : AtlasFold | AtlasFold_Multimer
+    model : AtlasFold | AtlasFold_Multimer | AtlasFold_IPA | AtlasFoldMultimer_IPA
         The loaded AtlasFold model.
     """
     if device is None:
@@ -125,5 +149,13 @@ def load_model(
         )
     if isinstance(cfg, AtlasFoldConfig):
         return AtlasFold.from_pretrained(state_dict=state_dict, config=cfg, device=device)
+    if isinstance(cfg, AtlasFoldMultimerIPAConfig):
+        return AtlasFoldMultimer_IPA.from_pretrained(
+            state_dict=state_dict, config=cfg, device=device
+        )
+    if isinstance(cfg, AtlasFoldIPAConfig):
+        return AtlasFold_IPA.from_pretrained(
+            state_dict=state_dict, config=cfg, device=device
+        )
 
     raise TypeError(f"Unsupported AtlasFold config type: {type(cfg)!r}.")

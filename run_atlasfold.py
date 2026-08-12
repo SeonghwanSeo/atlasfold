@@ -6,13 +6,17 @@ MODEL_DEFAULTS = {
     "monomer": {
         "num_recycles": 4,
         "mlm_prob": 0.15,
+        "num_samples": 5,
         "num_steps": None,  # auto-determined based on sequence length
     },
     "multimer": {
         "num_recycles": 10,
         "mlm_prob": 0.20,
+        "num_samples": 5,
         "num_steps": 100,
     },
+    "monomer-ipa": {"num_recycles": 4, "mlm_prob": 0.15},
+    "multimer-ipa": {"num_recycles": 10, "mlm_prob": 0.20},
 }
 
 
@@ -27,7 +31,7 @@ def create_parser() -> argparse.ArgumentParser:
 
     required.add_argument(
         "--model",
-        choices=["monomer", "multimer"],
+        choices=["monomer", "multimer", "monomer-ipa", "multimer-ipa"],
         required=True,
         help="Model pipeline to run.",
     )
@@ -69,8 +73,8 @@ def create_parser() -> argparse.ArgumentParser:
     inference.add_argument(
         "--num-samples",
         type=int,
-        default=5,
-        help="Number of diffusion samples to generate.",
+        default=None,
+        help="Number of diffusion samples to generate (diffusion models only).",
     )
     inference.add_argument(
         "--seed",
@@ -83,7 +87,13 @@ def create_parser() -> argparse.ArgumentParser:
         "--num-steps",
         type=int,
         default=None,
-        help="Number of diffusion sampling steps. Defaults depend on --model.",
+        help="Number of diffusion sampling steps (diffusion models only).",
+    )
+    inference.add_argument(
+        "--recycle-early-stop-tolerance",
+        type=float,
+        default=None,
+        help="Optional convergence threshold for IPA models.",
     )
 
     runtime.add_argument(
@@ -202,7 +212,11 @@ def build_monomer_args(args: argparse.Namespace) -> argparse.Namespace:
             else MODEL_DEFAULTS["monomer"]["mlm_prob"]
         ),
         stochastic=args.stochastic,
-        num_samples=args.num_samples,
+        num_samples=(
+            args.num_samples
+            if args.num_samples is not None
+            else MODEL_DEFAULTS["monomer"]["num_samples"]
+        ),
         seed=args.seed,
         num_steps=(
             args.num_steps
@@ -240,13 +254,54 @@ def build_multimer_args(args: argparse.Namespace) -> argparse.Namespace:
             if args.mlm_prob is not None
             else MODEL_DEFAULTS["multimer"]["mlm_prob"]
         ),
-        num_samples=args.num_samples,
+        num_samples=(
+            args.num_samples
+            if args.num_samples is not None
+            else MODEL_DEFAULTS["multimer"]["num_samples"]
+        ),
         seed=args.seed,
         num_steps=(
             args.num_steps
             if args.num_steps is not None
             else MODEL_DEFAULTS["multimer"]["num_steps"]
         ),
+        device=args.device,
+        no_kernel=args.no_kernel,
+        max_tokens_per_batch=args.max_tokens_per_batch,
+        length_buckets=args.length_buckets,
+        format=args.format,
+        save_confidence_arrays=args.save_confidence_arrays,
+        save_distogram=args.save_distogram,
+        overwrite=args.overwrite,
+    )
+
+
+def build_ipa_args(args: argparse.Namespace, model: str) -> argparse.Namespace:
+    if args.model_path is None:
+        raise ValueError(f"--model-path is required for --model {model}.")
+    if args.stochastic:
+        raise ValueError("--stochastic is not supported by IPA regression models.")
+    if args.num_samples is not None or args.num_steps is not None:
+        raise ValueError("--num-samples and --num-steps apply only to diffusion models.")
+    defaults = MODEL_DEFAULTS[model]
+    return argparse.Namespace(
+        model=model,
+        model_path=args.model_path,
+        cache_dir=args.cache_dir,
+        input_fasta=args.input_fasta,
+        out_dir=args.out_dir,
+        num_recycles=(
+            args.num_recycles
+            if args.num_recycles is not None
+            else defaults["num_recycles"]
+        ),
+        recycle_early_stop_tolerance=(
+            args.recycle_early_stop_tolerance
+            if args.recycle_early_stop_tolerance is not None
+            else 0.0
+        ),
+        mlm_prob=args.mlm_prob if args.mlm_prob is not None else defaults["mlm_prob"],
+        seed=args.seed,
         device=args.device,
         no_kernel=args.no_kernel,
         max_tokens_per_batch=args.max_tokens_per_batch,
@@ -281,6 +336,18 @@ if __name__ == "__main__":
         run_inference_multimer.setup_logging()
         log_run_settings(resolved_args, run_inference_multimer.logger)
         run_inference_multimer.run(resolved_args)
+        exit(0)
+
+    if args.model == "monomer-ipa":
+        from scripts import run_inference_ipa
+
+        run_inference_ipa.run(build_ipa_args(args, "monomer-ipa"))
+        exit(0)
+
+    if args.model == "multimer-ipa":
+        from scripts import run_inference_multimer_ipa
+
+        run_inference_multimer_ipa.run(build_ipa_args(args, "multimer-ipa"))
         exit(0)
 
     raise ValueError(f"Unsupported model: {args.model}")
