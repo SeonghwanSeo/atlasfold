@@ -11,7 +11,7 @@ MODEL_DEFAULTS = {
     "multimer": {
         "num_recycles": 10,
         "mlm_prob": 0.20,
-        "num_steps": 100,
+        "num_steps": 200,
     },
 }
 

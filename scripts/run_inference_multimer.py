@@ -93,7 +93,7 @@ def create_parser() -> argparse.ArgumentParser:
     inference.add_argument(
         "--num-steps",
         type=int,
-        default=100,
+        default=200,
         help="Number of diffusion sampling steps.",
     )
 
