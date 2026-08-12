@@ -504,24 +504,31 @@ class StructureModule(nn.Module):
             channel_s, sidechain_channel, sidechain_num_layer, num_torsion
         )
 
+        self.init_buffers()
+
+    def init_buffers(self, device: str | torch.device | None = None) -> None:
+        """Initialize the fixed residue geometry buffers."""
+
         self.register_buffer(
             "default_frames",
-            torch.tensor(rc.restype_rigid_group_default_frame),
+            torch.tensor(rc.restype_rigid_group_default_frame, device=device),
             persistent=False,
         )
         self.register_buffer(
             "ref_atom_group",
-            torch.tensor(rc.restype_atom14_to_rigid_group, dtype=torch.long),
+            torch.tensor(
+                rc.restype_atom14_to_rigid_group, dtype=torch.long, device=device
+            ),
             persistent=False,
         )
         self.register_buffer(
             "ref_atom_pos",
-            torch.tensor(rc.restype_atom14_rigid_group_positions),
+            torch.tensor(rc.restype_atom14_rigid_group_positions, device=device),
             persistent=False,
         )
         self.register_buffer(
             "ref_atom_mask",
-            torch.tensor(rc.restype_atom14_mask, dtype=torch.bool),
+            torch.tensor(rc.restype_atom14_mask, dtype=torch.bool, device=device),
             persistent=False,
         )
 

@@ -591,6 +591,9 @@ class AtlasFold_Multimer(torch.nn.Module):
 
         # Load the state dict with the specified strictness
         model.load_state_dict(state_dict, strict=True)
+        for module in model.modules():
+            if hasattr(module, "init_buffers"):
+                module.init_buffers(device=device)
 
         # Finally, load the LM
         dtype = torch.bfloat16 if device.type == "cuda" else torch.float32

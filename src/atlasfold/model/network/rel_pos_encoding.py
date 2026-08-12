@@ -82,7 +82,7 @@ class AtomRelativePositionEncoding(nn.Module):
         self.dim = res_pos_dim + atom_pos_dim  # = 14
         self.init_buffers()
 
-    def init_buffers(self) -> None:
+    def init_buffers(self, device: str | torch.device | None = None) -> None:
         ref_d = np.zeros((21, 14, 14, 4))
         for i, aa in enumerate(residue_constants.restypes):
             aa3 = residue_constants.restype_1to3[aa]
@@ -95,7 +95,9 @@ class AtomRelativePositionEncoding(nn.Module):
             relpos[:, natom:] = 0.0
             ref_d[i] = relpos
         ref_d = ref_d.reshape(21, 14 * 14 * 4)
-        self.register_buffer("atom_rel_pos", torch.from_numpy(ref_d).float())
+        self.register_buffer(
+            "atom_rel_pos", torch.from_numpy(ref_d).float().to(device=device)
+        )
 
     def forward(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         res_idx = batch["res_idx"]  # (B, L)

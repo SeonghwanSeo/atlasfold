@@ -114,9 +114,11 @@ class TemplateModule(torch.nn.Module):
         super().__init__()
         self.channel_z = channel_z
         self.channel_template = channel_template
+        self.num_distogram_bins = num_distogram_bins
+        self.min_dist = min_dist
+        self.max_dist = max_dist
 
-        boundaries = torch.linspace(min_dist, max_dist, num_distogram_bins)
-        self.register_buffer("distogram_boundaries", boundaries, persistent=False)
+        self.init_buffers()
 
         input_dim = (
             num_distogram_bins + 1 + 3 + 1 + 2 * 21
@@ -139,6 +141,17 @@ class TemplateModule(torch.nn.Module):
         )
         self.layernorm_out = LayerNorm(channel_template)
         self.linear_out = LinearNoBias(channel_template, channel_z, init="relu")
+
+    def init_buffers(self, device: str | torch.device | None = None) -> None:
+        """Initialize the template distogram boundaries."""
+        boundaries = torch.linspace(
+            self.min_dist,
+            self.max_dist,
+            self.num_distogram_bins,
+            dtype=torch.float32,
+            device=device,
+        )
+        self.register_buffer("distogram_boundaries", boundaries, persistent=False)
 
     def forward(
         self,

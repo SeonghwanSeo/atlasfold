@@ -536,6 +536,9 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
             del model.lm
         model = model.to_empty(device=device)
         model.load_state_dict(state_dict, strict=strict)
+        for module in model.modules():
+            if hasattr(module, "init_buffers"):
+                module.init_buffers(device=device)
         model.lm = load_model(
             config.lm_name, path=config.lm_path, device=device, dtype=dtype
         )
