@@ -89,6 +89,7 @@ loss:
 
   # Structural violation loss
   violation_loss:
+    style: af_multimer
     bond_angle_weight: 0.3
     clash_overlap_tolerance: 1.5
     violation_tolerance_factor: 12.0

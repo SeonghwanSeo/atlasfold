@@ -17,6 +17,7 @@ CYS_INDEX = rc.restype_orders["C"]
 CYS_SG_INDEX = rc.restype_atom14_order["CYS"]["SG"]
 
 Reduction = Literal["mean", "none"]
+ViolationLossStyle = Literal["af2", "af_multimer"]
 
 
 def _reduce_batch(value: torch.Tensor, reduction: Reduction) -> torch.Tensor:
@@ -608,16 +609,21 @@ def violation_loss(
     bond_angle_weight: float = 0.3,
     clash_overlap_tolerance: float = 1.5,
     violation_tolerance_factor: float = 12.0,
+    style: ViolationLossStyle = "af_multimer",
     eps: float = 1e-6,
     reduction: Reduction = "mean",
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Compute the AF-Multimer structural-violation objective.
+    """Compute the AF2 or AF-Multimer structural-violation objective.
 
-    AF-Multimer averages the steric-clash errors over atom pairs that actually
-    clash. This prevents the initially collapsed structure from producing
-    gradients that scale quadratically with the number of atoms. The peptide
-    bond-angle terms are down-weighted relative to the other terms.
+    AF2 assigns each between-residue clash penalty to both participating atoms
+    and normalizes their sum by the number of atoms. AF-Multimer instead
+    averages over atom pairs that actually clash, preventing an initially
+    collapsed multimer from producing gradients that scale quadratically with
+    its number of atoms.
     """
+
+    if style not in ("af2", "af_multimer"):
+        raise ValueError(f"Unknown violation loss style: {style}")
 
     pos = structure["coords"].float()
     mask = labels["atom14_atom_exists"] & seq_mask.bool().unsqueeze(-1)
@@ -690,10 +696,16 @@ def violation_loss(
     within_error = (F.relu(lower - d) + F.relu(d - upper)) * pair
     per_atom_within_loss = within_error.sum(-1) + within_error.sum(-2)
 
-    # The AFM clash modification applies to non-bonded between-residue pairs.
-    # Within-residue distance-bound violations retain AF2's atom normalization.
-    clash = between_loss_sum / (between_clash_count + eps)
     num_atoms = mask.sum((-1, -2)).clamp(min=1).to(pos.dtype)
+    if style == "af2":
+        # AF2 accumulates every unique pair's error once on each participating
+        # atom, then divides the resulting per-atom sum by the atom count.
+        clash = 2.0 * between_loss_sum / (num_atoms + eps)
+    else:
+        clash = between_loss_sum / (between_clash_count + eps)
+
+    # Within-residue distance-bound violations use AF2's atom normalization in
+    # both styles.
     within = (per_atom_within_loss * mask).sum((-1, -2)) / num_atoms
 
     total = bond + bond_angle_weight * (angle1 + angle2) + clash + within
