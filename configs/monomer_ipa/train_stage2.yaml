@@ -24,6 +24,7 @@ train:
   data:
     max_length: 384
     max_seq_length: 768
+    resample_threshold: 0
     cropper:
       prob_contiguous: 1.0
       prob_multi_contiguous: 0.0

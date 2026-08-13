@@ -28,6 +28,7 @@ class DataModuleConfig:
     # === Training hyperparameters === #
     max_length: int = 256
     max_seq_length: int = 384
+    resample_threshold: int = 4
 
     # === Dataset configs === #
     data_root: str
@@ -74,6 +75,7 @@ class TrainingDataModule(pl.LightningDataModule):
             configs=self.config.train_datasets,
             max_length=self.config.max_length,
             max_seq_length=self.config.max_seq_length,
+            resample_threshold=self.config.resample_threshold,
         )
         # Print dataset info
         for d in multi_ds.datasets:

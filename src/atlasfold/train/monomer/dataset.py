@@ -178,9 +178,9 @@ class LMDBDataset(torch.utils.data.Dataset):
             raise KeyError(f"Key {key} not found in LMDB database.")
         with io.BytesIO(npz_bytes) as f:
             prot = DataPipeline.load(f)
-        # Check if the residue indices are contiguous and start from 1.
-        # For training data preparation, we already complete the missing residues
-        # in PDB files to 'UNK' with 'NaN' coordinates.
+        # Check if explicit residue indices are contiguous and start from 1.
+        # RCSB preprocessing uses the full polymer sequence and leaves unresolved
+        # residues at their actual residue type with NaN coordinates.
         if prot.residue_index is not None:
             if not np.array_equal(prot.residue_index, np.arange(1, len(prot) + 1)):
                 raise NotImplementedError(
@@ -195,14 +195,18 @@ class TrainingDataset(LMDBDataset):
         config: TrainingDatasetConfig,
         max_length: int = 256,
         max_seq_length: int = 384,
+        resample_threshold: int = 4,
     ):
         super().__init__(config)
+        if resample_threshold < 0:
+            raise ValueError("resample_threshold must be non-negative")
         self.config: TrainingDatasetConfig = config
         self.cropper = ProteinCropper(
             prob_spatial=0.6, prob_contiguous=0.2, prob_multi_contiguous=0.2
         )
         self.max_length: int = max_length  # Folding input length limit
         self.max_seq_length: int = max_seq_length  # LM input length limit
+        self.resample_threshold: int = resample_threshold
 
         self.logger = logging.getLogger(f"[Training Dataset:{self.name}]")
 
@@ -282,14 +286,12 @@ class TrainingDataset(LMDBDataset):
     ) -> dict[str, dict[str, torch.Tensor]]:
         while True:
             feat = self.sample_item(index)
-            if feat["label"]["resolved_mask"][:, 1].sum() < 4:
-                # If there are less than 4 resolved residues with C-alpha coordinates,
-                # resample.
+            if feat["label"]["resolved_mask"][:, 1].sum() < self.resample_threshold:
                 metadata_dict = self.metadatas[index]
                 name = metadata_dict["id"]
                 self.logger.warning(
-                    f"Sample {name} ({index}) has less than 4 resolved residues; "
-                    f"resampling."
+                    f"Sample {name} ({index}) has fewer than "
+                    f"{self.resample_threshold} resolved residues; resampling."
                 )
                 index = np.random.choice(len(self))
             else:
@@ -389,8 +391,8 @@ class TrainingDataset(LMDBDataset):
             # If the full sequence fits within the LM input limit, use the entire sequence
             return np.arange(seqlen + 2)
 
-        # NOTE: We assume that there is no missing residue in the input sequence.
-        # We already complete the missing residues to 'UNK' with 'NaN' coordinates.
+        # Crop indices address the full polymer sequence, including unresolved
+        # residues whose coordinates are NaN.
         budget = max_seq_length - len(crop_indices)
 
         # Initialize a boolean mask for the LM input tokens
@@ -496,6 +498,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         configs: list[TrainingDatasetConfig],
         max_length: int = 256,
         max_seq_length: int = 384,
+        resample_threshold: int = 4,
     ) -> None:
         """
         Parameters
@@ -506,9 +509,13 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
             Maximum sequence length for the folding model input (default: 256).
         max_seq_length : int, optional
             Maximum sequence length for the language model input (default: 384).
+        resample_threshold : int, optional
+            Resample crops with fewer than this many resolved C-alpha atoms.
+            A value of zero disables resampling (default: 4).
         """
         self.datasets: list[TrainingDataset] = [
-            TrainingDataset(config, max_length, max_seq_length) for config in configs
+            TrainingDataset(config, max_length, max_seq_length, resample_threshold)
+            for config in configs
         ]
         ds_weights: list[np.ndarray] = [ds.get_sampling_weights() for ds in self.datasets]
         self.weights: np.ndarray = np.concatenate(

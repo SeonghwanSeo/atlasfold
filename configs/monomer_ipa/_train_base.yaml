@@ -25,6 +25,7 @@ data:
   # Training hyperparameters
   max_length: ???
   max_seq_length: ???
+  resample_threshold: 4
   cropper:
     prob_contiguous: 1.0
     prob_multi_contiguous: 0.0

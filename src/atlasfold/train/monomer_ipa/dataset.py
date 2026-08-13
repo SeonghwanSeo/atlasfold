@@ -19,8 +19,9 @@ class TrainingDataset(base.TrainingDataset):
         max_length: int = 256,
         max_seq_length: int = 384,
         cropper_config: CropperConfig | None = None,
+        resample_threshold: int = 4,
     ):
-        super().__init__(config, max_length, max_seq_length)
+        super().__init__(config, max_length, max_seq_length, resample_threshold)
         self.cropper = MonomerIPACropper(cropper_config)
 
     def sample_item(self, index: int) -> dict[str, dict[str, torch.Tensor]]:
@@ -84,13 +85,11 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         max_length: int = 256,
         max_seq_length: int = 384,
         cropper_config: CropperConfig | None = None,
+        resample_threshold: int = 4,
     ) -> None:
         self.datasets = [
             TrainingDataset(
-                config,
-                max_length,
-                max_seq_length,
-                cropper_config,
+                config, max_length, max_seq_length, cropper_config, resample_threshold
             )
             for config in configs
         ]

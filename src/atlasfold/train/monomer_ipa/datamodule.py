@@ -28,6 +28,7 @@ class TrainingDataModule(BaseDataModule):
             max_length=self.config.max_length,
             max_seq_length=self.config.max_seq_length,
             cropper_config=self.cropper_config,
+            resample_threshold=self.config.resample_threshold,
         )
         # Print dataset info
         for d in multi_ds.datasets:
