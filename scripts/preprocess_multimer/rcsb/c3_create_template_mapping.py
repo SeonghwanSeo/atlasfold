@@ -53,19 +53,29 @@ def load_entry_mapping(
     with np.load(path, allow_pickle=True) as data:
         for template_id in data.files:
             info = data[template_id].item()
-            if np.max(info["idx_map"]) > 65535:
+            raw_idx_map = np.asarray(info["idx_map"])
+            if raw_idx_map.ndim != 2 or raw_idx_map.shape[1] != 2:
                 raise ValueError(
-                    f"{path}:{template_id} has idx_map values exceeding 65535."
+                    f"{path}:{template_id} has invalid idx_map shape "
+                    f"{raw_idx_map.shape}"
                 )
-            idx_map = np.asarray(info["idx_map"], dtype=np.uint16)
-            if idx_map.ndim != 2 or idx_map.shape[1] != 2:
+            if raw_idx_map.shape[0] == 0:
+                continue
+            if not np.issubdtype(raw_idx_map.dtype, np.integer):
                 raise ValueError(
-                    f"{path}:{template_id} has invalid idx_map shape {idx_map.shape}"
+                    f"{path}:{template_id} idx_map must contain integer indices."
                 )
-            if idx_map.size > 0 and idx_map.min() < 1:
+            min_index = int(raw_idx_map.min())
+            max_index = int(raw_idx_map.max())
+            if min_index < 1:
                 raise ValueError(
                     f"{path}:{template_id} idx_map is expected to be 1-based."
                 )
+            if max_index > np.iinfo(np.uint16).max:
+                raise ValueError(
+                    f"{path}:{template_id} has idx_map values exceeding 65535."
+                )
+            idx_map = raw_idx_map.astype(np.uint16)
             release_date = str(info["release_date"])
             if datetime.fromisoformat(release_date) > max_template_release_date:
                 continue

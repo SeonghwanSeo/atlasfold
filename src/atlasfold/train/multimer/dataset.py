@@ -30,6 +30,9 @@ class MultimerDataPipeline:
         data = {}
         data["name"] = np.array([compl.name], dtype="S")
         data["num_chains"] = np.array([compl.num_chains], dtype=np.int64)
+        data["entity_ids"] = np.asarray(compl.entity_ids, dtype=np.int64)
+        data["asym_ids"] = np.asarray(compl.asym_ids, dtype=np.int64)
+        data["sym_ids"] = np.asarray(compl.sym_ids, dtype=np.int64)
         for i, c in enumerate(compl.chains):
             c_dict = MonomerDataPipeline._to_arr_dict(c)
             for k, v in c_dict.items():
@@ -42,9 +45,12 @@ class MultimerDataPipeline:
         with np.load(path) as data:
             name = data["name"].item().decode("utf-8")
             num_chains = data["num_chains"].item()
+            entity_ids = data["entity_ids"].tolist() if "entity_ids" in data else []
+            asym_ids = data["asym_ids"].tolist() if "asym_ids" in data else []
+            sym_ids = data["sym_ids"].tolist() if "sym_ids" in data else []
             chain_dicts = defaultdict(dict)
             for key in data.files:
-                if key in ["name", "num_chains"]:
+                if key in ["name", "num_chains", "entity_ids", "asym_ids", "sym_ids"]:
                     continue
                 assert "." in key
                 idx_str, field = key.split(".", 1)
@@ -56,7 +62,13 @@ class MultimerDataPipeline:
                 for i in range(num_chains)
             ]
 
-        return protein.ProteinMultimer(name=name, chains=chains)
+        return protein.ProteinMultimer(
+            name=name,
+            chains=chains,
+            entity_ids=entity_ids,
+            asym_ids=asym_ids,
+            sym_ids=sym_ids,
+        )
 
 
 def pad_input(
@@ -298,13 +310,32 @@ class LMDBDataset(torch.utils.data.Dataset):
         mapping_key: str | None,
     ) -> dict[str, np.ndarray]:
         """Prepare fixed-size template slots for one query chain."""
-        hits = (
-            []
-            if mapping_key is None
-            else self.fetch_template_hits(mapping_key)[: self.max_templates]
+        hits = [] if mapping_key is None else self.fetch_template_hits(mapping_key)
+        template_features = self.collect_template_features(
+            chain,
+            mapping_key,
+            hits,
+            max_features=self.max_templates,
         )
+
+        return template_utils.pack_template_features(
+            template_features,
+            num_templates=self.max_templates,
+            query_length=len(chain),
+        )
+
+    def collect_template_features(
+        self,
+        chain: protein.Protein,
+        mapping_key: str | None,
+        hits: list[dict],
+        max_features: int,
+    ) -> list[dict[str, np.ndarray]]:
+        """Load valid template hits until the requested number of slots is filled."""
         template_features: list[dict[str, np.ndarray]] = []
         for hit_dict in hits:
+            if len(template_features) >= max_features:
+                break
             hit = template_utils.TemplateHit.from_dict(hit_dict)
             try:
                 template = self.fetch_template(hit.template_id)
@@ -322,12 +353,7 @@ class LMDBDataset(torch.utils.data.Dataset):
                     query_length=len(chain),
                 )
             )
-
-        return template_utils.pack_template_features(
-            template_features,
-            num_templates=self.max_templates,
-            query_length=len(chain),
-        )
+        return template_features
 
     def should_skip_template_hit(
         self,
@@ -657,31 +683,28 @@ class TrainingDataset(LMDBDataset):
         if hits and rng.random() < self.template_prob:
             max_selected = min(len(hits), self.max_templates)
             num_selected = int(rng.integers(1, max_selected + 1))
-            selected_indices = np.sort(
-                rng.choice(len(hits), size=num_selected, replace=False)
-            )
-            hits = [hits[i] for i in selected_indices]
+            candidate_indices = rng.permutation(len(hits))
+            selected_features: list[tuple[int, dict[str, np.ndarray]]] = []
+            for hit_index in candidate_indices:
+                features = self.collect_template_features(
+                    chain,
+                    mapping_key,
+                    [hits[hit_index]],
+                    max_features=1,
+                )
+                if features:
+                    selected_features.append((int(hit_index), features[0]))
+                if len(selected_features) >= num_selected:
+                    break
+            template_features = [
+                feature
+                for _, feature in sorted(
+                    selected_features,
+                    key=lambda item: item[0],
+                )
+            ]
         else:
-            hits = []
-        template_features: list[dict[str, np.ndarray]] = []
-        for hit_dict in hits:
-            hit = template_utils.TemplateHit.from_dict(hit_dict)
-            try:
-                template = self.fetch_template(hit.template_id)
-            except KeyError:
-                self.logger.warning(
-                    f"Template {hit.template_id} for {mapping_key} not found; skipping."
-                )
-                continue
-            if self.should_skip_template_hit(chain, template, hit, mapping_key):
-                continue
-            template_features.append(
-                template_utils.featurize_aligned_template(
-                    template,
-                    hit,
-                    query_length=len(chain),
-                )
-            )
+            template_features = []
 
         return template_utils.pack_template_features(
             template_features,

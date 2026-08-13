@@ -18,6 +18,8 @@ rsync -rlpt -v -z --delete --port=33444 rsync.rcsb.org::ftp_data/structures/divi
 
 Execute the scripts sequentially to prepare the dataset.
 
+When changing structure filtering, chain clustering, or the multimer NPZ schema, write the regenerated dataset to a fresh data root. The structure processor treats an existing `.npz`/`.json` pair as complete and will not overwrite it. Template structure files (`template.lmdb` and `template_manifest.msgpack`) are independent of the RCSB split and can be reused, but `template_mapping.lmdb` must be rebuilt from the new `manifest.msgpack`.
+
 ### 1. Extract Sequences
 Extract protein entity sequences from mmCIF files to prepare for clustering. This script filters entries by release date (default: ≤ 2021-09-30).
 
@@ -120,6 +122,8 @@ python d2_construct_val_lmdb.py \
     --data_dir /path/to/data/root/ \
     --size_gb 64
 ```
+
+To preserve an existing validation PDB-key set while rebuilding its structures and metadata, add `--validation_ids_file /path/to/validation_ids.txt` to Step 9-2. The command fails if any fixed key is absent from the regenerated candidates or no longer passes the validation filters.
 
 ## Dataset Structure
 After preprocessing, your data directory will look like this:

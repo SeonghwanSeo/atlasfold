@@ -11,7 +11,8 @@ import msgpack
 import numpy as np
 from tqdm import tqdm
 
-from atlasfold.common import metadata, protein
+from atlasfold.common import metadata
+from atlasfold.train.monomer.dataset import DataPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def process_metadata(npz_path: pathlib.Path) -> tuple[str, dict | None, bool]:
     """Worker function to parse the monomer and extract metadata."""
     entry_id = npz_path.stem
     try:
-        prot = protein.Protein.load_npz(npz_path)
+        prot = DataPipeline.load(npz_path)
     except Exception as e:
         return npz_path.name, {"error": str(e)}, False
 

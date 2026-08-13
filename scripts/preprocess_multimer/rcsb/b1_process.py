@@ -153,12 +153,11 @@ def validate_geometry(prot: protein.Protein) -> bool:
         logger.debug(f"{prot.name} marked invalid due to insufficient resolved CA atoms.")
         return False
 
-    resolved_coords = ca_coords[is_resolved]
-    if len(resolved_coords) > 1:
-        dists = np.linalg.norm(resolved_coords[:-1] - resolved_coords[1:], axis=-1)
-        if np.any(dists > 10.0):
-            logger.debug(f"{prot.name} marked invalid due to CA trace discontinuity.")
-            return False
+    adjacent_resolved = is_resolved[:-1] & is_resolved[1:]
+    dists = np.linalg.norm(ca_coords[:-1] - ca_coords[1:], axis=-1)
+    if np.any(dists[adjacent_resolved] > 10.0):
+        logger.debug(f"{prot.name} marked invalid due to CA trace discontinuity.")
+        return False
     return True
 
 
@@ -276,9 +275,9 @@ def filter_clashing_chains(
                 elif clash_ratio_i < clash_ratio_j:
                     remove_i = j
                 elif n_atoms_i > n_atoms_j:
-                    remove_i = i
-                elif n_atoms_i < n_atoms_j:
                     remove_i = j
+                elif n_atoms_i < n_atoms_j:
+                    remove_i = i
                 else:
                     asym_i = chain_metadatas[i].asym_id or i
                     asym_j = chain_metadatas[j].asym_id or j

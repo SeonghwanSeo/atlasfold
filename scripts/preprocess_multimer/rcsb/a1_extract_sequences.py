@@ -110,6 +110,7 @@ def main():
     args = parse_args()
     cif_dir: pathlib.Path = args.cif_dir
     data_dir: pathlib.Path = args.data_dir / "rcsb_multimer/"
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     cif_paths = sorted(cif_dir.rglob("*.cif.gz"))
     print(f"Found {len(cif_paths)} mmCIF files to process.")

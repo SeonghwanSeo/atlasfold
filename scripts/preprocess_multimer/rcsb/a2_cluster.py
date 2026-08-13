@@ -28,6 +28,45 @@ def parse_args():
     return args
 
 
+def cluster_sequences(
+    sequences: list[tuple[str, str]],
+    mmseqs: str,
+) -> dict[str, str]:
+    """Cluster proteins, using exact sequence identity below 10 residues."""
+    long_sequence_to_repr: dict[str, str] = {}
+    short_sequence_to_repr: dict[str, str] = {}
+    for entity_id, sequence in sorted(sequences):
+        sequence_to_repr = (
+            long_sequence_to_repr if len(sequence) >= 10 else short_sequence_to_repr
+        )
+        sequence_to_repr.setdefault(sequence, entity_id)
+
+    long_sequences = sorted(
+        (repr_id, sequence) for sequence, repr_id in long_sequence_to_repr.items()
+    )
+    if long_sequences:
+        long_clusters = run_mmseqs2_cluster(
+            long_sequences,
+            min_sequence_identity=0.4,
+            coverage=0.8,
+            coverage_mode=0,
+            verbose=1,
+            print_cmd=True,
+            mmseqs2_exec=mmseqs,
+        )
+    else:
+        long_clusters = {}
+
+    sequence_to_cluster = {
+        sequence: long_clusters[repr_id]
+        for sequence, repr_id in long_sequence_to_repr.items()
+    }
+    sequence_to_cluster.update(short_sequence_to_repr)
+    return {
+        entity_id: sequence_to_cluster[sequence] for entity_id, sequence in sequences
+    }
+
+
 def main():
     """Main function to construct RCSB training set."""
     args = parse_args()
@@ -42,15 +81,7 @@ def main():
     print("Starting sequence clustering...")
     # Perform clustering using MMseqs2
     print()
-    entity_id_to_repr_id: dict[str, str] = run_mmseqs2_cluster(
-        sequences,
-        min_sequence_identity=0.4,
-        coverage=0.8,
-        coverage_mode=0,
-        verbose=1,
-        print_cmd=True,
-        mmseqs2_exec=args.mmseqs,
-    )
+    entity_id_to_repr_id = cluster_sequences(sequences, args.mmseqs)
     print("Total clusters: ", len(set(entity_id_to_repr_id.values())))
 
     entity_id_to_sequence: dict[str, str] = dict(sequences)

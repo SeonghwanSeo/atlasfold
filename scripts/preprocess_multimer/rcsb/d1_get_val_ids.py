@@ -383,6 +383,14 @@ def parse_args():
         default=len(os.sched_getaffinity(0)),
         help="Number of parallel workers used to read candidate entries.",
     )
+    parser.add_argument(
+        "--validation_ids_file",
+        type=pathlib.Path,
+        help=(
+            "Optional existing validation_ids.txt to preserve the validation "
+            "PDB keys while rebuilding structures and metadata."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -411,7 +419,6 @@ def main():
             )
         )
 
-    entry_by_id = {entry.pdb_id: entry for entry in entries}
     candidate_entries = [
         entry
         for entry in entries
@@ -420,34 +427,55 @@ def main():
         and len(entry.interfaces) > 0
     ]
 
-    interfaces: list[Interface] = []
-    for entry in candidate_entries:
-        interfaces.extend(entry.interfaces)
-    interfaces.sort(key=lambda iface: iface.id)
-
     print(f"Total entries read: {len(entries)}")
     print(f"Candidate entries after size/interface filtering: {len(candidate_entries)}")
-    print(f"Total protein-protein interfaces collected: {len(interfaces)}")
 
-    sampled_interfaces = filter_multimer_interfaces(
-        all_interfaces=interfaces,
-        train_sequences=train_sequences,
-        mmseqs=args.mmseqs,
-        sequence_identity=SEQUENCE_IDENTITY_THRESHOLD,
-    )
-
-    sampled_ids = sorted({interface.pdb_id for interface in sampled_interfaces})
-    if len(sampled_ids) > FINAL_VALIDATION_SET_SIZE:
-        sampled_indices = get_rng("final").choice(
-            len(sampled_ids), size=FINAL_VALIDATION_SET_SIZE, replace=False
+    candidate_by_id = {entry.pdb_id: entry for entry in candidate_entries}
+    if args.validation_ids_file is not None:
+        with open(args.validation_ids_file) as f:
+            val_ids = [line.strip().lower() for line in f if line.strip()]
+        if len(val_ids) != len(set(val_ids)):
+            raise ValueError(
+                f"Duplicate PDB IDs found in {args.validation_ids_file}."
+            )
+        missing_ids = [pdb_id for pdb_id in val_ids if pdb_id not in candidate_by_id]
+        if missing_ids:
+            examples = ", ".join(missing_ids[:10])
+            raise ValueError(
+                f"{len(missing_ids)} fixed validation IDs are missing or fail the "
+                f"validation candidate filters. Examples: {examples}"
+            )
+        print(
+            f"Using {len(val_ids)} fixed validation PDB IDs from "
+            f"{args.validation_ids_file}."
         )
-        val_ids = [sampled_ids[idx] for idx in sorted(sampled_indices)]
     else:
-        val_ids = sampled_ids
+        interfaces: list[Interface] = []
+        for entry in candidate_entries:
+            interfaces.extend(entry.interfaces)
+        interfaces.sort(key=lambda iface: iface.id)
+        print(f"Total protein-protein interfaces collected: {len(interfaces)}")
 
-    print("\nValidation Set Final Summary")
-    print(f"Sampled interfaces: {len(sampled_interfaces)}")
-    print(f"Sampled entries: {len(sampled_ids)}")
+        sampled_interfaces = filter_multimer_interfaces(
+            all_interfaces=interfaces,
+            train_sequences=train_sequences,
+            mmseqs=args.mmseqs,
+            sequence_identity=SEQUENCE_IDENTITY_THRESHOLD,
+        )
+
+        sampled_ids = sorted({interface.pdb_id for interface in sampled_interfaces})
+        if len(sampled_ids) > FINAL_VALIDATION_SET_SIZE:
+            sampled_indices = get_rng("final").choice(
+                len(sampled_ids), size=FINAL_VALIDATION_SET_SIZE, replace=False
+            )
+            val_ids = [sampled_ids[idx] for idx in sorted(sampled_indices)]
+        else:
+            val_ids = sampled_ids
+
+        print("\nValidation Set Final Summary")
+        print(f"Sampled interfaces: {len(sampled_interfaces)}")
+        print(f"Sampled entries: {len(sampled_ids)}")
+
     print(f"Final entries: {len(val_ids)}")
 
     val_dir.mkdir(parents=True, exist_ok=True)
@@ -457,7 +485,7 @@ def main():
             f.write(f"{pdb_id}\n")
     print(f"Validation set PDB IDs saved to: {val_ids_path}")
 
-    selected_entries = [entry_by_id[pdb_id] for pdb_id in val_ids]
+    selected_entries = [candidate_by_id[pdb_id] for pdb_id in val_ids]
     metadatas = mark_low_homology(
         selected_entries,
         train_sequences=train_sequences,
