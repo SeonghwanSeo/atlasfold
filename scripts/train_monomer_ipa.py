@@ -37,7 +37,6 @@ ATLASFOLD_INIT_MODULES = (
     "proj_s_lm",
     "proj_z_lm",
     "main_stack",
-    "distogram_head",
 )
 
 

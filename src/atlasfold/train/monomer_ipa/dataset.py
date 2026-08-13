@@ -7,7 +7,7 @@ import torch
 
 from atlasfold.common import featurize, metadata
 from atlasfold.train.monomer import dataset as base
-from atlasfold.train.monomer_ipa.cropper import MonomerIPACropper
+from atlasfold.train.monomer_ipa.cropper import CropperConfig, MonomerIPACropper
 
 
 class TrainingDataset(base.TrainingDataset):
@@ -18,10 +18,10 @@ class TrainingDataset(base.TrainingDataset):
         config: base.TrainingDatasetConfig,
         max_length: int = 256,
         max_seq_length: int = 384,
-        unclamped_fape_probability: float = 0.1,
+        cropper_config: CropperConfig | None = None,
     ):
         super().__init__(config, max_length, max_seq_length)
-        self.cropper = MonomerIPACropper(unclamped_fape_probability)
+        self.cropper = MonomerIPACropper(cropper_config)
 
     def sample_item(self, index: int) -> dict[str, dict[str, torch.Tensor]]:
         # Create a random number generator without a fixed seed.
@@ -83,14 +83,14 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         configs: list[base.TrainingDatasetConfig],
         max_length: int = 256,
         max_seq_length: int = 384,
-        unclamped_fape_probability: float = 0.1,
+        cropper_config: CropperConfig | None = None,
     ) -> None:
         self.datasets = [
             TrainingDataset(
                 config,
                 max_length,
                 max_seq_length,
-                unclamped_fape_probability,
+                cropper_config,
             )
             for config in configs
         ]

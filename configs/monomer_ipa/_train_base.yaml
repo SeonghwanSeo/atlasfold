@@ -25,7 +25,12 @@ data:
   # Training hyperparameters
   max_length: ???
   max_seq_length: ???
-  unclamped_fape_probability: 0.1
+  cropper:
+    prob_contiguous: 1.0
+    prob_multi_contiguous: 0.0
+    unclamped_fape_probability: 0.1
+    max_num_segments: 4
+    min_segment_length: 64
 
   # DataLoader
   batch_size: 1

@@ -125,12 +125,16 @@ class TrainingDatasetConfig(DatasetConfig):
         i.e., using predicted structures as labels.
     sampling_strategy: str
         Strategy for sampling training examples.
+    residue_plddt_threshold: float | None
+        Minimum per-residue pLDDT for using distillation coordinates as labels.
+        The pLDDT is read from the per-atom B-factor field. Disabled by default.
     """
 
     weight: float
     is_distillation: bool = True
     filters: list[dict] = dataclasses.field(default_factory=list)
     sampling_strategy: tuple[str, ...] = ("length",)
+    residue_plddt_threshold: float | None = None
 
 
 @dataclasses.dataclass(slots=True, kw_only=True)
@@ -206,6 +210,9 @@ class TrainingDataset(LMDBDataset):
         for strategy in config.sampling_strategy:
             if strategy not in ("length", "cluster", "plddt"):
                 raise ValueError(f"Invalid sampling strategy: {strategy}")
+        plddt_threshold = config.residue_plddt_threshold
+        if plddt_threshold is not None and not 0.0 <= plddt_threshold <= 100.0:
+            raise ValueError("residue_plddt_threshold must be between 0 and 100")
         self.filters = config.filters
         for filter_info in config.filters:
             if filter_info["type"] not in ("resolution", "plddt"):
@@ -342,6 +349,17 @@ class TrainingDataset(LMDBDataset):
         # Extract the coordinates and the mask for resolved residues.
         coords = prot.coordinates  # [L, 14, 3]
         resolved_mask = np.isfinite(coords).all(axis=-1)  # [L, 14]
+        plddt_threshold = self.config.residue_plddt_threshold
+        if self.config.is_distillation and plddt_threshold is not None:
+            # AF2/OpenFold distillation convention: pLDDT is stored per atom in the
+            # B-factor field, and a residue is supervised if any atom is above the
+            # confidence threshold. Low-confidence residues remain model inputs but
+            # are excluded from coordinate-derived losses via resolved_mask.
+            high_confidence = np.any(
+                prot.b_factors > plddt_threshold,
+                axis=-1,
+            )
+            resolved_mask &= high_confidence[:, None]
         coords = np.nan_to_num(coords, nan=0.0)
         coords = do_centering_atom14(coords, resolved_mask, mask_to_zero=True)
         return {"coordinates": coords, "resolved_mask": resolved_mask}
