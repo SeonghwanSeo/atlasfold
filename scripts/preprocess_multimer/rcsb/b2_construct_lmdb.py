@@ -24,13 +24,19 @@ def parse_args():
         default=1000,
         help="LMDB map size in GB.",
     )
+    parser.add_argument(
+        "--all_assemblies",
+        action="store_true",
+        help="Read and write rcsb_multimer_assembly instead of rcsb_multimer.",
+    )
     args = parser.parse_args()
     return args
 
 
 def main():
     args = parse_args()
-    data_dir: pathlib.Path = args.data_dir / "rcsb_multimer"
+    dataset_name = "rcsb_multimer_assembly" if args.all_assemblies else "rcsb_multimer"
+    data_dir: pathlib.Path = args.data_dir / dataset_name
     npz_dir: pathlib.Path = data_dir / "npz"
 
     print("Creating LMDB database...")

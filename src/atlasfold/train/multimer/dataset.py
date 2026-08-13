@@ -1,8 +1,10 @@
 import dataclasses
 import io
 import logging
+import math
 import pathlib
 import pickle
+import re
 from collections import defaultdict
 from typing import Any
 
@@ -255,9 +257,21 @@ class LMDBDataset(torch.utils.data.Dataset):
     def fetch_template_hits(self, chain_id: str) -> list[dict]:
         with self.template_mapping_lmdb_env.begin() as txn:
             value = txn.get(chain_id.encode())
+            if value is None:
+                base_key = self.get_base_template_mapping_key(chain_id)
+                if base_key is not None:
+                    value = txn.get(base_key.encode())
         if value is None:
             return []
         return pickle.loads(value)
+
+    @staticmethod
+    def get_base_template_mapping_key(chain_id: str) -> str | None:
+        """Map an all-assembly entity key back to its base-PDB entity key."""
+        match = re.fullmatch(r"(.+)-assembly\d+_(\d+)", chain_id)
+        if match is None:
+            return None
+        return f"{match.group(1)}_{match.group(2)}"
 
     @staticmethod
     def get_template_mapping_key(
@@ -902,6 +916,24 @@ class TrainingDataset(LMDBDataset):
 class RCSBTrainingDataset(TrainingDataset):
     """Training dataset for RCSB PDB"""
 
+    @staticmethod
+    def get_assembly_sampling_weight(m_dict: dict) -> float:
+        """Return the uniform-within-PDB assembly sampling correction."""
+        num_assemblies = int(m_dict.get("num_assemblies", 1))
+        if num_assemblies < 1:
+            raise ValueError(
+                "num_assemblies must be >= 1, got "
+                f"{num_assemblies} for {m_dict.get('id')}."
+            )
+        expected_weight = 1.0 / num_assemblies
+        stored_weight = float(m_dict.get("assembly_sampling_weight", expected_weight))
+        if not math.isclose(stored_weight, expected_weight, rel_tol=1e-9):
+            raise ValueError(
+                "assembly_sampling_weight must equal 1 / num_assemblies, got "
+                f"{stored_weight} and {num_assemblies} for {m_dict.get('id')}."
+            )
+        return expected_weight
+
     def __init__(
         self,
         config: TrainingDatasetConfig,
@@ -923,12 +955,17 @@ class RCSBTrainingDataset(TrainingDataset):
         samples: list[tuple[dict, int | tuple[int, int]]] = []
         weights: list[float] = []
         for m_dict in self.metadatas:
+            assembly_weight = self.get_assembly_sampling_weight(m_dict)
             for c_i, cm in enumerate(m_dict["chains"]):
                 samples.append((m_dict, c_i))
-                weights.append(1.0 / (cm.get("cluster_size", 1) or 1) * chain_weights)
+                weights.append(
+                    assembly_weight / (cm.get("cluster_size", 1) or 1) * chain_weights
+                )
             for im in m_dict["interfaces"]:
                 samples.append((m_dict, tuple(im["chain_ids"])))
-                weights.append(1.0 / (im.get("cluster_size", 1) or 1) * interface_weights)
+                weights.append(
+                    assembly_weight / (im.get("cluster_size", 1) or 1) * interface_weights
+                )
         self.samples = samples
         self.weights = np.array(weights, dtype=np.float32)
 

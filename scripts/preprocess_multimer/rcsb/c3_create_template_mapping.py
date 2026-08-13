@@ -36,6 +36,11 @@ def parse_args():
         default=len(os.sched_getaffinity(0)),
         help="Number of parallel workers.",
     )
+    parser.add_argument(
+        "--all_assemblies",
+        action="store_true",
+        help="Build mappings for rcsb_multimer_assembly instead of rcsb_multimer.",
+    )
     args = parser.parse_args()
     return args
 
@@ -56,8 +61,7 @@ def load_entry_mapping(
             raw_idx_map = np.asarray(info["idx_map"])
             if raw_idx_map.ndim != 2 or raw_idx_map.shape[1] != 2:
                 raise ValueError(
-                    f"{path}:{template_id} has invalid idx_map shape "
-                    f"{raw_idx_map.shape}"
+                    f"{path}:{template_id} has invalid idx_map shape {raw_idx_map.shape}"
                 )
             if raw_idx_map.shape[0] == 0:
                 continue
@@ -99,14 +103,21 @@ def load_entry_mapping(
 
 def load_manifest_entity_key_map(
     manifest_path: pathlib.Path,
-) -> dict[str, tuple[str, int, datetime]]:
-    """Return source chain id -> ({pdb_id}_{entity_id}, num_residues, cutoff)."""
+) -> dict[str, tuple[str, str, int, datetime]]:
+    """Return chain id -> (output key, source key, length, cutoff).
+
+    All-assembly examples use an output key such as
+    ``1abc-assembly2_1`` while reusing template-hit metadata from ``1abc_1``.
+    """
     with open(manifest_path, "rb") as f:
         metadatas = msgpack.unpackb(f.read(), raw=False)
 
-    chain_id_to_entity_key: dict[str, tuple[str, int, datetime]] = {}
+    chain_id_to_entity_key: dict[str, tuple[str, str, int, datetime]] = {}
     for metadata in metadatas:
         pdb_id = str(metadata["id"]).lower()
+        source_pdb_id = str(
+            metadata.get("pdb_id", pdb_id.split("-assembly", 1)[0])
+        ).lower()
         entry_release_date = datetime.fromisoformat(metadata["exp"]["release_date"])
         max_template_release_date = entry_release_date - timedelta(days=60)
         for chain in metadata["chains"]:
@@ -116,8 +127,10 @@ def load_manifest_entity_key_map(
                 logger.warning(f"Missing entity_id for manifest chain {chain_id}.")
                 continue
             entity_key = f"{pdb_id}_{int(entity_id)}"
+            source_entity_key = f"{source_pdb_id}_{int(entity_id)}"
             chain_id_to_entity_key[chain_id] = (
                 entity_key,
+                source_entity_key,
                 int(chain["num_residues"]),
                 max_template_release_date,
             )
@@ -139,7 +152,7 @@ def load_template_lengths(data_dir: pathlib.Path) -> dict[str, int]:
 
 def select_mapping_paths(
     metadata_paths: list[pathlib.Path],
-    chain_id_to_entity_key: dict[str, tuple[str, int, datetime]],
+    chain_id_to_entity_key: dict[str, tuple[str, str, int, datetime]],
 ) -> tuple[list[tuple[pathlib.Path, str, int, datetime]], int]:
     path_by_chain_id = {path.stem: path for path in metadata_paths}
     path_by_chain_id.update({path.stem.lower(): path for path in metadata_paths})
@@ -149,13 +162,15 @@ def select_mapping_paths(
     missing_count = 0
     for (
         chain_id,
-        (entity_key, query_length, max_template_release_date),
+        (entity_key, source_entity_key, query_length, max_template_release_date),
     ) in chain_id_to_entity_key.items():
         path = (
             path_by_chain_id.get(chain_id)
             or path_by_chain_id.get(chain_id.lower())
             or path_by_chain_id.get(entity_key)
             or path_by_chain_id.get(entity_key.lower())
+            or path_by_chain_id.get(source_entity_key)
+            or path_by_chain_id.get(source_entity_key.lower())
         )
         if path is None:
             missing_count += 1
@@ -172,10 +187,17 @@ def select_mapping_paths(
     manifest_chain_ids = set(chain_id_to_entity_key)
     manifest_chain_ids_lower = {chain_id.lower() for chain_id in manifest_chain_ids}
     manifest_entity_keys = {
-        entity_key for entity_key, _, _ in chain_id_to_entity_key.values()
+        entity_key for entity_key, _, _, _ in chain_id_to_entity_key.values()
+    }
+    manifest_source_entity_keys = {
+        source_entity_key
+        for _, source_entity_key, _, _ in chain_id_to_entity_key.values()
     }
     manifest_entity_keys_lower = {
         entity_key.lower() for entity_key in manifest_entity_keys
+    }
+    manifest_source_entity_keys_lower = {
+        entity_key.lower() for entity_key in manifest_source_entity_keys
     }
     extra_paths = [
         path
@@ -184,6 +206,8 @@ def select_mapping_paths(
         and path.stem.lower() not in manifest_chain_ids_lower
         and path.stem not in manifest_entity_keys
         and path.stem.lower() not in manifest_entity_keys_lower
+        and path.stem not in manifest_source_entity_keys
+        and path.stem.lower() not in manifest_source_entity_keys_lower
     ]
     if extra_paths:
         examples = ", ".join(path.stem for path in extra_paths[:5])
@@ -222,7 +246,8 @@ def clear_lmdb(txn: lmdb.Transaction) -> None:
 
 def main():
     args = parse_args()
-    data_dir = args.data_dir / "rcsb_multimer/"
+    dataset_name = "rcsb_multimer_assembly" if args.all_assemblies else "rcsb_multimer"
+    data_dir = args.data_dir / dataset_name
     data_dir.mkdir(parents=True, exist_ok=True)
 
     metadata_paths = sorted(args.metadata_dir.glob("*.npz"))

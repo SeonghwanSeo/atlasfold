@@ -69,6 +69,11 @@ def parse_args():
         action="store_true",
         help="Recompute chain/interface cluster sizes after filtering.",
     )
+    parser.add_argument(
+        "--all_assemblies",
+        action="store_true",
+        help="Filter rcsb_multimer_assembly instead of rcsb_multimer.",
+    )
     args = parser.parse_args()
     return args
 
@@ -178,7 +183,8 @@ def recompute_cluster_sizes(manifest: list[dict[str, Any]]) -> None:
 
 def main():
     args = parse_args()
-    data_dir = args.data_dir / "rcsb_multimer"
+    dataset_name = "rcsb_multimer_assembly" if args.all_assemblies else "rcsb_multimer"
+    data_dir = args.data_dir / dataset_name
     max_release_date = parse_max_release_date(args.max_release_date)
 
     print("Loading metadata...")

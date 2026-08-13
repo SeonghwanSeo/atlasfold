@@ -40,7 +40,7 @@ python a2_cluster.py \
 ```
 
 ### 3. Process Structures
-Perform detailed processing of mmCIF files, including biological assembly expansion, geometry validation, all-atom clash filtering, interface detection, and filtering (resolution ≤ 9.0Å for train). Assemblies with more than 20 valid protein chains are reduced to the closest 20 chains around a sampled interface/contact seed, following the AF3 SI 2.5.4 subcomplex extraction idea. This step uses the cluster information for train and saves one complex-level `.npz` and `.json` metadata file per PDB entry.
+Perform detailed processing of mmCIF files, including biological assembly expansion, geometry validation, all-atom clash filtering, interface detection, and filtering (resolution ≤ 9.0Å for train). Following AlphaFold-Multimer, an entire example is rejected when one amino-acid type accounts for more than 80% of the concatenated complex sequence; this is distinct from the per-chain minimum length and geometry checks. Assemblies with more than 20 valid protein chains are reduced to the closest 20 chains around a sampled interface/contact seed, following the AF3 SI 2.5.4 subcomplex extraction idea. This step uses the cluster information for train and normally saves one complex-level `.npz` and `.json` metadata file per PDB entry.
 
 ```bash
 python b1_process.py \
@@ -48,6 +48,17 @@ python b1_process.py \
     --data_dir /path/to/data/root/ \
     --split train \
     --num_workers 16
+```
+
+To materialize every biological assembly, following the AlphaFold-Multimer data source while making the normally uniform assembly choice explicit, add `--all_assemblies`. This mode writes to `rcsb_multimer_assembly/`, so it can coexist with the regular `rcsb_multimer/` output. It reuses the entity clusters from `rcsb_multimer/rcsb_clusters.csv` when the assembly directory does not yet contain a cluster file. Outputs are named `<pdb>-assembly1`, `<pdb>-assembly2`, and so on. Entries without an assembly definition use their asymmetric unit as `assembly1`. Metadata records the base `pdb_id`, assembly identifier/name/count, and `assembly_sampling_weight=1/num_assemblies`; `RCSBTrainingDataset` applies this factor when constructing chain/interface sampling weights. The processor also writes `assembly_processing_audit.jsonl` and `assembly_processing_summary.json`, including chain quality, all-atom clash, severe-clash chain removal, and subcomplex-extraction counts and rates.
+
+```bash
+python b1_process.py \
+    --cif_dir /raw_data/RCSB/mmCIF \
+    --data_dir /path/to/data/root/ \
+    --split train \
+    --all_assemblies \
+    --num_workers 64
 ```
 
 ### 4. Construct LMDB Database
@@ -59,6 +70,8 @@ python b2_construct_lmdb.py \
     --size_gb 500
 ```
 
+Add `--all_assemblies` to construct the LMDB and manifest under `rcsb_multimer_assembly/`.
+
 ### 5. Filter for Confidence Head Training
 Create a specialized manifest for confidence-head training by filtering complex-level metadata to high-resolution experimental structures (default: 0.1Å to 3.0Å). The script also keeps lightweight AF3/RCSB manifest guards for release date, chain count, and minimum chain length; the expensive bioassembly filters are already applied during Step 3.
 
@@ -69,6 +82,8 @@ python b3_filter.py \
     --min_resolution 0.1 \
     --max_resolution 3.0
 ```
+
+Add `--all_assemblies` to filter the assembly manifest.
 
 ### 6. Process Template Structures
 Convert raw template chain `.npz` files into AtlasFold monomer atom14 `.npz` files that can be loaded by `MonomerDataPipeline`.
@@ -90,7 +105,7 @@ python c2_construct_template_lmdb.py \
 ```
 
 ### 8. Create Entry-Template Mapping
-Convert per-entry template-hit metadata into an LMDB mapping keyed by `{pdb_id}_{entity_id}` from `manifest.msgpack`. Only templates released at least 60 days before the entry release date are kept. The source `idx_map` is treated as 1-based and exposed as explicit `entry_indices` and `template_indices` fields.
+Convert per-entry template-hit metadata into an LMDB mapping keyed by `{pdb_id}_{entity_id}` from `manifest.msgpack`. For all-assembly IDs, the output mapping key includes `-assemblyN`, while the source hit metadata is reused from the base PDB entity. Only templates released at least 60 days before the entry release date are kept. The source `idx_map` is treated as 1-based and exposed as explicit `entry_indices` and `template_indices` fields.
 
 ```bash
 python c3_create_template_mapping.py \
@@ -99,6 +114,8 @@ python c3_create_template_mapping.py \
     --num_workers 16 \
     --size_gb 64
 ```
+
+Add `--all_assemblies` to build assembly-specific output mapping keys. The processed template structures themselves are assembly-independent and can be reused or symlinked from `rcsb_multimer/`.
 
 ### 9. Construct Validation Set
 Create the protein-multimer validation set in `rcsb_multimer_val`. Validation follows the AF3 validation date split (2021-10-01 through 2023-01-12), uses at most 20 chains, and keeps complexes up to 1536 protein residues, matching the AF2-multimer crop length. Templates and cluster-size recomputation are not required for validation.
@@ -146,6 +163,12 @@ rcsb_multimer/
 ├── template_mapping.lmdb   # Entry-to-template hit metadata database
 └── templates/
     └── npz/                # Processed template atom14 NPZ files
+rcsb_multimer_assembly/
+├── npz/                    # `<pdb>-assemblyN` intermediate structures
+├── structure.lmdb
+├── manifest.msgpack
+├── assembly_processing_audit.jsonl
+└── assembly_processing_summary.json
 rcsb_multimer_val/
 ├── validation_ids.txt      # Selected validation PDB IDs
 ├── npz/                    # Validation candidate processed files

@@ -435,9 +435,7 @@ def main():
         with open(args.validation_ids_file) as f:
             val_ids = [line.strip().lower() for line in f if line.strip()]
         if len(val_ids) != len(set(val_ids)):
-            raise ValueError(
-                f"Duplicate PDB IDs found in {args.validation_ids_file}."
-            )
+            raise ValueError(f"Duplicate PDB IDs found in {args.validation_ids_file}.")
         missing_ids = [pdb_id for pdb_id in val_ids if pdb_id not in candidate_by_id]
         if missing_ids:
             examples = ", ".join(missing_ids[:10])

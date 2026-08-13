@@ -18,7 +18,7 @@ train:
     data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
     train_datasets:
       # RCSB complex: 50%
-      - name: rcsb_multimer
+      - name: rcsb_multimer_assembly
         type: rcsb
         is_multimer: true
         is_distillation: false

@@ -62,9 +62,7 @@ def cluster_sequences(
         for sequence, repr_id in long_sequence_to_repr.items()
     }
     sequence_to_cluster.update(short_sequence_to_repr)
-    return {
-        entity_id: sequence_to_cluster[sequence] for entity_id, sequence in sequences
-    }
+    return {entity_id: sequence_to_cluster[sequence] for entity_id, sequence in sequences}
 
 
 def main():
