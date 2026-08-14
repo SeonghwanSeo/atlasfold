@@ -21,6 +21,7 @@ TODO
 - [Installation](#installation)
 - [AtlasLM protein language model](#atlaslm-protein-language-model)
 - [AtlasFold protein structure prediction](#atlasfold-protein-structure-prediction)
+- [Training](#training)
 - [Acknowledgements](#acknowledgements)
 - [License](#license)
 
@@ -57,11 +58,7 @@ pip install "atlasfold[fold,cuequiv]"
 ## AtlasLM protein language model
 
 **AtlasLM** is the reproduction of [**ESM Cambrian (ESM C)**](https://www.evolutionaryscale.ai/blog/esm-cambrian), the state-of-the-art protein language model developed by EvolutionaryScale.
-~~While the original model has restrictive licensing, this repository provides pre-trained weights under the **MIT License**, facilitating unrestricted research and commercial application.~~
 
-### Available Models
-
-We provide the following models under the **MIT License**:
 
 | Model | Params | Layers | Width | Heads |
 | --- | --- | --- | --- | --- |
@@ -113,9 +110,7 @@ Pretrained weights are hosted on Hugging Face:
 - [`SeonghwanSeo/atlasfold-260703`](https://huggingface.co/SeonghwanSeo/atlasfold-260703)
 - [`SeonghwanSeo/atlasfold-m-260725`](https://huggingface.co/SeonghwanSeo/atlasfold-m-260725)
 
-Both the Python API and CLI download AtlasFold and AtlasLM weights automatically.
-Use `--cache-dir` to select a cache location, or `--model-path` as an optional
-override for a local/custom AtlasFold checkpoint.
+Both the Python API and CLI download AtlasFold and AtlasLM weights automatically. Use `--cache-dir` to select a cache location, or `--model-path` as an optional override for a local or fine-tuned AtlasFold checkpoint.
 
 The IPA regression variants currently require local model weights supplied with `--model-path`.
 
@@ -129,8 +124,7 @@ GILGYTEHQVVSSDFQKAAQQLLQYFQKAGY
 ```
 
 ```bash
-python run_atlasfold.py \
-    monomer \
+python run_atlasfold.py monomer \
     --input-fasta monomers.fasta \
     --out-dir predictions/monomers
 ```
@@ -145,8 +139,7 @@ GILGYTEHQVVSSDFQKAA:QQLLQYFQKAGY
 ```
 
 ```bash
-python run_atlasfold.py \
-    multimer \
+python run_atlasfold.py multimer \
     --input-fasta multimers.fasta \
     --out-dir predictions/multimers
 ```
@@ -190,31 +183,43 @@ Use `atlasfold <model> --help` or the equivalent `python run_atlasfold.py <model
 
 Each target is written to its own output directory. Every generated diffusion sample or IPA seed has a structure file and a JSON confidence summary. The highest-ranked result is also written as `<target>_ranked_model.cif` (or `.pdb`), and all results are listed in `<target>_summary.csv`. Monomers are ranked by mean pLDDT; multimers are ranked by `0.8 * ipTM + 0.2 * pTM`. With `--print-recycle-metrics`, IPA inference prints live metrics through its recycle callback without retaining the full history.
 
-`--save-confidence-arrays` additionally writes one NumPy NPZ file per sample. Monomer files contain `plddt` and `pae`; multimer files contain `plddt`, `pae`, and `pde`. Scalar scores such as pTM and ipTM remain in the JSON and CSV outputs. `--save-distogram` writes `logits` and `boundaries` once per seed. Raw pairwise arrays scale quadratically with sequence length and can require substantial host memory and disk space for long targets.
+`--save-confidence-arrays` additionally writes one NumPy NPZ file per prediction. All files contain `plddt` and `pae`; diffusion multimer files additionally contain `pde`. Scalar scores such as pTM and ipTM remain in the JSON and CSV outputs. `--save-distogram` writes `logits` and `boundaries` once per seed. Raw pairwise arrays scale quadratically with sequence length and can require substantial host memory and disk space for long targets.
 
 ### Python API
 
-Load a pretrained model by name, create a runner, and call `fold()` for one target:
+AtlasFold runners support single-target folding, streaming and batched inference, automatic length bucketing, prediction ranking, confidence outputs, and optional distogram outputs. See the [inference guide](docs/inference.md) for examples and detailed API documentation.
+
+The following example loads a model and predicts a single target with `fold()`. Fine-tuned model instances can be passed to `get_runner()` in the same way:
 
 ```python
-from atlasfold.pretrained import load_model
-from atlasfold.runner import FoldingRunner
-from atlasfold.runner_multimer import MultimerFoldingRunner
+from atlasfold.pretrained import get_runner, load_model
 
-monomer_model = load_model("atlasfold-260703", device="cuda")
-folding_runner = FoldingRunner(monomer_model)
-monomer = folding_runner.fold("protein_a", "MKTAYIAKQRQISFVKSHFS", num_samples=5)
-print(monomer.best.avg_plddt)
+# Monomer prediction
+monomer_model = load_model("atlasfold", device="cuda")
+folding_runner = get_runner(monomer_model)
+seq = 'MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG'
+monomer_out = folding_runner.fold("test", seq, num_samples=5)
+print(monomer_out.best.avg_plddt) # 96.42
+with open("test_monomer.pdb", "w") as f:
+    f.write(monomer_out.best.to_pdb())
 
-multimer_model = load_model("atlasfold-m-260725", device="cuda")
-multimer_runner = MultimerFoldingRunner(multimer_model)
-multimer = multimer_runner.fold(
-    "complex_a", ["MKTAYIAKQRQISFVKSHFS", "GGHVDHGKSTTTGHLIYK"], num_samples=5
+# Multimer prediction
+multimer_model = load_model("atlasfold-m", device="cuda")
+multimer_runner = get_runner(multimer_model)
+seq1 = (
+    "GSEVQLLESGGGLVQAGDSLRLSCAASGRTFSAYAMGWFRQAPGKEREFVAAISWSGNSTYYAD"
+    "SVKGRFTISRDNAKNTVYLQMNSLKPEDTAIYYCAARKPMYRVDISKGQNYDYWGQGTQVTVSS"
 )
-print(multimer.best.iptm)
+seq2 = "GAMGPGVDTQIFEDPREFLSHLEEYLRQVGGSEEYWLSQIQNHMNGPAKKWWEFKQGSVKNWVEFKKEFLQYSEG"
+multimer_out = multimer_runner.fold(
+    "test_m", [seq1, seq2], seeds=[1, 2], num_samples=5
+)
+print(multimer_out.best.iptm) # 0.956
+with open("test_multimer.cif", "w") as f:
+    f.write(multimer_out.best.to_mmcif())
 ```
 
-The multimer runner takes pre-split chain sequences and does not interpret colon-delimited strings. See the [folding guide](docs/folding.md) for batched iteration, input and output types, ranking, confidence arrays, and optional distogram output.
+## Training
 
 To train the monomer or multimer models, see the [training guide](docs/training.md) for staged configurations, memory tuning, distributed batch sizing, and checkpoint handoffs.
 
@@ -233,7 +238,7 @@ This project is built upon the pioneering works of Google DeepMind, Meta AI, Ope
 **Foundations of AtlasLM:**
 - **ESM2**: Lin, Zeming, et al. "Evolutionary-scale prediction of atomic-level protein structure with a language model." Science 379.6637 (2023): 1123-1130.
 - **ESM3**: Hayes, Thomas, et al. "Simulating 500 million years of evolution with a language model." Science 387.6736 (2025): 850-858.
-- **ESM C**: ESM Team. "ESM Cambrian: Revealing the mysteries of proteins with unsupervised learning." EvolutionaryScale Website, December 4, 2024. https://evolutionaryscale.ai/blog/esm-cambrian."
+- **ESMC**: ESM Team. "ESM Cambrian: Revealing the mysteries of proteins with unsupervised learning." EvolutionaryScale Website, December 4, 2024. https://evolutionaryscale.ai/blog/esm-cambrian."
 
 **Foundations of AtlasFold:**
 - **AlphaFold2**: Jumper, John, et al. "Highly accurate protein structure prediction with AlphaFold." nature 596.7873 (2021): 583-589.

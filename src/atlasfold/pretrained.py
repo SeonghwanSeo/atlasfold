@@ -17,6 +17,10 @@ from atlasfold.model import (
     AtlasFoldMultimerConfig,
     AtlasFoldMultimerIPAConfig,
 )
+from atlasfold.runner import FoldingRunner
+from atlasfold.runner_ipa import IPAFoldingRunner
+from atlasfold.runner_multimer import MultimerFoldingRunner
+from atlasfold.runner_multimer_ipa import MultimerIPAFoldingRunner
 from atlaslm.pretrained import download_model_weights as download_lm_weights
 
 ATLASFOLD_260703 = "atlasfold-260703"
@@ -32,7 +36,9 @@ SUPPORTED_MODELS = [
 ]
 
 MODEL_NAME_MAP = {
+    "atlasfold": ATLASFOLD_260703,
     "atlasfold-260703": ATLASFOLD_260703,
+    "atlasfold-m": ATLASFOLD_M_260725,
     "atlasfold-m-260725": ATLASFOLD_M_260725,
     "atlasfold-ipa": ATLASFOLD_IPA,
     "atlasfold-multimer-ipa": ATLASFOLD_MULTIMER_IPA,
@@ -109,8 +115,8 @@ def load_model(
     ----------
     model_name : str
         The name of the pretrained model to load. Options include:
-            - "atlasfold-260703"
-            - "atlasfold-m-260725"
+            - "atlasfold" or "atlasfold-260703"
+            - "atlasfold-m" or "atlasfold-m-260725"
             - "atlasfold-ipa" (requires model_path)
             - "atlasfold-multimer-ipa" (requires model_path)
     device : str | torch.device, optional
@@ -159,3 +165,24 @@ def load_model(
         )
 
     raise TypeError(f"Unsupported AtlasFold config type: {type(cfg)!r}.")
+
+
+def get_runner(
+    model: AtlasFold | AtlasFold_Multimer | AtlasFold_IPA | AtlasFoldMultimer_IPA,
+) -> (
+    FoldingRunner
+    | MultimerFoldingRunner
+    | IPAFoldingRunner
+    | MultimerIPAFoldingRunner
+):
+    """Return the matching inference runner for an AtlasFold model."""
+    if isinstance(model, AtlasFold_Multimer):
+        return MultimerFoldingRunner(model)
+    if isinstance(model, AtlasFold):
+        return FoldingRunner(model)
+    if isinstance(model, AtlasFoldMultimer_IPA):
+        return MultimerIPAFoldingRunner(model)
+    if isinstance(model, AtlasFold_IPA):
+        return IPAFoldingRunner(model)
+
+    raise TypeError(f"Unsupported AtlasFold model type: {type(model)!r}.")
