@@ -432,7 +432,7 @@ def run(args: argparse.Namespace) -> None:
             num_finished += 1
             logger.info(
                 "Completed %s (length=%d): "
-                "ptm=%.3f, iptm=%.3f, avg_plddt=%.3f time=%.2f (%d/%d)",
+                "pTM=%.3f, iPTM=%.3f, pLDDT=%.3f time=%.2f (%d/%d)",
                 output.name,
                 output.length,
                 best_record["ptm"],

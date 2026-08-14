@@ -11,6 +11,8 @@ from atlasfold.model import (
     AtlasFoldConfig,
     AtlasFoldMultimerConfig,
 )
+from atlasfold.runner import FoldingRunner
+from atlasfold.runner_multimer import MultimerFoldingRunner
 from atlaslm.pretrained import download_model_weights as download_lm_weights
 
 ATLASFOLD_260703 = "atlasfold-260703"
@@ -19,7 +21,9 @@ ATLASFOLD_M_260725 = "atlasfold-m-260725"
 SUPPORTED_MODELS = [ATLASFOLD_260703, ATLASFOLD_M_260725]
 
 MODEL_NAME_MAP = {
+    "atlasfold": ATLASFOLD_260703,
     "atlasfold-260703": ATLASFOLD_260703,
+    "atlasfold-m": ATLASFOLD_M_260725,
     "atlasfold-m-260725": ATLASFOLD_M_260725,
 }
 
@@ -87,8 +91,8 @@ def load_model(
     ----------
     model_name : str
         The name of the pretrained model to load. Options include:
-            - "atlasfold-260703"
-            - "atlasfold-m-260725"
+            - "atlasfold" or "atlasfold-260703"
+            - "atlasfold-m" or "atlasfold-m-260725"
     device : str | torch.device, optional
         The device to load the model onto.
     cache_dir : str, optional
@@ -127,3 +131,15 @@ def load_model(
         return AtlasFold.from_pretrained(state_dict=state_dict, config=cfg, device=device)
 
     raise TypeError(f"Unsupported AtlasFold config type: {type(cfg)!r}.")
+
+
+def get_runner(
+    model: AtlasFold | AtlasFold_Multimer,
+) -> FoldingRunner | MultimerFoldingRunner:
+    """Return the matching inference runner for an AtlasFold model."""
+    if isinstance(model, AtlasFold_Multimer):
+        return MultimerFoldingRunner(model)
+    if isinstance(model, AtlasFold):
+        return FoldingRunner(model)
+
+    raise TypeError(f"Unsupported AtlasFold model type: {type(model)!r}.")
