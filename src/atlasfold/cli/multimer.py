@@ -271,8 +271,7 @@ def run(args: argparse.Namespace) -> None:
 
         # Remove the "done.txt" file if it exists, since we are overwriting the outputs.
         done_path = out_dir / "done.txt"
-        if done_path.exists():
-            done_path.unlink()
+        done_path.unlink(missing_ok=True)
 
         best_sample_idx = output.best_key
         for (seed, sample_idx), sample in sorted(output.outputs.items()):

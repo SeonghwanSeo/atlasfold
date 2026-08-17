@@ -1,24 +1,20 @@
 import dataclasses
 import warnings
 from collections.abc import Callable, Iterator, Sequence
-from typing import NamedTuple, TypeAlias
+from typing import TypeAlias
 
 import numpy as np
 import torch
 
 from atlasfold.common import featurize, protein, residue_constants
 from atlasfold.model import AtlasFold_IPA
-from atlasfold.runner import autocast_context, seed_context
+from atlasfold.runner import (
+    FoldingInput,
+    FoldingInputLike,
+    autocast_context,
+    seed_context,
+)
 
-
-class IPAFoldingInput(NamedTuple):
-    """Input for one monomer IPA folding target."""
-
-    name: str
-    sequence: str
-
-
-IPAFoldingInputLike: TypeAlias = IPAFoldingInput | tuple[str, str]
 RecycleMetric = dict[str, float | int | None]
 RecycleCallback: TypeAlias = Callable[[str, int, int, RecycleMetric], None]
 
@@ -131,7 +127,7 @@ class IPAFoldingRunner:
     ) -> IPAFoldingOutput:
         return next(
             self.fold_iter(
-                [IPAFoldingInput(name, sequence)],
+                [FoldingInput(name, sequence)],
                 seeds=seeds,
                 num_recycles=num_recycles,
                 mlm_prob=mlm_prob,
@@ -144,7 +140,7 @@ class IPAFoldingRunner:
 
     def fold_iter(
         self,
-        inputs: Sequence[IPAFoldingInputLike],
+        inputs: Sequence[FoldingInputLike],
         *,
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 4,
@@ -170,7 +166,7 @@ class IPAFoldingRunner:
 
     def fold_iter_batch(
         self,
-        inputs: Sequence[IPAFoldingInputLike],
+        inputs: Sequence[FoldingInputLike],
         *,
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 4,
@@ -222,7 +218,7 @@ class IPAFoldingRunner:
                     recycle_output: dict[str, torch.Tensor],
                     *,
                     _seed: int = seed,
-                    _chunk: list[IPAFoldingInput] = chunk,
+                    _chunk: list[FoldingInput] = chunk,
                 ) -> None:
                     for batch_index, item in enumerate(_chunk):
                         record = self._make_live_recycle_metric(
@@ -323,7 +319,7 @@ class IPAFoldingRunner:
 
     @staticmethod
     def _make_output(
-        item: IPAFoldingInput,
+        item: FoldingInput,
         out: dict,
         batch_index: int,
         seed: int,
@@ -359,24 +355,24 @@ class IPAFoldingRunner:
 
     @staticmethod
     def _normalize_inputs(
-        inputs: Sequence[IPAFoldingInputLike],
-    ) -> list[IPAFoldingInput]:
+        inputs: Sequence[FoldingInputLike],
+    ) -> list[FoldingInput]:
         normalized = []
         for input_ in inputs:
-            item = IPAFoldingInput(*input_)
+            item = FoldingInput(*input_)
             sequence = _sanitize_sequence(item.name, item.sequence)
             if not sequence:
                 raise ValueError(f"Input ({item.name}) has an empty sequence.")
-            normalized.append(IPAFoldingInput(item.name, sequence))
+            normalized.append(FoldingInput(item.name, sequence))
         return normalized
 
     @classmethod
     def _bucket_inputs(
         cls,
-        inputs: Sequence[IPAFoldingInput],
+        inputs: Sequence[FoldingInput],
         length_buckets: Sequence[int] | None,
-    ) -> dict[int, list[IPAFoldingInput]]:
-        bucketed: dict[int, list[IPAFoldingInput]] = {}
+    ) -> dict[int, list[FoldingInput]]:
+        bucketed: dict[int, list[FoldingInput]] = {}
         for item in inputs:
             bucket = cls._get_length_bucket(len(item.sequence), length_buckets)
             bucketed.setdefault(bucket, []).append(item)
@@ -384,8 +380,8 @@ class IPAFoldingRunner:
 
     @staticmethod
     def _iter_batch(
-        bucketed: dict[int, list[IPAFoldingInput]], max_tokens_per_batch: int
-    ) -> Iterator[tuple[int, list[IPAFoldingInput]]]:
+        bucketed: dict[int, list[FoldingInput]], max_tokens_per_batch: int
+    ) -> Iterator[tuple[int, list[FoldingInput]]]:
         for bucket_length in sorted(bucketed):
             items = bucketed[bucket_length]
             batch_size = (

@@ -3,7 +3,6 @@ import functools
 import warnings
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Sequence
-from typing import NamedTuple, TypeAlias
 
 import numpy as np
 import torch
@@ -12,22 +11,7 @@ from atlasfold.common import featurize, protein, residue_constants
 from atlasfold.model import AtlasFoldMultimer_IPA
 from atlasfold.runner import autocast_context, seed_context
 from atlasfold.runner_ipa import RecycleCallback, RecycleMetric
-
-
-class MultimerIPAFoldingInput(NamedTuple):
-    """Input for one multimer IPA folding target."""
-
-    name: str
-    chains: Sequence[str]
-
-    @property
-    def length(self) -> int:
-        return sum(len(chain) for chain in self.chains)
-
-
-MultimerIPAFoldingInputLike: TypeAlias = (
-    MultimerIPAFoldingInput | tuple[str, Sequence[str]]
-)
+from atlasfold.runner_multimer import MultimerInput, MultimerInputLike
 
 
 def _sanitize_sequence(name: str, sequence: str) -> str:
@@ -169,7 +153,7 @@ class MultimerIPAFoldingRunner:
     ) -> MultimerIPAFoldingOutput:
         return next(
             self.fold_iter(
-                [MultimerIPAFoldingInput(name, chains)],
+                [MultimerInput(name, chains)],
                 seeds=seeds,
                 num_recycles=num_recycles,
                 mlm_prob=mlm_prob,
@@ -182,7 +166,7 @@ class MultimerIPAFoldingRunner:
 
     def fold_iter(
         self,
-        inputs: Sequence[MultimerIPAFoldingInputLike],
+        inputs: Sequence[MultimerInputLike],
         *,
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 10,
@@ -208,7 +192,7 @@ class MultimerIPAFoldingRunner:
 
     def fold_iter_batch(
         self,
-        inputs: Sequence[MultimerIPAFoldingInputLike],
+        inputs: Sequence[MultimerInputLike],
         *,
         seeds: int | Sequence[int] = 1,
         num_recycles: int = 10,
@@ -435,27 +419,27 @@ class MultimerIPAFoldingRunner:
 
     @staticmethod
     def _normalize_inputs(
-        inputs: Sequence[MultimerIPAFoldingInputLike],
-    ) -> list[MultimerIPAFoldingInput]:
+        inputs: Sequence[MultimerInputLike],
+    ) -> list[MultimerInput]:
         normalized = []
         for input_ in inputs:
-            item = MultimerIPAFoldingInput(*input_)
+            item = MultimerInput(*input_)
             chains = [
                 _sanitize_sequence(f"{item.name} chain {index}", chain)
                 for index, chain in enumerate(item.chains, start=1)
             ]
             if not chains or any(not chain for chain in chains):
                 raise ValueError(f"Input ({item.name}) has an empty chain.")
-            normalized.append(MultimerIPAFoldingInput(item.name, chains))
+            normalized.append(MultimerInput(item.name, chains))
         return normalized
 
     @classmethod
     def _bucket_inputs(
         cls,
-        inputs: Sequence[MultimerIPAFoldingInput],
+        inputs: Sequence[MultimerInput],
         length_buckets: Sequence[int] | None,
-    ) -> dict[int, list[MultimerIPAFoldingInput]]:
-        bucketed: dict[int, list[MultimerIPAFoldingInput]] = defaultdict(list)
+    ) -> dict[int, list[MultimerInput]]:
+        bucketed: dict[int, list[MultimerInput]] = defaultdict(list)
         for item in inputs:
             bucket = cls._get_length_bucket(item.length, length_buckets)
             bucketed[bucket].append(item)
@@ -463,7 +447,7 @@ class MultimerIPAFoldingRunner:
 
     @staticmethod
     def _iter_batch(
-        bucketed: dict[int, list[MultimerIPAFoldingInput]],
+        bucketed: dict[int, list[MultimerInput]],
         max_tokens_per_batch: int,
     ) -> Iterator[tuple[int, list[protein.ProteinMultimer]]]:
         for bucket_length in sorted(bucketed):

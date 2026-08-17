@@ -154,27 +154,28 @@ def run(args: argparse.Namespace) -> None:
     from atlasfold.data.fasta import read_fasta
     from atlasfold.model import AtlasFold_IPA
     from atlasfold.pretrained import load_model as load_pretrained_model
-    from atlasfold.runner_ipa import IPAFoldingInput, IPAFoldingOutput, IPAFoldingRunner
+    from atlasfold.runner_ipa import FoldingInput, IPAFoldingOutput, IPAFoldingRunner
 
     def setup_logger() -> logging.Logger:
-        logger = logging.getLogger("atlasfold.ipa")
+        logger = logging.getLogger("atlasfold.monomer")
         logger.setLevel(logging.INFO)
         if not logger.handlers:
-            handler = logging.StreamHandler(sys.stdout)
-            handler.setFormatter(
-                logging.Formatter(
-                    "%(asctime)s | %(name)s | %(message)s",
-                    datefmt="%y/%m/%d %H:%M:%S",
-                )
+            formatter = logging.Formatter(
+                "%(asctime)s | %(name)s | %(message)s",
+                datefmt="%y/%m/%d %H:%M:%S",
             )
-            logger.addHandler(handler)
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setLevel(logging.INFO)
+            console_handler.setFormatter(formatter)
+            logger.addHandler(console_handler)
         return logger
 
-    def load_inputs(path: Path) -> list[IPAFoldingInput]:
-        if not path.exists():
-            raise FileNotFoundError(f"Input FASTA does not exist: {path}")
-        inputs = []
-        for header, sequence in read_fasta(path):
+    def load_sequences(input_fasta: Path) -> list[FoldingInput]:
+        if not input_fasta.exists():
+            raise FileNotFoundError(f"Input FASTA file does not exist: {input_fasta}")
+
+        sequences: list[FoldingInput] = []
+        for header, sequence in read_fasta(input_fasta):
             header_fields = header.split()
             if not header_fields:
                 raise ValueError("FASTA target has an empty header.")
@@ -185,25 +186,47 @@ def run(args: argparse.Namespace) -> None:
                 )
             if not sequence.strip():
                 raise ValueError(f"FASTA target {name!r} has an empty sequence.")
-            inputs.append(IPAFoldingInput(name, sequence))
-        if not inputs:
-            raise ValueError(f"No sequences found in FASTA file: {path}")
-        names = [item.name for item in inputs]
-        duplicates = sorted({name for name in names if names.count(name) > 1})
+            sequences.append(FoldingInput(name, sequence))
+        if len(sequences) == 0:
+            raise ValueError(f"No sequences found in FASTA file: {input_fasta}")
+
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for item in sequences:
+            name = item.name
+            if name in seen:
+                duplicates.append(name)
+            seen.add(name)
         if duplicates:
             raise ValueError(
                 "FASTA target names must be unique after normalization. "
-                f"Duplicates: {duplicates}"
+                f"Duplicates: {sorted(set(duplicates))}"
             )
-        return inputs
 
-    def load_model() -> AtlasFold_IPA:
-        device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        return sorted(sequences, key=lambda item: (len(item.sequence), item.name))
+
+    def load_model(
+        model_path: str | Path | None = None,
+        device: str | torch.device | None = None,
+        cache_dir: str | Path | None = None,
+    ) -> AtlasFold_IPA:
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = torch.device(device)
+
+        if model_path is not None:
+            model_path = Path(model_path)
+            if not model_path.exists():
+                raise FileNotFoundError(f"Local weight file does not exist: {model_path}")
+            logger.info("Loading local weight path=%s, device=%s", model_path, device)
+        else:
+            raise ValueError("A local IPA model path is required.")
+
         model = load_pretrained_model(
             "atlasfold-ipa",
             device=device,
-            cache_dir=args.cache_dir,
-            model_path=args.model_path,
+            cache_dir=cache_dir,
+            model_path=model_path,
         )
         if not isinstance(model, AtlasFold_IPA):
             raise TypeError(f"Expected AtlasFold_IPA, got {type(model)!r}.")
@@ -219,82 +242,135 @@ def run(args: argparse.Namespace) -> None:
             message += f" tol={tol:.2f}"
         logger.info(message)
 
-    def write_outputs(out_dir: Path, output: IPAFoldingOutput) -> dict:
+    def write_outputs(
+        out_dir: Path,
+        output: IPAFoldingOutput,
+        format: str,
+        save_confidence_arrays: bool = False,
+        save_distogram: bool = False,
+    ) -> dict:
         out_dir.mkdir(parents=True, exist_ok=True)
+        sample_records = []
         done_path = out_dir / "done.txt"
-        if done_path.exists():
-            done_path.unlink()
+        done_path.unlink(missing_ok=True)
 
-        records = []
-        for seed, prediction in sorted(output.outputs.items()):
-            prefix = f"{output.name}_seed-{seed}"
-            structure = (
-                prediction.to_mmcif() if args.format == "cif" else prediction.to_pdb()
-            )
-            confidence = prediction.confidence_scores
-            (out_dir / f"{prefix}_model.{args.format}").write_text(structure)
-            (out_dir / f"{prefix}_confidence.json").write_text(
-                json.dumps(confidence, indent=2)
-            )
-            if args.save_confidence_arrays:
-                np.savez(
-                    out_dir / f"{prefix}_confidence.npz",
-                    plddt=prediction.plddt,
-                    pae=prediction.pae,
-                )
-            records.append(
-                {
-                    "seed": seed,
-                    "avg_plddt": prediction.avg_plddt,
-                    "ptm": prediction.ptm,
-                    "num_recycles": output.recycle_counts[seed],
-                }
-            )
-            if seed == output.best_seed:
-                (out_dir / f"{output.name}_ranked_model.{args.format}").write_text(
-                    structure
-                )
-                (out_dir / f"{output.name}_ranked_confidence.json").write_text(
-                    json.dumps(confidence, indent=2)
+        if len(output.ranking) == 0:
+            raise ValueError(f"No samples to rank for target {output.name!r}.")
+        best_sample_idx = output.best_seed
+
+        for seed, sample in sorted(output.outputs.items()):
+            target_name = output.name
+            sample_name = f"{target_name}_seed-{seed}"
+
+            sample_text = sample.to_mmcif() if format == "cif" else sample.to_pdb()
+            confidence_scores = sample.confidence_scores
+
+            with open(out_dir / f"{sample_name}_model.{format}", "w") as f:
+                f.write(sample_text)
+            with open(out_dir / f"{sample_name}_confidence.json", "w") as f:
+                json.dump(confidence_scores, f, indent=2)
+            if save_confidence_arrays:
+                np.savez_compressed(
+                    out_dir / f"{sample_name}_confidence.npz",
+                    plddt=sample.plddt,
+                    pae=sample.pae,
                 )
 
-        if args.save_distogram:
-            if not output.distogram_logits or output.distogram_boundaries is None:
-                raise ValueError(f"No distograms are available for {output.name!r}.")
+            record = {
+                "seed": seed,
+                "sample_name": sample_name,
+                "avg_plddt": confidence_scores["avg_plddt"],
+                "ptm": confidence_scores["ptm"],
+                "num_recycles": output.recycle_counts[seed],
+            }
+            sample_records.append(record)
+
+            if seed == best_sample_idx:
+                rank_name = f"{target_name}_ranked"
+                best_record = record
+                with open(out_dir / f"{rank_name}_model.{format}", "w") as f:
+                    f.write(sample_text)
+                with open(out_dir / f"{rank_name}_confidence.json", "w") as f:
+                    json.dump(confidence_scores, f, indent=2)
+
+        if save_distogram:
+            if len(output.distogram_logits) == 0 or output.distogram_boundaries is None:
+                raise ValueError(
+                    f"No distograms are available for target {output.name!r}."
+                )
             for seed, logits in sorted(output.distogram_logits.items()):
-                np.savez(
+                np.savez_compressed(
                     out_dir / f"{output.name}_seed-{seed}_distogram.npz",
                     logits=logits,
                     boundaries=output.distogram_boundaries,
                 )
 
-        with (out_dir / f"{output.name}_summary.csv").open("w") as handle:
-            handle.write("seed,avg_plddt,ptm,num_recycles\n")
-            for record in records:
-                handle.write(
-                    f"{record['seed']},{record['avg_plddt']:.3f},"
+        with open(out_dir / f"{output.name}_summary.csv", "w") as f:
+            f.write("seed,avg_plddt,ptm,num_recycles\n")
+            for record in sample_records:
+                f.write(
+                    f"{record['seed']},"
+                    f"{record['avg_plddt']:.3f},"
                     f"{record['ptm']:.3f},{record['num_recycles']}\n"
                 )
         done_path.touch()
-        return next(record for record in records if record["seed"] == output.best_seed)
+        return best_record
 
+    # Set up logging
     logger = setup_logger()
+
+    # Set torch matmul precision to highest for better performance.
     torch.set_float32_matmul_precision("highest")
-    inputs = load_inputs(args.input_fasta)
+
+    # Load sequences from the input FASTA file.
+    sequences = load_sequences(args.input_fasta)
+    logger.info(
+        "Loaded %d sequences from %s. Length range: %d-%d.",
+        len(sequences),
+        args.input_fasta,
+        len(sequences[0].sequence),
+        len(sequences[-1].sequence),
+    )
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Filter out completed targets unless --overwrite is set.
     if not args.overwrite:
-        inputs = [
-            item for item in inputs if not (out_dir / item.name / "done.txt").exists()
+        filtered = [
+            item
+            for item in sequences
+            if not (out_dir / item.name / "done.txt").exists()
         ]
-    if not inputs:
+        num_skipped = len(sequences) - len(filtered)
+        if num_skipped > 0:
+            logger.info("Skipping %d completed targets.", num_skipped)
+        sequences = filtered
+
+    if len(sequences) == 0:
         logger.info("All targets are complete. Nothing to do.")
         return
 
-    model = load_model()
+    model = load_model(
+        model_path=args.model_path,
+        device=args.device,
+        cache_dir=args.cache_dir,
+    )
     if args.no_kernel:
         model.set_forward_flags(use_cuequiv_kernels=False)
+
+    # Set up the runner
     runner = IPAFoldingRunner(model)
+
+    logger.info(
+        "Starting monomer IPA inference: seeds=%s, num_recycles=%d, "
+        "mlm_prob=%s, recycle_early_stop_tolerance=%s, format=%s",
+        args.seed,
+        args.num_recycles,
+        args.mlm_prob,
+        args.recycle_early_stop_tolerance,
+        args.format,
+    )
 
     max_tokens_per_batch = args.max_tokens_per_batch
     if (
@@ -307,11 +383,12 @@ def run(args: argparse.Namespace) -> None:
         )
         max_tokens_per_batch = 0
 
+    num_finished = 0
+    num_total = len(sequences)
     start = timer()
     batch_start = timer()
-    completed = 0
     for outputs in runner.fold_iter_batch(
-        inputs,
+        sequences,
         seeds=args.seed,
         num_recycles=args.num_recycles,
         mlm_prob=args.mlm_prob,
@@ -328,8 +405,11 @@ def run(args: argparse.Namespace) -> None:
             best = write_outputs(
                 out_dir / output.name,
                 output,
+                args.format,
+                save_confidence_arrays=args.save_confidence_arrays,
+                save_distogram=args.save_distogram,
             )
-            completed += 1
+            num_finished += 1
             logger.info(
                 "Completed %s (length=%d): pLDDT=%.3f pTM=%.3f "
                 "recycles=%d time=%.2f (%d/%d)",
@@ -339,15 +419,15 @@ def run(args: argparse.Namespace) -> None:
                 best["ptm"],
                 best["num_recycles"],
                 time_per_target,
-                completed,
-                len(inputs),
+                num_finished,
+                num_total,
             )
     elapsed = timer() - start
     logger.info(
         "Finished %d target(s) in %.1fs (%.1fs per target).",
-        completed,
+        len(sequences),
         elapsed,
-        elapsed / completed,
+        elapsed / len(sequences),
     )
 
 

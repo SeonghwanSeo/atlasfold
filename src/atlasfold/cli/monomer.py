@@ -257,8 +257,7 @@ def run(args: argparse.Namespace) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         sample_records = []
         done_path = out_dir / "done.txt"
-        if done_path.exists():
-            done_path.unlink()
+        done_path.unlink(missing_ok=True)
 
         if len(output.ranking) == 0:
             raise ValueError(f"No samples to rank for target {output.name!r}.")
