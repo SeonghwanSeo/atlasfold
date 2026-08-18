@@ -7,6 +7,7 @@ model:
 train:
   _yaml_: _train_base.yaml
   name: stage1-256
+  seed: 1
 
   data:
     max_length: 256

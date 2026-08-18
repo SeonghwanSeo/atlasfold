@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import logging
 from collections.abc import Mapping
 from pathlib import Path
@@ -14,14 +13,9 @@ import torch
 from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig
 
-from atlasfold.train.config import print_config, save_config, to_dict
+from atlasfold.train.config import load_config, print_config, save_config, to_dict
 from atlasfold.train.monomer_ipa.datamodule import TrainingDataModule
 from atlasfold.train.monomer_ipa.train_module import TrainingModuleIPA
-
-try:
-    from scripts.train_monomer import parse_config
-except ModuleNotFoundError:  # Direct execution: python scripts/train_monomer_ipa.py
-    from train_monomer import parse_config
 
 
 ATLASFOLD_INIT_MODULES = (
@@ -40,31 +34,11 @@ ATLASFOLD_INIT_MODULES = (
 )
 
 
-@dataclasses.dataclass(frozen=True)
-class AtlasFoldInitReport:
-    loaded_keys: tuple[str, ...]
-    loaded_numel: int
-
-
-def _is_atlasfold_init_key(key: str) -> bool:
-    return any(
-        key == name or key.startswith(f"{name}.") for name in ATLASFOLD_INIT_MODULES
-    )
-
-
-def _sync_ema_with_model(module: TrainingModuleIPA) -> None:
-    model_params = dict(module.model.named_parameters())
-    module.ema.params = {
-        key: model_params[key].detach().clone() for key in module.ema.params
-    }
-    module.ema.device = next(iter(module.ema.params.values())).device
-
-
 def _initialize_from_atlasfold_weight(
     module: TrainingModuleIPA,
     weight_path: str | Path,
-) -> AtlasFoldInitReport:
-    """Initialize shared IPA modules from a raw AtlasFold state dict."""
+) -> int:
+    """Initialize shared IPA parameters from AtlasFold weights."""
     source_weights = torch.load(
         weight_path,
         map_location="cpu",
@@ -77,12 +51,19 @@ def _initialize_from_atlasfold_weight(
         raise TypeError("Every key in the AtlasFold state dict must be a string.")
 
     target_params = dict(module.model.named_parameters())
-    expected_keys = {key for key in target_params if _is_atlasfold_init_key(key)}
-
+    expected_keys = {
+        key
+        for key in target_params
+        if any(
+            key == name or key.startswith(f"{name}.")
+            for name in ATLASFOLD_INIT_MODULES
+        )
+    }
     missing_keys = sorted(expected_keys - source_weights.keys())
     if missing_keys:
         raise RuntimeError(
-            f"AtlasFold partial initialization is missing expected key(s): {missing_keys}"
+            "AtlasFold partial initialization is missing expected key(s): "
+            f"{missing_keys}"
         )
 
     shape_mismatches = []
@@ -111,41 +92,12 @@ def _initialize_from_atlasfold_weight(
             f"{sorted(incompatible.unexpected_keys)}"
         )
 
-    # EMA was constructed before loading. Synchronize both transferred and
-    # newly initialized IPA parameters with the current model.
-    _sync_ema_with_model(module)
-
-    loaded_keys = tuple(sorted(selected_weights))
-    return AtlasFoldInitReport(
-        loaded_keys=loaded_keys,
-        loaded_numel=sum(target_params[key].numel() for key in loaded_keys),
-    )
-
-
-def initialize_from_ipa_checkpoint(
-    module: TrainingModuleIPA,
-    checkpoint_path: str | Path,
-) -> int:
-    """Load IPA model weights while resetting all training state."""
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
-    if not isinstance(checkpoint, Mapping):
-        raise TypeError("IPA checkpoint must contain a mapping.")
-    state_dict = checkpoint.get("state_dict")
-    if not isinstance(state_dict, Mapping) or not state_dict:
-        raise ValueError("IPA checkpoint does not contain a non-empty state_dict.")
-
-    module.load_state_dict(state_dict, strict=True)
-    _sync_ema_with_model(module)
-    return sum(
-        parameter.numel()
-        for name, parameter in module.model.named_parameters()
-        if not name.startswith("lm.")
-    )
+    model_params = dict(module.model.named_parameters())
+    module.ema.params = {
+        key: model_params[key].detach().clone() for key in module.ema.params
+    }
+    module.ema.device = next(iter(module.ema.params.values())).device
+    return sum(target_params[key].numel() for key in selected_weights)
 
 
 def parse_args() -> argparse.Namespace:
@@ -184,8 +136,8 @@ def parse_args() -> argparse.Namespace:
         "--init_weight",
         help=(
             "Path to a raw AtlasFold model state dict, such as "
-            "weights/atlasfold-stage1.pth. Shared input, LM-adapter, trunk, and "
-            "distogram parameters are loaded."
+            "weights/atlasfold-stage1.pth. Shared input, LM-adapter, and trunk "
+            "parameters are loaded."
         ),
     )
     parser.add_argument(
@@ -215,6 +167,63 @@ def parse_args() -> argparse.Namespace:
         help="Override configuration options using 'key=value' format.",
     )
     return parser.parse_args()
+
+
+def parse_config(args: argparse.Namespace) -> DictConfig:
+    cfg = load_config(args.config, override_args=args.override)
+
+    if args.out_dir is not None:
+        cfg.train.out_dir = args.out_dir
+    if args.experiment_name is not None:
+        cfg.train.name = args.experiment_name
+    if args.num_gpus is not None:
+        cfg.train.trainer.devices = args.num_gpus
+    if args.num_nodes is not None:
+        cfg.train.trainer.num_nodes = args.num_nodes
+    if args.num_workers is not None:
+        cfg.train.data.num_workers = args.num_workers
+    if args.compile:
+        cfg.train.compile.enabled = True
+    if args.wandb:
+        cfg.train.wandb.use = True
+
+    apply_global_hparams_overrides(cfg)
+
+    if args.debug:
+        print("Debug mode is enabled: Single GPU, 0 workers, no wandb.")
+        cfg.train.trainer.devices = 1
+        cfg.train.trainer.num_nodes = 1
+        cfg.train.trainer.accumulate_grad_batches = 1
+        cfg.train.trainer.log_every_n_steps = 1
+        cfg.train.trainer.limit_train_batches = 50
+        cfg.train.trainer.limit_val_batches = 10
+        cfg.train.trainer.enable_checkpointing = True
+        cfg.train.data.num_workers = 0
+        cfg.train.wandb.use = False
+
+    return cfg
+
+
+def apply_global_hparams_overrides(cfg: DictConfig) -> None:
+    train_cfg = cfg.train
+    if train_cfg.trainer.devices == "auto":
+        num_gpus: int = torch.cuda.device_count()
+    else:
+        num_gpus = cfg.train.trainer.devices
+    assert isinstance(num_gpus, int), "num_gpus should be an integer or 'auto'."
+    assert num_gpus > 0, "No GPUs available for training."
+    world_size: int = train_cfg.trainer.num_nodes * num_gpus
+
+    batch_size: int = train_cfg.data.batch_size
+    global_batch_size: int = train_cfg.data.global_batch_size
+    if global_batch_size % (batch_size * world_size) != 0:
+        raise ValueError(
+            f"Global batch size {global_batch_size} is not "
+            f"divisible by (batch_size {batch_size} * world_size {world_size})"
+        )
+    accumulate_grad_batches: int = global_batch_size // (batch_size * world_size)
+    train_cfg.trainer.accumulate_grad_batches = accumulate_grad_batches
+    train_cfg.trainer.limit_train_batches *= accumulate_grad_batches
 
 
 def build_trainer(cfg: DictConfig, debug: bool = False) -> pl.Trainer:
@@ -304,40 +313,37 @@ def train(args: argparse.Namespace) -> None:
     pl.seed_everything(cfg.train.seed, workers=True, verbose=False)
 
     model_module = TrainingModuleIPA(cfg)
+    data_module = TrainingDataModule(cfg.train.data, seed=cfg.train.seed)
     if args.init_weight is not None:
-        report = _initialize_from_atlasfold_weight(model_module, args.init_weight)
+        loaded_numel = _initialize_from_atlasfold_weight(
+            model_module, args.init_weight
+        )
         if is_global_zero:
             logging.info(
-                "Initialized %d parameters across %d tensors from AtlasFold "
-                "weights at %s.",
-                report.loaded_numel,
-                len(report.loaded_keys),
+                "Initialized %d parameters from AtlasFold weights at %s.",
+                loaded_numel,
                 args.init_weight,
             )
-    ckpt_path = args.resume_from_checkpoint
-    if not cfg.train.load_opt_state:
-        if ckpt_path is None:
-            raise ValueError(
-                "--resume_from_checkpoint is required when train.load_opt_state=false."
-            )
-        loaded_numel = initialize_from_ipa_checkpoint(model_module, ckpt_path)
-        if is_global_zero:
-            logging.info(
-                "Initialized %d IPA model parameters from %s; optimizer, scheduler, "
-                "and global step will start fresh.",
-                loaded_numel,
-                ckpt_path,
-            )
-        ckpt_path = None
     if is_global_zero:
         print_config(cfg)
 
-    data_module = TrainingDataModule(cfg.train.data)
-    trainer.fit(
-        model_module,
-        datamodule=data_module,
-        ckpt_path=ckpt_path,
-    )
+    if cfg.train.load_opt_state:
+        trainer.fit(
+            model_module,
+            datamodule=data_module,
+            ckpt_path=args.resume_from_checkpoint,
+        )
+    else:
+        # Manually load the model state dict without optimizer state dict.
+        assert args.resume_from_checkpoint is not None, (
+            "resume_from_checkpoint must be specified if load_opt_state is False."
+        )
+        ckpt = torch.load(args.resume_from_checkpoint, map_location="cpu")
+        model_module.load_state_dict(ckpt["state_dict"], strict=False)
+        model_module.ema.load_state_dict(ckpt["ema"], strict=False)
+        model_module.last_lr_step = ckpt["global_step"]
+        trainer.fit_loop.load_state_dict(ckpt["loops"]["fit_loop"])
+        trainer.fit(model_module, datamodule=data_module)
 
 
 if __name__ == "__main__":

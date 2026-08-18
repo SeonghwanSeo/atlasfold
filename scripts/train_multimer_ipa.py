@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-from collections.abc import Mapping
 from pathlib import Path
 
 import lightning.pytorch as pl
@@ -13,16 +12,9 @@ import torch
 from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig
 
-from atlasfold.train.config import print_config, save_config, to_dict
+from atlasfold.train.config import load_config, print_config, save_config, to_dict
 from atlasfold.train.multimer_ipa.datamodule import TrainingDataModule
 from atlasfold.train.multimer_ipa.train_module import TrainingModuleIPA
-
-try:
-    from scripts.train_monomer_ipa import initialize_from_ipa_checkpoint
-    from scripts.train_multimer import parse_config
-except ModuleNotFoundError:  # Direct execution
-    from train_monomer_ipa import initialize_from_ipa_checkpoint
-    from train_multimer import parse_config
 
 
 def parse_args() -> argparse.Namespace:
@@ -95,6 +87,63 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def parse_config(args: argparse.Namespace) -> DictConfig:
+    cfg = load_config(args.config, override_args=args.override)
+
+    if args.out_dir is not None:
+        cfg.train.out_dir = args.out_dir
+    if args.experiment_name is not None:
+        cfg.train.name = args.experiment_name
+    if args.num_gpus is not None:
+        cfg.train.trainer.devices = args.num_gpus
+    if args.num_nodes is not None:
+        cfg.train.trainer.num_nodes = args.num_nodes
+    if args.num_workers is not None:
+        cfg.train.data.num_workers = args.num_workers
+    if args.compile:
+        cfg.train.compile.enabled = True
+    if args.wandb:
+        cfg.train.wandb.use = True
+
+    apply_global_hparams_overrides(cfg)
+
+    if args.debug:
+        print("Debug mode is enabled: Single GPU, 0 workers, no wandb.")
+        cfg.train.trainer.devices = 1
+        cfg.train.trainer.num_nodes = 1
+        cfg.train.trainer.accumulate_grad_batches = 1
+        cfg.train.trainer.log_every_n_steps = 1
+        cfg.train.trainer.limit_train_batches = 50
+        cfg.train.trainer.limit_val_batches = 10
+        cfg.train.trainer.enable_checkpointing = True
+        cfg.train.data.num_workers = 0
+        cfg.train.wandb.use = False
+
+    return cfg
+
+
+def apply_global_hparams_overrides(cfg: DictConfig) -> None:
+    train_cfg = cfg.train
+    if train_cfg.trainer.devices == "auto":
+        num_gpus: int = torch.cuda.device_count()
+    else:
+        num_gpus = cfg.train.trainer.devices
+    assert isinstance(num_gpus, int), "num_gpus should be an integer or 'auto'."
+    assert num_gpus > 0, "No GPUs available for training."
+    world_size: int = train_cfg.trainer.num_nodes * num_gpus
+
+    batch_size: int = train_cfg.data.batch_size
+    global_batch_size: int = train_cfg.data.global_batch_size
+    if global_batch_size % (batch_size * world_size) != 0:
+        raise ValueError(
+            f"Global batch size {global_batch_size} is not "
+            f"divisible by (batch_size {batch_size} * world_size {world_size})"
+        )
+    accumulate_grad_batches: int = global_batch_size // (batch_size * world_size)
+    train_cfg.trainer.accumulate_grad_batches = accumulate_grad_batches
+    train_cfg.trainer.limit_train_batches *= accumulate_grad_batches
+
+
 def build_trainer(cfg: DictConfig, debug: bool = False) -> pl.Trainer:
     train_cfg = cfg.train
     pl_trainer_cfg = train_cfg.trainer
@@ -161,69 +210,35 @@ def build_trainer(cfg: DictConfig, debug: bool = False) -> pl.Trainer:
     )
 
 
-def _sync_ema_with_model(module: TrainingModuleIPA) -> None:
-    model_params = dict(module.model.named_parameters())
-    module.ema.params = {
-        key: model_params[key].detach().clone() for key in module.ema.params
+def _initialize_from_weight(
+    model_module: TrainingModuleIPA,
+    weight_path: str,
+    *,
+    debug: bool = False,
+) -> None:
+    state_dict = torch.load(weight_path, map_location="cpu")
+    state_dict = state_dict.get("state_dict", state_dict)
+    state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
+    incompatible = model_module.model.load_state_dict(state_dict, strict=False)
+
+    model_params = dict(model_module.model.named_parameters())
+    model_module.ema.params = {
+        k: model_params[k].detach().clone()
+        for k in model_module.ema.params
+        if k in model_params
     }
-    module.ema.device = next(iter(module.ema.params.values())).device
+    model_module.ema.device = next(iter(model_module.ema.params.values())).device
 
-
-def _initialize_from_monomer_ipa_weight(
-    module: TrainingModuleIPA,
-    weight_path: str | Path,
-) -> int:
-    """Initialize shared multimer parameters from monomer IPA weights."""
-    source = torch.load(
-        weight_path,
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
-    if not isinstance(source, Mapping) or not source:
-        raise TypeError("Monomer IPA weight file must contain a non-empty mapping.")
-
-    state_dict = source.get("state_dict", source)
-    if not isinstance(state_dict, Mapping) or not state_dict:
-        raise ValueError("Monomer IPA checkpoint has no non-empty state_dict.")
-
-    source_weights = {
-        key.removeprefix("model."): value
-        for key, value in state_dict.items()
-        if isinstance(key, str)
-    }
-    target_weights = module.model.state_dict()
-    expected_keys = {
-        key for key in target_weights if not key.startswith(("lm.", "template_module."))
-    }
-    missing_keys = sorted(expected_keys - source_weights.keys())
-    if missing_keys:
-        raise RuntimeError(
-            f"Monomer IPA initialization is missing shared parameter(s): {missing_keys}"
+    print(f"Initialized model and EMA from {weight_path}.")
+    if debug:
+        missing_keys = sorted(
+            k
+            for k in incompatible.missing_keys
+            if not k.startswith(("lm.", "template_module."))
         )
-
-    selected_weights = {}
-    shape_mismatches = []
-    for key in sorted(expected_keys):
-        value = source_weights[key]
-        if not isinstance(value, torch.Tensor):
-            shape_mismatches.append(f"{key}: expected Tensor, got {type(value).__name__}")
-        elif value.shape != target_weights[key].shape:
-            shape_mismatches.append(
-                f"{key}: source {tuple(value.shape)} != "
-                f"target {tuple(target_weights[key].shape)}"
-            )
-        else:
-            selected_weights[key] = value
-    if shape_mismatches:
-        raise RuntimeError(
-            "Monomer IPA initialization has incompatible parameter(s): "
-            + "; ".join(shape_mismatches)
-        )
-
-    module.model.load_state_dict(selected_weights, strict=False)
-    _sync_ema_with_model(module)
-    return sum(target_weights[key].numel() for key in selected_weights)
+        additional_keys = sorted(incompatible.unexpected_keys)
+        print(f"init_weight missing keys ({len(missing_keys)}): {missing_keys}")
+        print(f"init_weight additional keys ({len(additional_keys)}): {additional_keys}")
 
 
 def train(args: argparse.Namespace) -> None:
@@ -239,40 +254,30 @@ def train(args: argparse.Namespace) -> None:
     pl.seed_everything(cfg.train.seed, workers=True, verbose=False)
 
     model_module = TrainingModuleIPA(cfg)
+    data_module = TrainingDataModule(cfg.train.data, seed=cfg.train.seed)
     if args.init_weight is not None:
-        loaded_numel = _initialize_from_monomer_ipa_weight(model_module, args.init_weight)
-        if is_global_zero:
-            logging.info(
-                "Initialized %d shared multimer parameters from monomer IPA "
-                "weights at %s.",
-                loaded_numel,
-                args.init_weight,
-            )
-
-    ckpt_path = args.resume_from_checkpoint
-    if not cfg.train.load_opt_state:
-        if ckpt_path is None:
-            raise ValueError(
-                "--resume_from_checkpoint is required when train.load_opt_state=false."
-            )
-        loaded_numel = initialize_from_ipa_checkpoint(model_module, ckpt_path)
-        if is_global_zero:
-            logging.info(
-                "Initialized %d IPA model parameters from %s; optimizer, scheduler, "
-                "and global step will start fresh.",
-                loaded_numel,
-                ckpt_path,
-            )
-        ckpt_path = None
+        _initialize_from_weight(model_module, args.init_weight, debug=args.debug)
     if is_global_zero:
         print_config(cfg)
 
-    data_module = TrainingDataModule(cfg.train.data)
-    trainer.fit(
-        model_module,
-        datamodule=data_module,
-        ckpt_path=ckpt_path,
-    )
+    if cfg.train.load_opt_state:
+        trainer.fit(
+            model_module,
+            datamodule=data_module,
+            ckpt_path=args.resume_from_checkpoint,
+        )
+    else:
+        # Manually load the model state dict without optimizer state dict.
+        assert args.resume_from_checkpoint is not None, (
+            "resume_from_checkpoint must be specified if load_opt_state is False."
+        )
+        ckpt = torch.load(args.resume_from_checkpoint, map_location="cpu")
+        model_module.load_state_dict(ckpt["state_dict"], strict=True)
+        if "ema" in ckpt:
+            model_module.ema.load_state_dict(ckpt["ema"], strict=False)
+        model_module.last_lr_step = ckpt["global_step"]
+        trainer.fit_loop.load_state_dict(ckpt["loops"]["fit_loop"])
+        trainer.fit(model_module, datamodule=data_module)
 
 
 if __name__ == "__main__":

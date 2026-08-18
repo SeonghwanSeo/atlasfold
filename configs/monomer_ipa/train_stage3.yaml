@@ -6,7 +6,8 @@ model:
 
 train:
   _yaml_: _train_base.yaml
-  name: ipa-stage3-512-ptm
+  name: ipa-stage3-512
+  seed: 1
 
   load_opt_state: false
 
@@ -18,7 +19,6 @@ train:
   loss:
     weights:
       violation: 1.0
-      pae: 0.1
       experimentally_resolved: 0.01
 
   data:

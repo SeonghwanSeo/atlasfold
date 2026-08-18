@@ -40,11 +40,12 @@ class TrainingDataModule(pl.LightningDataModule):
     _train_ds: MultiTrainingDataset
     _val_ds: ValidationDataset
 
-    def __init__(self, config: DataModuleConfig) -> None:
+    def __init__(self, config: DataModuleConfig, seed: int = 0) -> None:
         super().__init__()
         config = OmegaConf.to_object(OmegaConf.merge(DataModuleConfig, config))
 
         self.config = config
+        self.seed = seed
         self.logger = logging.getLogger("[DataModule]")
 
         # Set up the data directory based on root dir
@@ -107,6 +108,7 @@ class TrainingDataModule(pl.LightningDataModule):
             rank=self.trainer.global_rank if self.trainer else 0,
             world_size=self.trainer.world_size if self.trainer else 1,
             epoch=self.trainer.current_epoch if self.trainer else 0,
+            seed=self.seed,
             replacement=True,
         )
         persistent_workers = (

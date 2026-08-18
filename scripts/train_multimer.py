@@ -239,7 +239,7 @@ def train(args: argparse.Namespace) -> None:
     pl.seed_everything(cfg.train.seed, workers=True, verbose=False)
 
     model_module = TrainingModule(cfg)
-    data_module = TrainingDataModule(cfg.train.data)
+    data_module = TrainingDataModule(cfg.train.data, seed=cfg.train.seed)
 
     if trainer.is_global_zero:
         print_config(cfg)

@@ -8,7 +8,7 @@ from atlasfold.train.monomer_ipa.dataset import MultiTrainingDataset
 
 
 class TrainingDataModule(BaseDataModule):
-    def __init__(self, config: DictConfig) -> None:
+    def __init__(self, config: DictConfig, seed: int = 0) -> None:
         # Remove the IPA-only cropper block before the base structured-config merge.
         base_config = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
         self.cropper_config: CropperConfig = OmegaConf.to_object(
@@ -17,7 +17,7 @@ class TrainingDataModule(BaseDataModule):
                 base_config.pop("cropper"),
             )
         )
-        super().__init__(base_config)
+        super().__init__(base_config, seed=seed)
 
     def construct_train_dataset(self) -> MultiTrainingDataset:
         """Construct training dataset."""
