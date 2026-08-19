@@ -1,7 +1,6 @@
 """Folding Trunk."""
 
 import dataclasses
-from functools import partial
 
 import torch
 
@@ -498,11 +497,8 @@ class AtlasFold_Multimer(torch.nn.Module):
         self,
         batch: dict[str, torch.Tensor],
         mlm_mask: torch.Tensor | None = None,
-        train: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Extract LM features and project them to single and pair representations."""
-        _add = partial(torch_utils.add, inplace=not train)
-
         # === Prepare LM inputs === #
         input_ids = batch["lm.input_ids"]  # [B, S]
         pos_id = batch["lm.pos_id"]  # [B, S]
@@ -529,7 +525,7 @@ class AtlasFold_Multimer(torch.nn.Module):
 
         with torch.no_grad():
             x = self.lm.embed(input_ids)
-        lm_emb = _add(lm_emb, w_layers[0] * self.layernorm_lm_emb(x))
+        lm_emb += w_layers[0] * self.layernorm_lm_emb(x)
 
         for i, block in enumerate(self.lm.transformer.blocks):
             with torch.no_grad():
@@ -538,8 +534,9 @@ class AtlasFold_Multimer(torch.nn.Module):
                 attn = attn.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
                 attn = attn.clamp_(-100.0, 100.0).div_(100)
                 attn = attn.moveaxis(1, -1)  # [B, S, S, n_heads]
-            lm_emb = _add(lm_emb, w_layers[i + 1] * self.layernorm_lm_emb(x))
-            lm_attn = _add(lm_attn, self.proj_lm_attn[i](attn))
+            lm_emb += w_layers[i + 1] * self.layernorm_lm_emb(x)
+            lm_attn += self.proj_lm_attn[i](attn)
+            del attn
 
         # Extract the single and pair representations for the valid sequence positions
         # [B, S, c_s], [B, S, S, c_z] -> [B, L, c_s], [B, L, L, c_z]

@@ -116,9 +116,7 @@ class AtlasFoldForTrain(AtlasFold_Multimer):
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
-                s, z = self.__forward_trunk(
-                    batch, s_prev, z_prev, mask, train=enable_grad
-                )
+                s, z = self.__forward_trunk(batch, s_prev, z_prev, mask)
             s_prev, z_prev = s, z
         s, z = s.float(), z.float()
 
@@ -180,7 +178,6 @@ class AtlasFoldForTrain(AtlasFold_Multimer):
         s_prev: torch.Tensor,
         z_prev: torch.Tensor,
         mask: torch.Tensor,
-        train: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
 
         s = self.s_init(batch["aatype"])
@@ -197,7 +194,7 @@ class AtlasFoldForTrain(AtlasFold_Multimer):
 
         # Run LM module with stochastic masking.
         mlm_mask = self.sample_mlm_mask(batch, 0.15)
-        s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask, train)
+        s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask)
         s = s + self.proj_s_lm(s_lm)
         z = z + self.proj_z_lm(z_lm)
 
@@ -222,6 +219,69 @@ class AtlasFoldForTrain(AtlasFold_Multimer):
         B, S = input_ids.shape
         shape = (1, S) if synchronized else (B, S)
         return torch.rand(shape, device=input_ids.device) < prob
+
+    def run_lm_embedder(
+        self,
+        batch: dict[str, torch.Tensor],
+        mlm_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Extract cropped LM features for multimer training."""
+        input_ids = batch["lm.input_ids"]  # [B, S]
+        pos_id = batch["lm.pos_id"]  # [B, S]
+        seq_id = batch["lm.seq_id"]  # [B, S]. 1 for valid, 0 for padding
+
+        if mlm_mask is not None:
+            assert mlm_mask.shape[1] == input_ids.shape[1], (
+                f"MLM mask must have the same length dimension as input_ids. "
+                f"Got {mlm_mask.shape} and {input_ids.shape}."
+            )
+            aa_idxs = torch.tensor(self.alphabet.aa_idxs, device=input_ids.device)
+            mlm_mask = mlm_mask & torch.isin(input_ids, aa_idxs)
+            input_ids = input_ids.masked_fill(mlm_mask, self.alphabet.mask_idx)
+
+        row_s = batch["seq_tok_idx"]
+        B, L = row_s.shape
+        device = row_s.device
+        batch_index = torch.arange(B, device=device)
+        b_i_s = batch_index[:, None]
+        b_i_z = batch_index[:, None, None]
+        row_z, col_z = row_s[:, :, None], row_s[:, None, :]
+
+        lm_emb = torch.zeros((B, L, self.lm.d_model), device=device, dtype=torch.float32)
+        lm_attn = torch.zeros(
+            (B, L, L, self.channel_z), device=device, dtype=torch.float32
+        )
+        w_layers = self.lm_layer_weights.softmax(dim=0)
+
+        with torch.no_grad():
+            x = self.lm.embed(input_ids)
+            x_crop = x[b_i_s, row_s]
+        lm_emb = lm_emb + w_layers[0] * self.layernorm_lm_emb(x_crop)
+
+        for i, block in enumerate(self.lm.transformer.blocks):
+            with torch.no_grad():
+                x, attn = block(x, seq_id, pos_id, return_attn_logits=True)
+                attn = attn.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+                attn = attn.clamp_(-100.0, 100.0).div_(100)
+                attn = attn.moveaxis(1, -1)
+                x_crop = x[b_i_s, row_s]
+                attn_crop = attn[b_i_z, row_z, col_z]
+                del attn
+            lm_emb = lm_emb + w_layers[i + 1] * self.layernorm_lm_emb(x_crop)
+            lm_attn = lm_attn + self.proj_lm_attn[i](attn_crop)
+
+        s_lm = self.lm_emb_to_s_lm(lm_emb)
+        z_lm = self.lm_attn_to_z_lm(lm_attn)
+
+        mask = batch["seq_mask"]
+        pair_mask = mask[:, None, :] & mask[:, :, None]
+        intra_mask = batch["asym_id"][:, None, :] == batch["asym_id"][:, :, None]
+        intra_mask &= pair_mask
+        s_lm = s_lm * mask[:, :, None]
+        z_lm = z_lm * intra_mask[:, :, :, None]
+
+        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
+        return s_lm, z_lm
 
     def __forward_distogram(self, z: torch.Tensor) -> dict[str, torch.Tensor]:
         return self.distogram_head(z)

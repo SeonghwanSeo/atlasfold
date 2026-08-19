@@ -537,23 +537,6 @@ class StructureModule(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         aatype: torch.Tensor,
-        seq_mask: torch.Tensor,
-    ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
-        """Run the complete IPA/side-chain module in float32.
-
-        The surrounding LM and Pairformer may use bf16 autocast, but AlphaFold's
-        regression structure path is kept outside autocast for stable geometry
-        and attention updates.
-        """
-
-        with torch.autocast(device_type=s.device.type, enabled=False):
-            return self._forward(s.float(), z.float(), aatype, seq_mask)
-
-    def _forward(
-        self,
-        s: torch.Tensor,
-        z: torch.Tensor,
-        aatype: torch.Tensor,
         mask: torch.Tensor,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         """See Algorithm 20 in the AlphaFold2 SI
@@ -569,9 +552,6 @@ class StructureModule(nn.Module):
         mask : torch.Tensor
             Sequence mask of shape [B, L].
         """
-
-        aatype = aatype.long()
-
         # Line 1
         s_init = self.layer_norm_s(s)
         # Line 2

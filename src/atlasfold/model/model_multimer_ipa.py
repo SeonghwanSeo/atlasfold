@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
-from functools import partial
 from typing import Any
 
 import torch
@@ -371,11 +370,8 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         self,
         batch: dict[str, torch.Tensor],
         mlm_mask: torch.Tensor | None = None,
-        train: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Extract frozen-LM features and keep pair features intra-chain."""
-        _add = partial(torch_utils.add, inplace=not train)
-
         # === Prepare LM inputs === #
         input_ids = batch["lm.input_ids"]  # [B, S]
         pos_id = batch["lm.pos_id"]  # [B, S]
@@ -402,7 +398,7 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
 
         with torch.no_grad():
             x = self.lm.embed(input_ids)
-        lm_emb = _add(lm_emb, w_layers[0] * self.layernorm_lm_emb(x))
+        lm_emb += w_layers[0] * self.layernorm_lm_emb(x)
 
         for i, block in enumerate(self.lm.transformer.blocks):
             with torch.no_grad():
@@ -411,10 +407,11 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
                 attn = attn.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
                 attn = attn.clamp_(-100.0, 100.0).div_(100)
                 attn = attn.moveaxis(1, -1)  # [B, S, S, n_heads]
-            lm_emb = _add(lm_emb, w_layers[i + 1] * self.layernorm_lm_emb(x))
-            lm_attn = _add(lm_attn, self.proj_lm_attn[i](attn))
+            lm_emb += w_layers[i + 1] * self.layernorm_lm_emb(x)
+            lm_attn += self.proj_lm_attn[i](attn)
+            del attn
 
-        # Extract the s and z representations for the valid sequence positions
+        # Extract the single and pair representations for the valid sequence positions
         # [B, S, c_s], [B, S, S, c_z] -> [B, L, c_s], [B, L, L, c_z]
         b_i = torch.arange(input_ids.shape[0], device=input_ids.device)
         b_i_s, b_i_z = b_i[:, None], b_i[:, None, None]
@@ -428,13 +425,15 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         del lm_emb, lm_attn, row_s, row_z, col_z, b_i_s, b_i_z
 
         # Run LM stack with inter-chain pairs masked out
-        seq_mask = batch["seq_mask"]  # [B, L]
-        z_mask = seq_mask[:, None, :] & seq_mask[:, :, None]
-        intra_chain_mask = batch["asym_id"][:, None, :] == batch["asym_id"][:, :, None]
-        intra_chain_mask &= z_mask
-        s_lm = s_lm * seq_mask[:, :, None]
-        z_lm = z_lm * intra_chain_mask[:, :, :, None]
-        s_lm, z_lm = self.lm_stack(s_lm, z_lm, seq_mask, self.use_kernel)
+        mask = batch["seq_mask"]  # [B, L]
+        pair_mask = mask[:, None, :] & mask[:, :, None]
+        intra_mask = batch["asym_id"][:, None, :] == batch["asym_id"][:, :, None]
+        intra_mask &= pair_mask
+        s_lm = s_lm * mask[:, :, None]
+        z_lm = z_lm * intra_mask[:, :, :, None]  # [B, L, L, c_z]
+
+        # Run LM stack
+        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
         return s_lm, z_lm
 
     def run_trunk(
@@ -457,32 +456,34 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         s = self.s_init(batch["aatype"])
         a, b = self.z_init(batch["aatype"]).chunk(2, dim=-1)
         z = a[..., :, None, :] + b[..., None, :, :]
-        z = z + self.z_rel_pos(batch["rel_pos"])
+        z += self.z_rel_pos(batch["rel_pos"])
 
         # Recycling embedding
-        s = s + self.recycle_s(s_prev)
-        z = z + self.recycle_z(z_prev)
+        s += self.recycle_s(s_prev)
+        z += self.recycle_z(z_prev)
         dgram = get_distogram(x_prev, batch["pseudo_beta"], **self.recycle_pos_cfg)
-        z = z + self.recycle_pos(dgram.to(z.dtype))
+        z += self.recycle_pos(dgram.to(z.dtype))
 
         # Run LM module with stochastic masking
         mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
         s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask)
-        s = s + self.proj_s_lm(s_lm)
-        z = z + self.proj_z_lm(z_lm)
+        s += self.proj_s_lm(s_lm)
+        z += self.proj_z_lm(z_lm)
 
         # Add template information
         if self.template_module is not None:
-            z = z + self.template_module(batch, z, mask, self.use_kernel)
+            z += self.template_module(batch, z, mask, self.use_kernel)
 
         # Run the main trunk
         s, z = self.main_stack(s, z, mask, self.use_kernel)
 
-        # Run the structure module
-        structure = self.structure_module(s, z, batch["aatype_int"], mask)
-
-        # Compute confidence metrics
-        confidence = self._compute_confidence(batch, z, structure)
+        # Run the inference heads
+        with torch.autocast(device_type=self.device.type, enabled=False):
+            _s, _z = s.float(), z.float()
+            # Run the structure module
+            structure = self.structure_module(_s, _z, batch["aatype_int"], mask)
+            # Compute confidence metrics
+            confidence = self._compute_confidence(batch, _z, structure)
         return s, z, structure, confidence
 
     def _compute_confidence(
@@ -492,32 +493,29 @@ class AtlasFoldMultimer_IPA(torch.nn.Module):
         structure: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
         """Compute confidence arrays and scores for one recycling pass."""
-        with torch.autocast(device_type=self.device.type, enabled=False):
-            mask = batch["seq_mask"].bool()
-            asym_id = batch["asym_id"]
-            plddt_head = self.plddt_head(structure["act"].float())
-            pae_head = self.pae_head(z.float())
-            pae_probs = torch.softmax(pae_head["logits"], dim=-1)
-            bin_centers = pae_head["bin_centers"]
-            chain_ptm, interface_iptm = (
-                confidence_metrics.compute_chain_tm_scores_from_probs(
-                    pae_probs, bin_centers, asym_id, mask
-                )
-            )
-            return {
-                "plddt": confidence_metrics.compute_plddt(**plddt_head, mask=mask),
-                "pae": confidence_metrics.compute_pae_from_probs(
-                    pae_probs, bin_centers, mask
-                ),
-                "ptm": confidence_metrics.compute_ptm_from_probs(
-                    pae_probs, bin_centers, mask
-                ),
-                "iptm": confidence_metrics.compute_iptm_from_probs(
-                    pae_probs, bin_centers, asym_id, mask
-                ),
-                "chain_ptm": chain_ptm,
-                "interface_iptm": interface_iptm,
-            }
+        asym_id = batch["asym_id"]
+        mask = batch["seq_mask"]
+        plddt_head = self.plddt_head(structure["act"].float())
+        pae_head = self.pae_head(z.float())
+        pae_probs = torch.softmax(pae_head["logits"], dim=-1)
+        bin_centers = pae_head["bin_centers"]
+        chain_ptm, interface_iptm = confidence_metrics.compute_chain_tm_scores_from_probs(
+            pae_probs, bin_centers, asym_id, mask
+        )
+        return {
+            "plddt": confidence_metrics.compute_plddt(**plddt_head, mask=mask),
+            "pae": confidence_metrics.compute_pae_from_probs(
+                pae_probs, bin_centers, mask
+            ),
+            "ptm": confidence_metrics.compute_ptm_from_probs(
+                pae_probs, bin_centers, mask
+            ),
+            "iptm": confidence_metrics.compute_iptm_from_probs(
+                pae_probs, bin_centers, asym_id, mask
+            ),
+            "chain_ptm": chain_ptm,
+            "interface_iptm": interface_iptm,
+        }
 
     @classmethod
     def from_pretrained(
