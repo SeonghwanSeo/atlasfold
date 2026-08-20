@@ -2,7 +2,7 @@ model:
   _yaml_: _model.yaml
   lm_path: ./weights/atlaslm_3b_base.pth
   trunk:
-    blocks_per_ckpt: null
+    blocks_per_ckpt: 16
 
 train:
   _yaml_: _train_base.yaml
@@ -39,11 +39,11 @@ train:
         is_distillation: true
         weight: 0.73
         sampling_strategy: ["length"]
-        residue_plddt_threshold: 50.0
+        residue_plddt_threshold: 0.0
       - name: short_monomers
         is_distillation: true
         weight: 0.02
         sampling_strategy: ["length"]
-        residue_plddt_threshold: 50.0
+        residue_plddt_threshold: 0.0
     val_dataset:
       name: cameo_val
