@@ -182,11 +182,10 @@ class TrainingModuleIPA(pl.LightningModule):
         )
 
     def forward(self, batch: dict[str, torch.Tensor], num_recycles: int, mode: str):
+        mlm_prob = self.config.mlm_prob
         if mode == "train":
-            return self.model.forward_train(
-                batch, num_recycles, mlm_prob=self.config.mlm_prob
-            )
-        return self.model.inference(batch, num_recycles=num_recycles)
+            return self.model.forward_train(batch, num_recycles, mlm_prob=mlm_prob)
+        return self.model.inference(batch, num_recycles=num_recycles, mlm_prob=mlm_prob)
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
         # Sample recycling steps from the shared schedule.
