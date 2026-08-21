@@ -2,7 +2,7 @@ model:
   _yaml_: _model.yaml
   lm_path: ./weights/atlaslm_3b_base.pth
   trunk:
-    blocks_per_ckpt: null
+    blocks_per_ckpt: 8
 
 train:
   _yaml_: _train_base.yaml
@@ -26,8 +26,8 @@ train:
     max_seq_length: 1024
     resample_threshold: 0
     cropper:
-      prob_contiguous: 0.8
-      prob_multi_contiguous: 0.2
+      prob_contiguous: 1.0
+      prob_multi_contiguous: 0.0
 
     data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
     train_datasets:

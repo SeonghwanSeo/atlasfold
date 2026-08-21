@@ -72,7 +72,11 @@ class MonomerIPACropper:
             indices = np.arange(length, dtype=np.int64)
             return MonomerCrop(indices, use_clamped_fape)
 
-        if self.prob_multi_contiguous > 0.0 and rng.random() < self.prob_multi_contiguous:
+        if (
+            use_clamped_fape
+            and self.prob_multi_contiguous > 0.0
+            and rng.random() < self.prob_multi_contiguous
+        ):
             # Multi-segment cropping is only possible
             indices = self._crop_multi_contiguous(length, max_length, rng)
             if indices is not None:
