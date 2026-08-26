@@ -295,7 +295,11 @@ def run(args: argparse.Namespace) -> None:
             target_name = output.name
             sample_name = f"{target_name}_seed-{seed}_sample-{sample_idx}"
 
-            sample_text = sample.to_mmcif() if format == "cif" else sample.to_pdb()
+            sample_text = (
+                sample.to_mmcif(model="multimer")
+                if format == "cif"
+                else sample.to_pdb(model="multimer")
+            )
             confidence_scores = sample.confidence_scores
 
             with open(out_dir / f"{sample_name}_model.{format}", "w") as f:

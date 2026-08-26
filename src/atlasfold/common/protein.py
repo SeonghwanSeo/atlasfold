@@ -98,11 +98,11 @@ class Protein:
         """Return a boolean mask indicating which atoms are present in the structure."""
         return np.isfinite(self.coordinates).all(axis=-1)
 
-    def to_pdb(self) -> str:
-        return file_io.to_pdb(self.to_gemmi_structure())
+    def to_pdb(self, model: str | None = None) -> str:
+        return file_io.to_pdb(self.to_gemmi_structure(), model=model)
 
-    def to_mmcif(self) -> str:
-        return file_io.to_mmcif(self.to_gemmi_structure())
+    def to_mmcif(self, model: str | None = None) -> str:
+        return file_io.to_mmcif(self.to_gemmi_structure(), model=model)
 
     def to_gemmi_structure(self) -> gemmi.Structure:
         cinfo = file_io.ChainInfo(
@@ -283,11 +283,11 @@ class ProteinMultimer:
         """Return the number of residues in the structure."""
         return sum(c.num_residues for c in self.chains)
 
-    def to_pdb(self) -> str:
-        return file_io.to_pdb(self.to_gemmi_structure())
+    def to_pdb(self, model: str | None = None) -> str:
+        return file_io.to_pdb(self.to_gemmi_structure(), model=model)
 
-    def to_mmcif(self) -> str:
-        return file_io.to_mmcif(self.to_gemmi_structure())
+    def to_mmcif(self, model: str | None = None) -> str:
+        return file_io.to_mmcif(self.to_gemmi_structure(), model=model)
 
     def to_gemmi_structure(self) -> gemmi.Structure:
         label_asym_ids = _default_chain_ids(len(self.chains))
