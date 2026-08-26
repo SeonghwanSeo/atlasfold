@@ -1,5 +1,6 @@
 model:
   _yaml_: _model.yaml
+  lm_path: ./weights/atlaslm_3b_base.pth
   trunk:
     blocks_per_ckpt: null
   template_module:

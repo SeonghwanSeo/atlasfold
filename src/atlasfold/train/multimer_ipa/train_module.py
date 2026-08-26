@@ -17,6 +17,7 @@ from atlasfold.train.monomer_ipa import train_module as monomer_train_module
 from atlasfold.train.multimer import train_alignment, validation_metrics
 from atlasfold.train.multimer_ipa.model_train import AtlasFoldMultimerIPAForTrain
 from atlasfold.train.utils.ema import ExponentialMovingAverage
+from atlasfold.utils.geometry import metrics as geometry_metrics
 
 
 def to_dict(config: DictConfig) -> dict:
@@ -99,9 +100,15 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
             "interface/lddt-ca",
         ]
         if self.loss_weights["plddt"] != 0:
-            names.append("confidence/plddt")
+            names.extend(("confidence/plddt", "confidence/plddt_mae"))
         if self.loss_weights["pae"] != 0:
-            names.extend(("confidence/ptm", "confidence/iptm"))
+            names.extend(
+                (
+                    "confidence/pae_mae",
+                    "confidence/ptm",
+                    "confidence/iptm",
+                )
+            )
         self.val_metrics = MetricCollection(
             {name: MeanMetric() for name in names}, prefix="val/"
         )
@@ -203,6 +210,18 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
                 use_clamped_fape=None,
                 reduction="none",
             )
+            pred_pos = out["structure"]["coords"].float()
+            renamed_pos = structure_labels["renamed_atom14_gt_positions"]
+            renamed_mask = structure_labels["renamed_atom14_gt_exists"]
+            with torch.no_grad():
+                rmsd = geometry_metrics.compute_rmsd_atom14(
+                    pred_pos, renamed_pos, renamed_mask, align=True
+                )
+                lddt_ca = geometry_metrics.compute_lddt_ca(
+                    pred_pos, renamed_pos, renamed_mask
+                )
+            metrics["complex/rmsd"] = rmsd.mean()
+            metrics["complex/lddt-ca"] = lddt_ca.mean()
             if self.loss_weights["violation"] != 0:
                 violation, violation_metrics = structure_ipa.violation_loss(
                     out["structure"],
@@ -253,7 +272,6 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
                 dummy_loss = dummy_loss + (out["distogram"]["logits"] * 0).mean()
 
             confidence_mask = loss_mask["confidence"].float()
-            pred_pos = out["structure"]["coords"].float()
             if self.loss_weights["plddt"] != 0:
                 plddt = self.plddt_loss(
                     out["confidence"]["plddt"]["logits"].float(),
@@ -338,16 +356,36 @@ class TrainingModuleIPA(monomer_train_module.TrainingModuleIPA):
         distogram_loss = self._compute_validation_distogram_loss(out, feat, label)
         self.val_metrics["distogram_loss"].update(distogram_loss)
 
-        metrics = validation_metrics._compute_single_sample_metrics(
+        aligned_gt = validation_metrics.get_aligned_gt_structure(
             out["coords"], feat, label
+        )
+        metrics = validation_metrics._compute_single_sample_metrics(
+            out["coords"], feat, label, aligned_gt=aligned_gt
         )
         for name, value in metrics.items():
             if name in self.val_metrics:
                 self.val_metrics[name].update(value)
         if self.loss_weights["plddt"] != 0:
             mask = feat["seq_mask"].bool()
-            self.val_metrics["confidence/plddt"].update(out["plddt"][mask].float().mean())
+            mean_plddt = out["plddt"][mask].float().mean()
+            self.val_metrics["confidence/plddt"].update(mean_plddt)
+            self.val_metrics["confidence/plddt_mae"].update(
+                torch.abs(
+                    mean_plddt
+                    - mean_plddt.new_tensor(metrics["complex/lddt-ca"])
+                )
+            )
         if self.loss_weights["pae"] != 0:
+            aligned_coordinates, aligned_mask = aligned_gt
+            target_pae = self.pae_loss.get_alignment_error(
+                out["coords"].unsqueeze(0).float(),
+                aligned_coordinates.unsqueeze(0).float(),
+                aligned_mask.unsqueeze(0),
+            )[0]
+            pae_mask = self.pae_loss.get_pair_mask(aligned_mask.unsqueeze(0))[0]
+            pae_mae = torch.abs(out["pae"].float() - target_pae)
+            pae_mae = (pae_mae * pae_mask).sum() / pae_mask.sum().clamp(min=1)
+            self.val_metrics["confidence/pae_mae"].update(pae_mae)
             self.val_metrics["confidence/ptm"].update(out["ptm"].float())
             self.val_metrics["confidence/iptm"].update(out["iptm"].float())
 

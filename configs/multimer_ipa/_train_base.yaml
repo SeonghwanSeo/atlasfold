@@ -80,7 +80,7 @@ loss:
     chain_center_of_mass: 1.0
     distogram: 0.3
     plddt: 0.01
-    pae: 0.1
+    pae: 0.0
     experimentally_resolved: 0.01
 
   # Distogram loss

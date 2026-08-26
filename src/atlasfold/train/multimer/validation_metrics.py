@@ -293,8 +293,11 @@ def _compute_single_sample_metrics(
     x_pred: torch.Tensor,
     batch: dict[str, torch.Tensor],
     label: dict[str, torch.Tensor],
+    aligned_gt: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> dict[str, float]:
-    x_gt, mask = get_aligned_gt_structure(x_pred, batch, label)
+    if aligned_gt is None:
+        aligned_gt = get_aligned_gt_structure(x_pred, batch, label)
+    x_gt, mask = aligned_gt
     seq_mask = batch["seq_mask"].bool()
     atom_mask = mask & seq_mask[:, None]
     ca_mask = atom_mask[:, CA_IDX]

@@ -26,8 +26,8 @@ train:
     max_seq_length: 1024
     resample_threshold: 0
     cropper:
-      prob_contiguous: 1.0
-      prob_multi_contiguous: 0.0
+      prob_contiguous: 0.9
+      prob_multi_contiguous: 0.1
 
     data_root: /cache/wykim_lab/icl_shwan/atlasfold_data/
     train_datasets:
@@ -35,6 +35,11 @@ train:
         is_distillation: false
         weight: 0.25
         sampling_strategy: ["length", "cluster"]
+      - name: disordered_pdb
+        is_distillation: true
+        weight: 0.01
+        sampling_strategy: ["length", "cluster"]
+        residue_plddt_threshold: 0.0
       - name: long_monomers
         is_distillation: true
         weight: 0.73
@@ -42,7 +47,7 @@ train:
         residue_plddt_threshold: 0.0
       - name: short_monomers
         is_distillation: true
-        weight: 0.02
+        weight: 0.01
         sampling_strategy: ["length"]
         residue_plddt_threshold: 0.0
     val_dataset:

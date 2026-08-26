@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 
 import lightning.pytorch as pl
@@ -15,6 +16,87 @@ from omegaconf import DictConfig
 from atlasfold.train.config import load_config, print_config, save_config, to_dict
 from atlasfold.train.multimer_ipa.datamodule import TrainingDataModule
 from atlasfold.train.multimer_ipa.train_module import TrainingModuleIPA
+
+ATLASFOLD_INIT_MODULES = (
+    "s_init",
+    "z_init",
+    "z_rel_pos",
+    "lm_layer_weights",
+    "layernorm_lm_emb",
+    "lm_emb_to_s_lm",
+    "proj_lm_attn",
+    "lm_attn_to_z_lm",
+    "lm_stack",
+    "proj_s_lm",
+    "proj_z_lm",
+    "main_stack",
+)
+
+
+def _initialize_from_atlasfold_weight(
+    module: TrainingModuleIPA,
+    weight_path: str | Path,
+) -> int:
+    """Initialize shared multimer IPA parameters from AtlasFold weights."""
+    source_weights = torch.load(
+        weight_path,
+        map_location="cpu",
+        weights_only=True,
+        mmap=True,
+    )
+    if not isinstance(source_weights, Mapping) or not source_weights:
+        raise TypeError("AtlasFold weight file must be a non-empty state dict.")
+    if not all(isinstance(key, str) for key in source_weights):
+        raise TypeError("Every key in the AtlasFold state dict must be a string.")
+
+    target_params = dict(module.model.named_parameters())
+    expected_keys = {
+        key
+        for key in target_params
+        if any(
+            key == name or key.startswith(f"{name}.")
+            for name in ATLASFOLD_INIT_MODULES
+        )
+    }
+    missing_keys = sorted(expected_keys - source_weights.keys())
+    if missing_keys:
+        raise RuntimeError(
+            "AtlasFold partial initialization is missing expected key(s): "
+            f"{missing_keys}"
+        )
+
+    shape_mismatches = []
+    for key in sorted(expected_keys):
+        source_value = source_weights[key]
+        if not isinstance(source_value, torch.Tensor):
+            shape_mismatches.append(
+                f"{key}: expected Tensor, got {type(source_value).__name__}"
+            )
+        elif source_value.shape != target_params[key].shape:
+            shape_mismatches.append(
+                f"{key}: source {tuple(source_value.shape)} != "
+                f"target {tuple(target_params[key].shape)}"
+            )
+    if shape_mismatches:
+        raise RuntimeError(
+            "AtlasFold partial initialization has incompatible parameter(s): "
+            + "; ".join(shape_mismatches)
+        )
+
+    selected_weights = {key: source_weights[key] for key in expected_keys}
+    incompatible = module.model.load_state_dict(selected_weights, strict=False)
+    if incompatible.unexpected_keys:
+        raise RuntimeError(
+            "Unexpected key(s) while loading AtlasFold weights: "
+            f"{sorted(incompatible.unexpected_keys)}"
+        )
+
+    model_params = dict(module.model.named_parameters())
+    module.ema.params = {
+        key: model_params[key].detach().clone() for key in module.ema.params
+    }
+    module.ema.device = next(iter(module.ema.params.values())).device
+    return sum(target_params[key].numel() for key in selected_weights)
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,11 +133,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--init_weight",
-        type=str,
         help=(
-            "Path to a monomer IPA checkpoint or raw state dict. All shared model "
-            "parameters are loaded and the multimer template module remains newly "
-            "initialized."
+            "Path to a raw AtlasFold model state dict, such as "
+            "weights/atlasfold-stage1.pth. Shared input, LM-adapter, and trunk "
+            "parameters are loaded."
         ),
     )
     parser.add_argument(
@@ -210,37 +291,6 @@ def build_trainer(cfg: DictConfig, debug: bool = False) -> pl.Trainer:
     )
 
 
-def _initialize_from_weight(
-    model_module: TrainingModuleIPA,
-    weight_path: str,
-    *,
-    debug: bool = False,
-) -> None:
-    state_dict = torch.load(weight_path, map_location="cpu")
-    state_dict = state_dict.get("state_dict", state_dict)
-    state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
-    incompatible = model_module.model.load_state_dict(state_dict, strict=False)
-
-    model_params = dict(model_module.model.named_parameters())
-    model_module.ema.params = {
-        k: model_params[k].detach().clone()
-        for k in model_module.ema.params
-        if k in model_params
-    }
-    model_module.ema.device = next(iter(model_module.ema.params.values())).device
-
-    print(f"Initialized model and EMA from {weight_path}.")
-    if debug:
-        missing_keys = sorted(
-            k
-            for k in incompatible.missing_keys
-            if not k.startswith(("lm.", "template_module."))
-        )
-        additional_keys = sorted(incompatible.unexpected_keys)
-        print(f"init_weight missing keys ({len(missing_keys)}): {missing_keys}")
-        print(f"init_weight additional keys ({len(additional_keys)}): {additional_keys}")
-
-
 def train(args: argparse.Namespace) -> None:
     torch.set_float32_matmul_precision("high")
     if args.init_weight is not None and args.resume_from_checkpoint is not None:
@@ -256,7 +306,15 @@ def train(args: argparse.Namespace) -> None:
     model_module = TrainingModuleIPA(cfg)
     data_module = TrainingDataModule(cfg.train.data, seed=cfg.train.seed)
     if args.init_weight is not None:
-        _initialize_from_weight(model_module, args.init_weight, debug=args.debug)
+        loaded_numel = _initialize_from_atlasfold_weight(
+            model_module, args.init_weight
+        )
+        if is_global_zero:
+            logging.info(
+                "Initialized %d parameters from AtlasFold weights at %s.",
+                loaded_numel,
+                args.init_weight,
+            )
     if is_global_zero:
         print_config(cfg)
 
