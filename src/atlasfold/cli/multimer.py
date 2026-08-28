@@ -252,7 +252,8 @@ def run(args: argparse.Namespace) -> None:
             logger.info("Loading local weight path=%s", model_path)
         else:
             logger.info(
-                "Loading atlasfold-m-260725 from Hugging Face, cache_dir=%s",
+                "Loading `SeonghwanSeo/atlasfold-m-260725` from Hugging Face, "
+                "cache_dir=%s",
                 cache_dir,
             )
 
@@ -263,6 +264,11 @@ def run(args: argparse.Namespace) -> None:
                     f"Local AtlasLM weight file does not exist: {lm_path}"
                 )
             logger.info("Loading local AtlasLM weight path=%s", lm_path)
+        else:
+            logger.info(
+                "Loading `SeonghwanSeo/atlaslm-3b-base` from Hugging Face, cache_dir=%s",
+                cache_dir,
+            )
 
         model = load_pretrained_model(
             "atlasfold-m-260725",
