@@ -1,6 +1,7 @@
 """Folding Trunk."""
 
 import dataclasses
+from pathlib import Path
 
 import torch
 
@@ -14,7 +15,6 @@ from atlasfold.model.network.rel_pos_encoding import (
 from atlasfold.model.utils import confidence_metrics
 from atlasfold.utils import torch_utils
 from atlaslm.model import Alphabet, AtlasLM
-from atlaslm.pretrained import get_model, load_model
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -65,7 +65,7 @@ class ConfidenceHeadConfig:
 
 @dataclasses.dataclass(kw_only=True)
 class AtlasFoldConfig:
-    name: str = "atlasfold-base"
+    name: str = "atlasfold-260703"
     lm_name: str = "atlaslm-3b"
     lm_path: str | None = None
 
@@ -88,7 +88,7 @@ class AtlasFold(torch.nn.Module):
     def __init__(
         self,
         cfg: AtlasFoldConfig,
-        load_lm: bool = True,
+        lm: AtlasLM | None = None,
     ) -> None:
         """Initialize the AtlasFold model."""
         super().__init__()
@@ -107,10 +107,9 @@ class AtlasFold(torch.nn.Module):
         self.atom_rel_pos_encoding = AtomRelativePositionEncoding(max_r=4)
 
         # === Language model === #
-        if load_lm:
-            lm = load_model(cfg.lm_name, path=cfg.lm_path, dtype=torch.bfloat16)
-        else:
-            lm = get_model(cfg.lm_name)
+        if lm is None:
+            lm_source = Path(cfg.lm_path) if cfg.lm_path is not None else cfg.lm_name
+            lm = AtlasLM.from_pretrained(lm_source, dtype=torch.bfloat16)
         self.lm: AtlasLM = lm
         # Freeze LM parameters
         self.lm.requires_grad_(False)
@@ -527,17 +526,52 @@ class AtlasFold(torch.nn.Module):
     @classmethod
     def from_pretrained(
         cls,
-        state_dict: dict,
+        pretrained_model_name_or_path: str | Path = "SeonghwanSeo/atlasfold-260703",
+        *,
         config: AtlasFoldConfig | None = None,
-        device: str | torch.device = "cuda",
+        lm: AtlasLM | None = None,
+        device: str | torch.device = "cpu",
+        cache_dir: str | Path | None = None,
     ) -> "AtlasFold":
-        """Create an AtlasFold model from a pretrained state dict."""
-        config = config if config is not None else AtlasFoldConfig()
+        """Create an AtlasFold model from pretrained weights."""
+        if config is None:
+            config = AtlasFoldConfig()
+
+        source = pretrained_model_name_or_path
+        if isinstance(source, Path):
+            if not source.is_file():
+                raise FileNotFoundError(f"Model checkpoint does not exist: {source}")
+            model_path = source
+        elif Path(source).is_file():
+            model_path = Path(source)
+        else:
+            from huggingface_hub import snapshot_download
+
+            repo_path = snapshot_download(
+                repo_id=source,
+                repo_type="model",
+                cache_dir=cache_dir,
+            )
+            model_name = source.rsplit("/", maxsplit=1)[-1]
+            model_path = Path(repo_path) / "weights" / f"{model_name}.pth"
+
         device = torch.device(device)
+        dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+
+        if lm is None:
+            lm_source = (
+                Path(config.lm_path) if config.lm_path is not None else config.lm_name
+            )
+            lm = AtlasLM.from_pretrained(
+                lm_source,
+                device=device,
+                dtype=dtype,
+                cache_dir=cache_dir,
+            )
 
         # Create the model on meta device
         with torch.device("meta"):
-            model = cls(config, load_lm=False)
+            model = cls(config, lm=lm)
             # Remove the LM, which will be loaded separately
             del model.lm
 
@@ -545,13 +579,11 @@ class AtlasFold(torch.nn.Module):
         model = model.to_empty(device=device)
 
         # Load the state dict with the specified strictness
+        state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
         model.load_state_dict(state_dict, strict=True)
 
-        # Finally, load the LM
-        dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
-        model.lm = load_model(
-            config.lm_name, path=config.lm_path, device=device, dtype=dtype
-        )
+        # Finally, attach the LM
+        model.lm = lm.to(device=device, dtype=dtype)
 
         if dtype == torch.bfloat16:
             model.lm = model.lm.bfloat16()

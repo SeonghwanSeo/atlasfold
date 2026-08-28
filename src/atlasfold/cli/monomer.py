@@ -79,6 +79,12 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Optional local model weights.",
     )
     runtime.add_argument(
+        "--lm-path",
+        type=Path,
+        default=None,
+        help="Optional local AtlasLM weights.",
+    )
+    runtime.add_argument(
         "--cache-dir",
         type=Path,
         default=None,
@@ -218,6 +224,7 @@ def run(args: argparse.Namespace) -> None:
 
     def load_model(
         model_path: str | Path | None = None,
+        lm_path: str | Path | None = None,
         device: str | torch.device | None = None,
         cache_dir: str | Path | None = None,
     ) -> AtlasFold:
@@ -237,10 +244,19 @@ def run(args: argparse.Namespace) -> None:
                 device,
             )
 
+        if lm_path is not None:
+            lm_path = Path(lm_path)
+            if not lm_path.exists():
+                raise FileNotFoundError(
+                    f"Local AtlasLM weight file does not exist: {lm_path}"
+                )
+            logger.info("Loading local AtlasLM weight path=%s", lm_path)
+
         model = load_pretrained_model(
             "atlasfold-260703",
             device=device,
             cache_dir=cache_dir,
+            lm_path=lm_path,
             model_path=model_path,
         )
         if not isinstance(model, AtlasFold):
@@ -267,7 +283,11 @@ def run(args: argparse.Namespace) -> None:
             target_name = output.name
             sample_name = f"{target_name}_seed-{seed}_sample-{sample_idx}"
 
-            sample_text = sample.to_mmcif() if format == "cif" else sample.to_pdb()
+            sample_text = (
+                sample.to_mmcif(model="monomer")
+                if format == "cif"
+                else sample.to_pdb(model="monomer")
+            )
             confidence_scores = sample.confidence_scores
 
             with open(out_dir / f"{sample_name}_model.{format}", "w") as f:
@@ -357,6 +377,7 @@ def run(args: argparse.Namespace) -> None:
 
     model = load_model(
         model_path=args.model_path,
+        lm_path=args.lm_path,
         device=args.device,
         cache_dir=args.cache_dir,
     )

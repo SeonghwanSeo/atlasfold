@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -15,7 +16,7 @@ from atlasfold.model.network.rel_pos_encoding import RelativePositionEncoding
 from atlasfold.model.network.structure_module import StructureModule
 from atlasfold.model.utils import confidence_metrics
 from atlasfold.utils import torch_utils
-from atlaslm.pretrained import get_model, load_model
+from atlaslm.model import AtlasLM
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -95,7 +96,7 @@ def compute_recycle_tolerance(
 
 @dataclasses.dataclass(kw_only=True)
 class AtlasFoldIPAConfig:
-    name: str = "atlasfold-ipa-base"
+    name: str = "atlasfold-ipa"
     lm_name: str = "atlaslm-3b"
     lm_path: str | None = None
     channel_s: int = 384
@@ -179,7 +180,11 @@ class PredictedAlignedErrorHead(torch.nn.Module):
 class AtlasFold_IPA(torch.nn.Module):
     """AtlasFold monomer trunk with an AlphaFold-style IPA structure decoder."""
 
-    def __init__(self, cfg: AtlasFoldIPAConfig, load_lm: bool = True) -> None:
+    def __init__(
+        self,
+        cfg: AtlasFoldIPAConfig,
+        lm: AtlasLM | None = None,
+    ) -> None:
         """Initialize the AtlasFold IPA model."""
         super().__init__()
         self.cfg: AtlasFoldIPAConfig = cfg
@@ -192,11 +197,10 @@ class AtlasFold_IPA(torch.nn.Module):
         self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
 
         # === Language model === #
-        if load_lm:
-            lm = load_model(cfg.lm_name, path=cfg.lm_path, dtype=torch.bfloat16)
-        else:
-            lm = get_model(cfg.lm_name)
-        self.lm = lm
+        if lm is None:
+            lm_source = Path(cfg.lm_path) if cfg.lm_path is not None else cfg.lm_name
+            lm = AtlasLM.from_pretrained(lm_source, dtype=torch.bfloat16)
+        self.lm: AtlasLM = lm
         self.lm.requires_grad_(False)
         self.alphabet = self.lm.alphabet
 
@@ -599,28 +603,61 @@ class AtlasFold_IPA(torch.nn.Module):
     @classmethod
     def from_pretrained(
         cls,
-        state_dict: dict[str, torch.Tensor],
+        pretrained_model_name_or_path: str | Path,
+        *,
         config: AtlasFoldIPAConfig | None = None,
-        device: str | torch.device = "cuda",
-        strict: bool = True,
+        lm: AtlasLM | None = None,
+        device: str | torch.device = "cpu",
+        cache_dir: str | Path | None = None,
     ) -> AtlasFold_IPA:
-        """Create an AtlasFold IPA model from a pretrained state dict."""
-        config = config if config is not None else AtlasFoldIPAConfig()
+        """Create an AtlasFold IPA model from pretrained weights."""
+        if config is None:
+            config = AtlasFoldIPAConfig()
+
+        source = pretrained_model_name_or_path
+        if isinstance(source, Path):
+            if not source.is_file():
+                raise FileNotFoundError(f"Model checkpoint does not exist: {source}")
+            model_path = source
+        elif Path(source).is_file():
+            model_path = Path(source)
+        else:
+            from huggingface_hub import snapshot_download
+
+            repo_path = snapshot_download(
+                repo_id=source,
+                repo_type="model",
+                cache_dir=cache_dir,
+            )
+            model_name = source.rsplit("/", maxsplit=1)[-1]
+            model_path = Path(repo_path) / "weights" / f"{model_name}.pth"
+
         device = torch.device(device)
         dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+
+        if lm is None:
+            lm_source = (
+                Path(config.lm_path) if config.lm_path is not None else config.lm_name
+            )
+            lm = AtlasLM.from_pretrained(
+                lm_source,
+                device=device,
+                dtype=dtype,
+                cache_dir=cache_dir,
+            )
+
         with torch.device("meta"):
-            model = cls(config, load_lm=False)
+            model = cls(config, lm=lm)
             del model.lm
         model = model.to_empty(device=device)
-        model.load_state_dict(state_dict, strict=strict)
+        state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+        model.load_state_dict(state_dict, strict=True)
         for module in model.modules():
             if hasattr(module, "init_buffers"):
                 module.init_buffers(device=device)
-        model.lm = load_model(
-            config.lm_name, path=config.lm_path, device=device, dtype=dtype
-        )
-        model.lm.requires_grad_(False)
-        model.alphabet = model.lm.alphabet
+
+        model.lm = lm.to(device=device, dtype=dtype)
+
         if dtype == torch.bfloat16:
             model.lm = model.lm.bfloat16()
             model.lm_stack = model.lm_stack.bfloat16()
