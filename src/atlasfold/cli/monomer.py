@@ -236,12 +236,11 @@ def run(args: argparse.Namespace) -> None:
             model_path = Path(model_path)
             if not model_path.exists():
                 raise FileNotFoundError(f"Local weight file does not exist: {model_path}")
-            logger.info("Loading local weight path=%s, device=%s", model_path, device)
+            logger.info("Loading local weight path=%s", model_path)
         else:
             logger.info(
-                "Loading atlasfold-260703 from Hugging Face, cache_dir=%s, device=%s",
+                "Loading `SeonghwanSeo/atlasfold-260703` from Hugging Face, cache_dir=%s",
                 cache_dir,
-                device,
             )
 
         if lm_path is not None:
@@ -251,6 +250,11 @@ def run(args: argparse.Namespace) -> None:
                     f"Local AtlasLM weight file does not exist: {lm_path}"
                 )
             logger.info("Loading local AtlasLM weight path=%s", lm_path)
+        else:
+            logger.info(
+                "Loading `SeonghwanSeo/atlaslm-3b-base` from Hugging Face, cache_dir=%s",
+                cache_dir,
+            )
 
         model = load_pretrained_model(
             "atlasfold-260703",
