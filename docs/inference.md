@@ -162,7 +162,6 @@ The main runner options and defaults are:
 | `seeds` | `[1]` | `[1]` | One integer seed or a sequence of seeds. |
 | `num_recycles` | `4` | `10` | Number of recycling iterations. |
 | `mlm_prob` | `0.15` | `0.20` | Probability of masking LM input residues during inference. |
-| `stochastic` | `False` | Not available | Re-sample monomer LM masking during recycling for additional diversity. |
 | `sampling_config` | Length-dependent | 200 diffusion steps | Optional `SamplingConfig` override. |
 | `length_buckets` | Automatic | Automatic | Optional explicit residue-length buckets. |
 | `max_tokens_per_batch` | `1024` | `1024` | Bucketed token budget accepted by iterator methods. |
@@ -176,9 +175,7 @@ Each target produces `len(seeds) * num_samples` structures. Outputs are keyed by
 
 Inference runs inside a forked Torch RNG context. Reusing the same model, input, seed, and options reproduces the same random choices without advancing the caller's Torch RNG state.
 
-For monomers, the default `stochastic=False` samples one LM mask and shares its features across recycling iterations. Setting `stochastic=True` samples LM masking during recycling and requires `mlm_prob > 0`.
-
-Setting `mlm_prob=0` disables LM masking for monomer inference. Multimer inference requires `mlm_prob > 0`.
+Both monomer and multimer inference require `0 < mlm_prob <= 1`. LM masking is sampled again for each recycling iteration.
 
 ### Diffusion configuration
 

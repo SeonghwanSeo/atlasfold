@@ -230,7 +230,6 @@ class AtlasFold(torch.nn.Module):
         # Advanced options
         mlm_prob: float | None = None,
         num_recycles: int = 3,
-        stochastic: bool = False,
         sampling_config: SamplingConfig | None = None,
     ) -> dict[str, torch.Tensor]:
         """Perform the forward pass.
@@ -274,7 +273,7 @@ class AtlasFold(torch.nn.Module):
         # Advanced options
         mlm_prob : float | None
             The probability of masking input tokens for the language model.
-            If > 0, a random MLM mask will be sampled for each forward pass.
+            A random MLM mask will be sampled for each recycling iteration.
 
         Returns
         -------
@@ -283,11 +282,9 @@ class AtlasFold(torch.nn.Module):
             the distogram logits and representations.
         """
         mlm_prob = mlm_prob if mlm_prob is not None else 0.15
-        if mlm_prob < 0.0:
-            raise ValueError("mlm_prob must be non-negative.")
-        if stochastic and mlm_prob <= 0.0:
+        if not 0.0 < mlm_prob <= 1.0:
             raise ValueError(
-                f"stochastic mode requires mlm_prob > 0.0, but got mlm_prob={mlm_prob}."
+                f"mlm_prob must be greater than 0 and at most 1, got {mlm_prob}."
             )
 
         is_batched = batch["aatype"].dim() == 3
@@ -301,10 +298,7 @@ class AtlasFold(torch.nn.Module):
         self.compute_rel_pos_encoding(batch)
 
         # Run trunk
-        if stochastic or mlm_prob == 0.0:
-            s, z = self.run_trunk_stochastic(batch, num_recycles, mlm_prob)
-        else:  # mode == "full"
-            s, z = self.run_trunk(batch, num_recycles, mlm_prob)
+        s, z = self.run_trunk(batch, num_recycles, mlm_prob)
 
         s, z = s.float(), z.float()
         if return_representations:
@@ -392,45 +386,6 @@ class AtlasFold(torch.nn.Module):
             # Run LM module with stochastic masking
             mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
             s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask)
-            s += self.proj_s_lm(s_lm)
-            z += self.proj_z_lm(z_lm)
-
-            # Run main trunk
-            s, z = self.main_stack(s, z, mask, self.use_kernel)
-            s_prev, z_prev = s, z
-        return s, z
-
-    def run_trunk_stochastic(
-        self,
-        batch: dict[str, torch.Tensor],
-        num_recycles: int,
-        mlm_prob: float = 0.15,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run the trunk with shared LM features."""
-        mask = batch["seq_mask"]
-        B, L = mask.shape
-        device = mask.device
-        dtype = torch_utils.get_context_dtype(device.type)
-
-        # Recycling iteration with stochastic LM features
-        s_prev = torch.zeros(B, L, self.channel_s, device=device, dtype=dtype)
-        z_prev = torch.zeros(B, L, L, self.channel_z, device=device, dtype=dtype)
-
-        # Run LM module with shared masking
-        mlm_mask = self.sample_mlm_mask(batch, mlm_prob)
-        s_lm, z_lm = self.run_lm_embedder(batch, mlm_mask)
-
-        for _ in range(0, num_recycles + 1):
-            s = self.s_init(batch["aatype"])
-            a, b = self.z_init(batch["aatype"]).chunk(2, dim=-1)
-            z = a[..., :, None, :] + b[..., None, :, :]
-            z += self.z_rel_pos(batch["seq_rel_pos"])
-
-            # Recycling embedding
-            s += self.recycle_s(s_prev)
-            z += self.recycle_z(z_prev)
-
-            # Add LM features
             s += self.proj_s_lm(s_lm)
             z += self.proj_z_lm(z_lm)
 
