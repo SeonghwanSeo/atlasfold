@@ -29,7 +29,7 @@ model = load_model("atlasfold", device="cuda")
 runner = get_runner(model)
 ```
 
-If `device` is omitted, AtlasFold uses CUDA when available and otherwise uses CPU. Use `cache_dir` to choose the download cache, `model_path` to load local AtlasFold weights, and `lm_path` to load local AtlasLM weights. A local `model_path` must match the architecture selected by `model_name`.
+If `device` is omitted, AtlasFold uses CPU. Use `cache_dir` to choose the download cache, `model_path` to load local AtlasFold weights, and `lm_path` to load local AtlasLM weights. A local `model_path` must match the architecture selected by `model_name`.
 
 Fine-tuned models can be passed directly without going through `load_model()` again:
 

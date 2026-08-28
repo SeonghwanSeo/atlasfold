@@ -1,11 +1,16 @@
 import contextlib
 import dataclasses
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 
 from atlaslm.alphabet import Alphabet
 from atlaslm.layers import RegressionHead, TransformerStack
+
+if TYPE_CHECKING:
+    from atlaslm.pretrained import AtlasLMConfig
 
 
 @dataclasses.dataclass(slots=True)
@@ -45,6 +50,27 @@ class AtlasLM(torch.nn.Module):
         self.embed = torch.nn.Embedding(64, d_model)
         self.transformer = TransformerStack(d_model, n_heads, n_layers)
         self.sequence_head = RegressionHead(d_model, 64)
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path: str | Path = ("SeonghwanSeo/atlaslm-3b-base"),
+        *,
+        config: "AtlasLMConfig | None" = None,
+        device: str | torch.device = "cpu",
+        dtype: torch.dtype | None = None,
+        cache_dir: str | Path | None = None,
+    ) -> "AtlasLM":
+        """Create an AtlasLM model from pretrained weights."""
+        from atlaslm.pretrained import load_model
+
+        return load_model(
+            pretrained_model_name_or_path,
+            config=config,
+            device=device,
+            dtype=dtype,
+            cache_dir=cache_dir,
+        )
 
     @property
     def device(self) -> torch.device:

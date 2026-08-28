@@ -16,8 +16,8 @@ class AtlasLMConfig:
 
 
 # MODEL LIST
-ATLASLM_600M_BASE = "atlaslm-600m-base"
-ATLASLM_3B_BASE = "atlaslm-3b-base"
+ATLASLM_600M_BASE = "SeonghwanSeo/atlaslm-600m-base"
+ATLASLM_3B_BASE = "SeonghwanSeo/atlaslm-3b-base"
 SUPPORTED_MODELS = [
     ATLASLM_600M_BASE,
     ATLASLM_3B_BASE,
@@ -27,8 +27,10 @@ SUPPORTED_MODELS = [
 MODEL_NAME_MAP = {
     "atlaslm-600m": ATLASLM_600M_BASE,
     "atlaslm-600m-base": ATLASLM_600M_BASE,
+    "SeonghwanSeo/atlaslm-600m-base": ATLASLM_600M_BASE,
     "atlaslm-3b": ATLASLM_3B_BASE,
     "atlaslm-3b-base": ATLASLM_3B_BASE,
+    "SeonghwanSeo/atlaslm-3b-base": ATLASLM_3B_BASE,
 }
 
 WEIGHT_PATH = {
@@ -70,35 +72,41 @@ def get_model(model_name: str) -> AtlasLM:
 
 
 def download_model_weights(model_name: str, cache_dir: str | Path | None = None) -> Path:
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import snapshot_download
 
     model_name = get_model_name(model_name)
     repo_id, filename = WEIGHT_PATH[model_name]
-    path = hf_hub_download(
+    repo_path = snapshot_download(
         repo_id=repo_id,
-        filename=filename,
+        repo_type="model",
         cache_dir=cache_dir,
     )
-    return Path(path)
+    return Path(repo_path) / filename
 
 
 def load_model(
-    model_name: str,
-    dtype: torch.dtype = torch.float32,
+    pretrained_model_name_or_path: str | Path = ATLASLM_3B_BASE,
+    *,
+    config: AtlasLMConfig | None = None,
     device: str | torch.device = "cpu",
-    path: str | Path | None = None,
+    dtype: torch.dtype | None = None,
     cache_dir: str | Path | None = None,
 ) -> AtlasLM:
-    """Load a pretrained ESMC model by name.
+    """Load a pretrained AtlasLM model by name or local checkpoint path.
 
     Parameters
     ----------
-    model_name : str
-        The name of the pretrained model to load. Options include:
+    pretrained_model_name_or_path : str | Path
+        The model name or local checkpoint path. Model name options include:
         - "atlaslm-600m"
         - "atlaslm-3b"
+    config : AtlasLMConfig, optional
+        Model architecture. Defaults to AtlasLM 3B for a local checkpoint and
+        is inferred from the model name for a Hub model.
     device : str | torch.device, optional
         The device to load the model onto, by default "cpu".
+    dtype : torch.dtype, optional
+        The data type to use for the model parameters, by default None.
     cache_dir : str | Path, optional
         Directory to cache the downloaded model weights, by default None.
 
@@ -108,21 +116,33 @@ def load_model(
         The loaded AtlasLM model.
     """
     device = torch.device(device)
+    if dtype is None:
+        dtype = torch.float32 if device.type == "cpu" else torch.bfloat16
 
-    # Canonicalize the model name
-    model_name = get_model_name(model_name)
+    source = pretrained_model_name_or_path
+    if isinstance(source, Path):
+        if not source.is_file():
+            raise FileNotFoundError(f"Model checkpoint does not exist: {source}")
+        model_path = source
+    elif Path(source).is_file():
+        model_path = Path(source)
+    else:
+        model_name = get_model_name(source)
+        model_path = download_model_weights(model_name, cache_dir)
+        if config is None:
+            config_name = MODEL_CONFIG_MAP[model_name]
+            config = MODEL_CONFIGS[config_name]
 
-    # Download the model weights
-    if path is None:
-        path = download_model_weights(model_name, cache_dir)
+    if config is None:
+        config = MODEL_CONFIGS["3b"]
 
     # Initialize the model architecture
     with torch.device("meta"):
-        model = get_model(model_name).to(dtype)
+        model = AtlasLM(config.d_model, config.n_heads, config.n_layers).to(dtype)
 
     # Load the model weights
     model = model.to_empty(device=device)
-    state_dict = torch.load(path, map_location=device, weights_only=True)
+    state_dict = torch.load(model_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
     model.eval()
 

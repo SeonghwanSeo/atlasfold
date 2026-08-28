@@ -25,12 +25,19 @@ def parse_args() -> argparse.Namespace:
 @torch.inference_mode()
 def main() -> None:
     args = parse_args()
-    from atlaslm.pretrained import load_model
+    from atlaslm.model import AtlasLM
+    from atlaslm.pretrained import MODEL_CONFIG_MAP, MODEL_CONFIGS, get_model_name
 
-    model = load_model(
-        args.model_name,
+    source = args.model_path if args.model_path is not None else args.model_name
+    config = None
+    if args.model_path is not None:
+        model_name = get_model_name(args.model_name)
+        config = MODEL_CONFIGS[MODEL_CONFIG_MAP[model_name]]
+
+    model = AtlasLM.from_pretrained(
+        source,
+        config=config,
         device=args.device,
-        path=args.model_path,
     )
 
     def get_attentions(seq: str) -> torch.Tensor:
