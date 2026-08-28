@@ -161,7 +161,6 @@ Common inference options and their model-specific defaults are:
 | --- | --- | --- | --- |
 | `--num-recycles N` | `4` | `10` | Set the number of recycling iterations. |
 | `--mlm-prob P` | `0.15` | `0.20` | Set the LM masking probability used during recycling. |
-| `--stochastic` | `off` | Not supported | Increase sampling diversity across seeds. |
 | `--num-samples N` | `5` | `5` | Generate `N` diffusion samples for every seed. |
 | `--seed S [S ...]` | `[1]` | `[1]` | Run one or more random seeds. |
 | `--num-steps N` | Auto | `200` | Set the number of diffusion steps. |

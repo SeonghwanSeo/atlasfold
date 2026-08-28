@@ -45,12 +45,7 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
         "--mlm-prob",
         type=float,
         default=0.15,
-        help="LM masking probability used during recycling.",
-    )
-    inference.add_argument(
-        "--stochastic",
-        action="store_true",
-        help="Increase sampling diversity across seeds.",
+        help="LM masking probability used during recycling. Must be greater than 0.",
     )
     inference.add_argument(
         "--num-samples",
@@ -148,8 +143,10 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
 def run(args: argparse.Namespace) -> None:
     if args.num_recycles < 0:
         raise ValueError(f"num_recycles must be non-negative, got {args.num_recycles}.")
-    if not 0.0 <= args.mlm_prob <= 1.0:
-        raise ValueError(f"mlm_prob must be between 0 and 1, got {args.mlm_prob}.")
+    if not 0.0 < args.mlm_prob <= 1.0:
+        raise ValueError(
+            f"mlm_prob must be greater than 0 and at most 1, got {args.mlm_prob}."
+        )
     if args.num_samples <= 0:
         raise ValueError(f"num_samples must be positive, got {args.num_samples}.")
     if args.num_steps is not None and args.num_steps <= 0:
@@ -403,13 +400,12 @@ def run(args: argparse.Namespace) -> None:
 
     logger.info(
         "Starting monomer inference: seeds=%s, num_samples=%d, "
-        "num_recycles=%d, mlm_prob=%s, num_steps=%s, stochastic=%s, format=%s",
+        "num_recycles=%d, mlm_prob=%s, num_steps=%s, format=%s",
         args.seed,
         args.num_samples,
         args.num_recycles,
         args.mlm_prob,
         str(num_steps),
-        args.stochastic,
         args.format,
     )
 
@@ -424,7 +420,6 @@ def run(args: argparse.Namespace) -> None:
             seeds=args.seed,
             num_recycles=args.num_recycles,
             mlm_prob=args.mlm_prob,
-            stochastic=args.stochastic,
             sampling_config=sampling_config,
             length_buckets=args.length_buckets,
             max_tokens_per_batch=args.max_tokens_per_batch,
