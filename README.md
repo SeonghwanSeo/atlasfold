@@ -8,6 +8,8 @@ The **Atlas family** is a collection of open protein models for sequence represe
 
 AtlasFold achieves state-of-the-art accuracy among protein language model-based folding methods. AtlasFold and AtlasFold-M predict structures without an MSA search at inference time.
 
+![AtlasFold predictions (blue) overlaid with experimental structures (gray) for CASP15 target T1183 (8IFX_B) and complex 8OI4.](docs/images/atlasfold-predictions.png)
+
 This repository provides pretrained models, training and inference code, staged training configurations, and preprocessing workflows for monomer and multimer folding.
 
 ## Installation
@@ -17,7 +19,7 @@ AtlasFold requires Python 3.10 or later. A CUDA GPU is recommended for structure
 Install the inference dependencies from PyPI:
 
 ```bash
-pip install "atlasfold[fold]"
+pip install "atlasfold[fold,cuequiv]"
 ```
 
 To use AtlasLM as a standalone protein language model:
@@ -26,19 +28,15 @@ To use AtlasLM as a standalone protein language model:
 pip install atlasfold
 ```
 
-On recent NVIDIA GPUs, AtlasFold can use [NVIDIA cuEquivariance](https://docs.nvidia.com/cuda/cuequivariance/) kernels for faster inference:
-
-```bash
-pip install "atlasfold[fold,cuequiv]"
-```
-
-To install the current source tree:
+To install the latest development version from GitHub:
 
 ```bash
 git clone https://github.com/SeonghwanSeo/atlasfold.git
 cd atlasfold
 pip install -e ".[fold,cuequiv]"
 ```
+
+AtlasFold supports [cuEquivariance](https://docs.nvidia.com/cuda/cuequivariance/) kernels for faster inference. For systems without compatible NVIDIA CUDA hardware, install `atlasfold[fold]` instead.
 
 ## Running your first prediction
 
@@ -63,15 +61,15 @@ For a protein complex, use one FASTA record per complex and separate chains with
 >complex_a
 MKTAYIAKQRQISFVKSHFS:GGHVDHGKSTTTGHLIYK
 >complex_b
-MKEGFYWIQHNGRVQVAYYTHGVTEDLETGQTIIGVWHLTQGDDICHNGEAEILAGPLEPPI:MKEGFYW
-IQHNGRVQVAYYTHGVTEDLETGQTIIGVWHLTQGDDICHNGEAEILAGPLEPPI
+MKEGFYWIQHNGRVQVAYYTHGVTEDLETGQTIIGVWHLTQGDDICHNGEAEILAGPLEPPI:MKEGFYWIQHNGRVQVA
+YYTHGVTEDLETGQTIIGVWHLTQGDDICHNGEAEILAGPLEPPI
 ```
 
 ```bash
 atlasfold multimer --input-fasta multimer.fasta --out-dir predictions/multimer/
 ```
 
-Template-assisted inference for AtlasFold-M is still under development and is not available through the current runner or CLI.
+Template-assisted inference for AtlasFold-M is not supported by the current runner or CLI.
 
 The repository entry point provides the same interface:
 
@@ -187,7 +185,7 @@ The citation will be updated with the public preprint identifier when it becomes
 
 ## Acknowledgements
 
-This project was developed as part of the **K-Fold** initiative supported by the Ministry of Science and ICT (MSIT) of the Republic of Korea. The K-Fold for biomolecular complex prediction is currently under active development with numerous contributors in KAIST and will be released soon!
+This project was developed as part of the **K-Fold** initiative supported by the Ministry of Science and ICT (MSIT) of the Republic of Korea. The K-Fold project for biomolecular complex prediction is currently under active development with numerous contributors at KAIST and will be released soon!
 
 ---
 

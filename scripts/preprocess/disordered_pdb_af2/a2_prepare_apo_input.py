@@ -3,9 +3,9 @@
 import argparse
 import pathlib
 
-from atlasfold.data.fasta import read_fasta, write_fasta
-
 from _common import dataset_dir
+
+from atlasfold.data.fasta import read_fasta, write_fasta
 
 
 def parse_args() -> argparse.Namespace:

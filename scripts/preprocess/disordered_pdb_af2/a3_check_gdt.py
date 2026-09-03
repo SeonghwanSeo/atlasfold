@@ -10,12 +10,11 @@ import pathlib
 from collections import defaultdict
 
 import numpy as np
+from _common import dataset_dir, load_prediction, load_scores, restore_source_sequence
 from tqdm import tqdm
 
 from atlasfold.data.fasta import read_fasta
 from atlasfold.utils.geometry.rigid_align import rigid_align
-
-from _common import dataset_dir, load_prediction, load_scores, restore_source_sequence
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data_dir", type=pathlib.Path, required=True)
     parser.add_argument("--threshold", type=float, default=60.0)
-    parser.add_argument(
-        "--num_workers", type=int, default=len(os.sched_getaffinity(0))
-    )
+    parser.add_argument("--num_workers", type=int, default=len(os.sched_getaffinity(0)))
     return parser.parse_args()
 
 
@@ -39,8 +36,7 @@ def compute_gdt_ts(pred_ca: np.ndarray, gt_ca: np.ndarray) -> float:
     aligned = rigid_align(pred_ca, gt_ca, mask, mask_to_zero=False)
     distances = np.linalg.norm(aligned - gt_ca, axis=-1)[mask]
     return float(
-        np.mean([np.mean(distances < cutoff) for cutoff in (1.0, 2.0, 4.0, 8.0)])
-        * 100.0
+        np.mean([np.mean(distances < cutoff) for cutoff in (1.0, 2.0, 4.0, 8.0)]) * 100.0
     )
 
 

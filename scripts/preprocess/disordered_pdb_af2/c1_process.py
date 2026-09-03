@@ -8,11 +8,6 @@ import os
 import pathlib
 
 import numpy as np
-from tqdm import tqdm
-
-from atlasfold.data.fasta import read_fasta
-from atlasfold.train.monomer.dataset import DataPipeline
-
 from _common import (
     accepted_ids,
     dataset_dir,
@@ -20,6 +15,10 @@ from _common import (
     load_scores,
     restore_source_sequence,
 )
+from tqdm import tqdm
+
+from atlasfold.data.fasta import read_fasta
+from atlasfold.train.monomer.dataset import DataPipeline
 
 logger = logging.getLogger(__name__)
 SUCCESS = 0
@@ -29,9 +28,7 @@ FAILED = 1
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data_dir", type=pathlib.Path, required=True)
-    parser.add_argument(
-        "--num_workers", type=int, default=len(os.sched_getaffinity(0))
-    )
+    parser.add_argument("--num_workers", type=int, default=len(os.sched_getaffinity(0)))
     return parser.parse_args()
 
 

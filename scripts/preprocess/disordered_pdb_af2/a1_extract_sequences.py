@@ -8,12 +8,11 @@ from concurrent.futures import ProcessPoolExecutor
 
 import lmdb
 import numpy as np
+from _common import dataset_dir
 from tqdm import tqdm
 
 from atlasfold.common import protein
 from atlasfold.train.monomer.dataset import DataPipeline
-
-from _common import dataset_dir
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +63,8 @@ def main() -> None:
 
         records = read_fasta(args.source_fasta)
         if args.max_length is not None:
-            records = [
-                record for record in records if len(record[1]) <= args.max_length
-            ]
-        env = lmdb.open(
-            str(structure_path), readonly=True, lock=False, readahead=True
-        )
+            records = [record for record in records if len(record[1]) <= args.max_length]
+        env = lmdb.open(str(structure_path), readonly=True, lock=False, readahead=True)
         proteins = []
         with env.begin() as transaction:
             for name, expected_sequence in tqdm(
@@ -113,9 +108,7 @@ def main() -> None:
     with (output_dir / "rcsb_sequences.fasta").open("w") as handle:
         for prot in proteins:
             handle.write(f">{prot.name}\n{prot.sequence}\n")
-            np.savez_compressed(
-                gt_dir / f"{prot.name}.npz", coordinates=prot.coordinates
-            )
+            np.savez_compressed(gt_dir / f"{prot.name}.npz", coordinates=prot.coordinates)
     print(f"Saved {len(proteins)} disordered chains to {output_dir}")
 
 

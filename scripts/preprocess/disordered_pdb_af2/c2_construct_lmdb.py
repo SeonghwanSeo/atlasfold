@@ -9,12 +9,11 @@ from collections import defaultdict
 import lmdb
 import msgpack
 import numpy as np
+from _common import dataset_dir
 from tqdm import tqdm
 
 from atlasfold.common import metadata
 from atlasfold.train.monomer.dataset import DataPipeline
-
-from _common import dataset_dir
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,9 +58,7 @@ def main() -> None:
                     id=path.stem,
                     num_residues=len(prot),
                     cluster_id=clusters[path.stem],
-                    pred=metadata.PredictionRecord(
-                        model="AlphaFold2", plddt=plddt
-                    ),
+                    pred=metadata.PredictionRecord(model="AlphaFold2", plddt=plddt),
                 ).to_dict()
             )
     env.close()

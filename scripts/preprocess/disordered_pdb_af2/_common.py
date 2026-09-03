@@ -8,7 +8,6 @@ import numpy as np
 
 from atlasfold.common import protein
 
-
 DATASET_NAME = "disordered_pdb_af2"
 
 
@@ -65,7 +64,5 @@ def accepted_ids(data_dir: pathlib.Path) -> set[str]:
     path = dataset_dir(data_dir) / "gdt_report.csv"
     with path.open() as handle:
         return {
-            row["id"]
-            for row in csv.DictReader(handle)
-            if row["status"] == "accepted"
+            row["id"] for row in csv.DictReader(handle) if row["status"] == "accepted"
         }

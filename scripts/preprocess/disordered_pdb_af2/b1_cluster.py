@@ -3,10 +3,10 @@
 import argparse
 import pathlib
 
+from _common import accepted_ids, dataset_dir
+
 from atlasfold.data.fasta import read_fasta
 from atlasfold.data.mmseq2 import run_mmseqs2_cluster
-
-from _common import accepted_ids, dataset_dir
 
 
 def parse_args() -> argparse.Namespace:
