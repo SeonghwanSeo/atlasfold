@@ -2,6 +2,12 @@
 
 AtlasFold provides separate monomer and multimer runners for single-target folding, streaming and batched inference, diffusion sampling, confidence-based ranking, and structure serialization.
 
+Install Python 3.10 or later. A CUDA GPU is strongly recommended:
+
+```bash
+pip install "atlasfold[fold,cuequiv]"
+```
+
 ## Command-line inference
 
 Use the CLI for FASTA-driven jobs that should write complete output directories, summaries, confidence files, and completion markers automatically:
@@ -11,7 +17,28 @@ atlasfold monomer --input-fasta monomers.fasta --out-dir predictions/monomers
 atlasfold multimer --input-fasta multimers.fasta --out-dir predictions/multimers
 ```
 
-See the [README command-line guide](../README.md#command-line-inference) for the common options and output layout, and use `atlasfold monomer --help` or `atlasfold multimer --help` for the complete current option list.
+### Output layout
+
+Each FASTA record is written to a separate directory named after the first whitespace-delimited token in its header. With the default one seed and five samples, the `protein_a` monomer example produces:
+
+```text
+predictions/monomers/protein_a/
+├── protein_a_seed-1_sample-0_model.cif
+├── protein_a_seed-1_sample-0_confidence.json
+├── ...
+├── protein_a_seed-1_sample-4_model.cif
+├── protein_a_seed-1_sample-4_confidence.json
+├── protein_a_ranked_model.cif
+├── protein_a_ranked_confidence.json
+├── protein_a_summary.csv
+└── done.txt
+```
+
+The ranked files duplicate the highest-confidence sample for convenient access. Use `--format pdb` to write PDB instead of mmCIF, `--save-confidence-arrays` to add one confidence NPZ per sample, and `--save-distogram` to add one distogram NPZ per seed. A completed target is skipped when `done.txt` exists unless `--overwrite` is supplied.
+
+See [Running your first prediction](../README.md#running-your-first-prediction) for the basic FASTA examples, and use `atlasfold monomer --help` or `atlasfold multimer --help` for the complete current option list.
+
+Measured GPU memory and runtime across sequence lengths are available in the [performance guide](performance.md).
 
 ## Loading a model and runner
 
@@ -30,6 +57,8 @@ runner = get_runner(model)
 ```
 
 If `device` is omitted, AtlasFold uses CPU. Use `cache_dir` to choose the download cache, `model_path` to load local AtlasFold weights, and `lm_path` to load local AtlasLM weights. A local `model_path` must match the architecture selected by `model_name`.
+
+The CLI chooses CUDA automatically when available, whereas the Python `load_model()` API defaults to CPU. Pass `device="cuda"` explicitly for GPU inference.
 
 Fine-tuned models can be passed directly without going through `load_model()` again:
 
@@ -79,6 +108,8 @@ print(result.best.confidence_scores["complex"])
 ```
 
 The Python multimer API requires pre-split chain sequences and does not split strings on `:`. Colon-delimited chains are supported only by the FASTA input used by the multimer CLI.
+
+AtlasFold-M contains a template module used during training, but the released runner and CLI are sequence-only and do not accept templates. The reported FoldBench results were generated without templates.
 
 ## Inputs
 
@@ -254,3 +285,7 @@ boundaries = result.distogram_boundaries
 ```
 
 Distogram logits are stored once per seed because they come from the folding trunk, while coordinates and confidence arrays are stored for every diffusion sample.
+
+## Reproducing released benchmarks
+
+The [benchmark release](benchmarks.md) documents the CAMEO22, CASP14, CASP15, and FoldBench sampling and selection protocols. Large prediction structures and evaluation CSV files are available from the linked Google Drive folder.

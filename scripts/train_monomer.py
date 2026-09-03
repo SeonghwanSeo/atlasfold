@@ -14,7 +14,7 @@ from atlasfold.train.monomer.train_module import TrainingModule
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a Co-Folding model.")
+    parser = argparse.ArgumentParser(description="Train an AtlasFold monomer model.")
     parser.add_argument(
         "config",
         type=str,

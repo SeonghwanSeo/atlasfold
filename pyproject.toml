@@ -5,17 +5,25 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "atlasfold"
 version = "1.0.0"
+description = "State-of-the-art protein language model and protein structure prediction"
 authors = [
   { name = "SeonghwanSeo", email = "shwan0106@gmail.com" }
 ]
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+keywords = ["protein", "protein-language-model", "protein-folding", "cofolding"]
 dependencies = [
-  "numpy", 
+  "numpy",
   "torch",
   "huggingface_hub",
 ]
+
+[project.urls]
+Homepage = "https://github.com/SeonghwanSeo/atlasfold"
+Documentation = "https://github.com/SeonghwanSeo/atlasfold#readme"
+Repository = "https://github.com/SeonghwanSeo/atlasfold"
+Issues = "https://github.com/SeonghwanSeo/atlasfold/issues"
 
 [project.scripts]
 atlasfold = "atlasfold.cli:main"

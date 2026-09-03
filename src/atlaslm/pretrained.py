@@ -51,9 +51,6 @@ MODEL_CONFIGS = {
     "600m": AtlasLMConfig(d_model=1152, n_heads=18, n_layers=36),
     "3b": AtlasLMConfig(d_model=2304, n_heads=36, n_layers=48),
 }
-# TODO: Add the links to the pretrained model checkpoints once they are available.
-
-
 def get_model_name(model_name: str) -> str:
     if model_name not in MODEL_NAME_MAP:
         raise ValueError(
