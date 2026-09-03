@@ -100,7 +100,7 @@ class AtlasLM(torch.nn.Module):
         """
         device = self.device
         with (
-            torch.autocast(enabled=True, device_type=device.type, dtype=torch.bfloat16)
+            torch.autocast(device.type, dtype=torch.bfloat16)
             if self.device.type == "cuda"
             else contextlib.nullcontext(),
         ):
@@ -206,3 +206,80 @@ class AtlasLM(torch.nn.Module):
             hidden_states=hiddens if hiddens else None,
             attentions=attentions if attentions else None,
         )
+
+    @torch.inference_mode()
+    def pseudo_perplexity(
+        self,
+        sequence: str,
+        *,
+        max_batch_tokens: int = 4096,
+    ) -> dict[str, torch.Tensor]:
+        """Compute pseudo-perplexity for one protein sequence.
+
+        Each residue is masked once and scored as ``p(x_i | x_without_i)``. The
+        pseudo-perplexity is ``exp(-sum(log p_i) / length)``. Masked examples are
+        processed in batches; this changes throughput but not the definition of the
+        score.
+
+        Parameters
+        ----------
+        sequence : str
+            Protein sequence to score.
+        max_batch_tokens : int, optional
+            Maximum total number of tokens evaluated in one forward pass. CUDA
+            out-of-memory errors automatically reduce the derived batch size.
+
+        Returns
+        -------
+        dict
+            Scalar pseudo-perplexity and residue log-probabilities with shape
+            ``(length,)``.
+        """
+        if max_batch_tokens < 1:
+            raise ValueError("max_batch_tokens must be positive")
+
+        tokens = self.encode([sequence])
+        length = len(sequence)
+        batch_size = min(length, max(1, max_batch_tokens // tokens.shape[1]))
+        residue_log_probabilities = torch.empty(
+            length, device=self.device, dtype=torch.float32
+        )
+        start = 0
+        device = self.device
+        mask_id = self.alphabet.mask_idx
+        while start < length:
+            end = min(start + batch_size, length)
+            bs = end - start
+            rows = torch.arange(bs, device=device)
+            positions = rows + start + 1  # Skip <cls>.
+
+            masked_tokens = tokens.expand(bs, -1).clone()
+            masked_tokens[rows, positions] = mask_id
+            try:
+                with (
+                    torch.autocast(device.type, dtype=torch.bfloat16)
+                    if self.device.type == "cuda"
+                    else contextlib.nullcontext(),
+                ):
+                    output = self(masked_tokens, return_logits=True)
+                if output.sequence_logits is None:
+                    raise RuntimeError("AtlasLM did not return sequence logits")
+                logits = output.sequence_logits[rows, positions].float()
+                targets = tokens[0, positions]
+                residue_log_probabilities[start:end] = -torch.nn.functional.cross_entropy(
+                    logits, targets, reduction="none"
+                )
+                del masked_tokens, output, logits
+                start = end
+            except torch.cuda.OutOfMemoryError:
+                del masked_tokens
+                torch.cuda.empty_cache()
+                if bs == 1:
+                    raise
+                batch_size = max(1, bs // 2)
+
+        pseudo_perplexity = (-residue_log_probabilities.mean()).exp()
+        return {
+            "pseudo_perplexity": pseudo_perplexity,
+            "residue_log_probabilities": residue_log_probabilities,
+        }
