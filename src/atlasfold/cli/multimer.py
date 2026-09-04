@@ -95,9 +95,13 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Torch device. Defaults to cuda when available, otherwise cpu.",
     )
     runtime.add_argument(
-        "--no-kernel",
-        action="store_true",
-        help="Disable cuequivariance kernels.",
+        "--kernel",
+        choices=["auto", "torch", "cuequiv"],
+        default="auto",
+        help=(
+            "Triangle kernel backend. By default, selects cuequiv when available, "
+            "otherwise torch."
+        ),
     )
     runtime.add_argument(
         "--max-tokens-per-batch",
@@ -238,6 +242,7 @@ def run(args: argparse.Namespace) -> None:
         lm_path: str | Path | None = None,
         device: str | torch.device | None = None,
         cache_dir: str | Path | None = None,
+        kernel: str = "auto",
     ) -> AtlasFold_Multimer:
         device_str = device
         if device_str is None:
@@ -276,6 +281,7 @@ def run(args: argparse.Namespace) -> None:
             cache_dir=cache_dir,
             lm_path=lm_path,
             model_path=model_path,
+            kernel=kernel,
         )
         if not isinstance(model, AtlasFold_Multimer):
             raise TypeError(f"Expected AtlasFold_Multimer, got {type(model)!r}.")
@@ -416,12 +422,11 @@ def run(args: argparse.Namespace) -> None:
         lm_path=args.lm_path,
         device=args.device,
         cache_dir=args.cache_dir,
+        kernel=args.kernel,
     )
-    if args.no_kernel:
-        model.set_forward_flags(use_cuequiv_kernels=False)
-
     # Set up the runner
     runner = MultimerFoldingRunner(model)
+    logger.info("Using triangle kernel backend: %s", model.kernel_backend)
     sampling_config = SamplingConfig(num_steps=args.num_steps)
 
     logger.info(

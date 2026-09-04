@@ -44,7 +44,7 @@ class PairformerStack(torch.nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
+        kernel_backend: str = "torch",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
@@ -56,8 +56,9 @@ class PairformerStack(torch.nn.Module):
             The pair representations of shape (B, L, L, C_z)
         mask : torch.Tensor
             The token mask of shape (B, L)
-        use_cuequiv_kernels : bool, optional
-            Whether to use cuEQUIV kernels, by default False.
+        kernel_backend : str
+            Triangle operation backend: "torch" or "cuequiv".
+            Defaults to "torch".
 
         Returns
         -------
@@ -70,7 +71,7 @@ class PairformerStack(torch.nn.Module):
                 b,
                 mask=mask,
                 pair_mask=pair_mask,
-                use_cuequiv_kernels=use_cuequiv_kernels,
+                kernel_backend=kernel_backend,
             )
             for b in self.blocks
         ]
@@ -122,7 +123,7 @@ class LMStack(torch.nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
+        kernel_backend: str = "torch",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
@@ -134,8 +135,9 @@ class LMStack(torch.nn.Module):
             The pair representations of shape (B, L, L, C_z)
         mask : torch.Tensor
             The token mask of shape (B, L)
-        use_cuequiv_kernels : bool, optional
-            Whether to use cuEQUIV kernels, by default False.
+        kernel_backend : str
+            Triangle operation backend: "torch" or "cuequiv".
+            Defaults to "torch".
 
         Returns
         -------
@@ -150,7 +152,7 @@ class LMStack(torch.nn.Module):
                 b,
                 mask=mask,
                 pair_mask=pair_mask,
-                use_cuequiv_kernels=use_cuequiv_kernels,
+                kernel_backend=kernel_backend,
             )
             for b in self.blocks
         ]

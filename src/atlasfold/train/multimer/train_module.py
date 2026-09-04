@@ -46,6 +46,7 @@ class TrainingModule(monomer_train_module.TrainingModule):
             OmegaConf.merge(AtlasFoldMultimerConfig, self.global_config.model)
         )
         self.model: AtlasFoldForTrain = AtlasFoldForTrain(model_cfg)
+        self.model.kernel_backend = "cuequiv"
 
         self.freeze_submodules()
         self.setup_losses()

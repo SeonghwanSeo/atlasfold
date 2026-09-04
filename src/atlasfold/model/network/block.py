@@ -104,7 +104,7 @@ class PairStack(torch.nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
+        kernel_backend: str = "torch",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
@@ -116,8 +116,9 @@ class PairStack(torch.nn.Module):
             The pair representations of shape (B, L, L, C_z)
         mask : torch.Tensor
             The token mask of shape (B, L)
-        use_cuequiv_kernels : bool, optional
-            Whether to use cuEQUIV kernels, by default False.
+        kernel_backend : str
+            Triangle operation backend: "torch" or "cuequiv".
+            Defaults to "torch".
 
         Returns
         -------
@@ -132,7 +133,7 @@ class PairStack(torch.nn.Module):
                 b,
                 mask=mask,
                 pair_mask=pair_mask,
-                use_cuequiv_kernels=use_cuequiv_kernels,
+                kernel_backend=kernel_backend,
             )
             for b in self.blocks
         ]
@@ -213,7 +214,7 @@ class PairBlock(torch.nn.Module):
         z: torch.Tensor,
         mask: torch.Tensor,
         pair_mask: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
+        kernel_backend: str = "torch",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
@@ -227,6 +228,9 @@ class PairBlock(torch.nn.Module):
             The token mask of shape (B, L)
         pair_mask : torch.Tensor
             The pair mask of shape (B, L, L)
+        kernel_backend : str
+            Triangle operation backend: "torch" or "cuequiv".
+            Defaults to "torch".
 
         Returns
         -------
@@ -252,26 +256,26 @@ class PairBlock(torch.nn.Module):
                 z = _add(
                     z,
                     self.dropout_rowwise_z(
-                        self.tri_mul_out(z, pair_mask, use_kernels=use_cuequiv_kernels)
+                        self.tri_mul_out(z, pair_mask, kernel_backend=kernel_backend)
                     ),
                 )
                 z = _add(
                     z,
                     self.dropout_rowwise_z(
-                        self.tri_mul_in(z, pair_mask, use_kernels=use_cuequiv_kernels)
+                        self.tri_mul_in(z, pair_mask, kernel_backend=kernel_backend)
                     ),
                 )
             if self.use_tri_attn:
                 z = _add(
                     z,
                     self.dropout_rowwise_z(
-                        self.tri_attn_start(z, pair_mask, use_kernels=use_cuequiv_kernels)
+                        self.tri_attn_start(z, pair_mask, kernel_backend=kernel_backend)
                     ),
                 )
                 z = _add(
                     z,
                     self.dropout_columnwise_z(
-                        self.tri_attn_end(z, pair_mask, use_kernels=use_cuequiv_kernels)
+                        self.tri_attn_end(z, pair_mask, kernel_backend=kernel_backend)
                     ),
                 )
             z = _add(z, self.transition_z(z))

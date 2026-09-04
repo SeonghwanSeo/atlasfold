@@ -118,8 +118,6 @@ class PredictedAlignedErrorHead(nn.Module):
             The pair representation, shape [B, L, L, c_z].
         mask : torch.Tensor
             The mask for valid residues, shape [B, L].
-        use_cuequiv_kernels : bool, optional
-            Whether to use cuEQUIV kernels, by default False.
 
         Returns
         -------
@@ -229,7 +227,7 @@ class ConfidenceHead_Monomer(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         x_pred: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
+        kernel_backend: str = "torch",
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of confidence head module.
 
@@ -243,8 +241,9 @@ class ConfidenceHead_Monomer(nn.Module):
             The pair representation, shape [B, L, L, c_z].
         x_pred: torch.Tensor
             The predicted coordinates, shape (B, N, L, 14, 3).
-        use_cuequiv_kernels : bool, optional
-            Whether to use cuEQUIV kernels, by default False.
+        kernel_backend : str
+            Triangle operation backend: "torch" or "cuequiv".
+            Defaults to "torch".
 
         Returns
         -------
@@ -291,8 +290,8 @@ class ConfidenceHead_Monomer(nn.Module):
             z = z + self.linear_distogram(distogram.to(z.dtype))  # [B, L, L, c_z]
 
             # Run the stack
-            _s, _ = self.single_stack(s, z.clone(), mask, use_cuequiv_kernels)
-            _, _z = self.pair_stack(None, z.clone(), mask, use_cuequiv_kernels)
+            _s, _ = self.single_stack(s, z.clone(), mask, kernel_backend)
+            _, _z = self.pair_stack(None, z.clone(), mask, kernel_backend)
             s, z = _s.float(), _z.float()
             del _s, _z
 
@@ -402,7 +401,7 @@ class ConfidenceHead_Multimer(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         x_pred: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
+        kernel_backend: str = "torch",
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of confidence head module.
 
@@ -416,8 +415,9 @@ class ConfidenceHead_Multimer(nn.Module):
             The pair representation, shape [B, L, L, c_z].
         x_pred: torch.Tensor
             The predicted coordinates, shape (B, N, L, 14, 3).
-        use_cuequiv_kernels : bool, optional
-            Whether to use cuEQUIV kernels, by default False.
+        kernel_backend : str
+            Triangle operation backend: "torch" or "cuequiv".
+            Defaults to "torch".
 
         Returns
         -------
@@ -467,7 +467,7 @@ class ConfidenceHead_Multimer(nn.Module):
             z = z + self.linear_distogram(distogram.to(z.dtype))  # [B, L, L, c_z]
 
             # Run the stack
-            s, z = self.stack(s, z, mask, use_cuequiv_kernels=use_cuequiv_kernels)
+            s, z = self.stack(s, z, mask, kernel_backend=kernel_backend)
             s, z = s.float(), z.float()
 
             # Compute the confidence logits

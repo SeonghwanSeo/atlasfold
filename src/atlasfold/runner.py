@@ -42,7 +42,7 @@ def _sanitize_sequence(name: str, sequence: str) -> str:
 @contextlib.contextmanager
 def seed_context(seed: int, device: torch.device):
     if device.type == "cuda":
-        with torch.random.fork_rng(device_type="cuda"):
+        with torch.random.fork_rng(devices=[device], device_type="cuda"):
             torch.manual_seed(seed)
             yield
     else:

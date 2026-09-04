@@ -141,6 +141,7 @@ class TrainingModule(pl.LightningModule):
             OmegaConf.merge(AtlasFoldConfig, self.global_config.model)
         )
         self.model: AtlasFoldForTrain = AtlasFoldForTrain(model_cfg)
+        self.model.kernel_backend = "cuequiv"
 
         # Freeze parts of the model if needed
         self.freeze_submodules()

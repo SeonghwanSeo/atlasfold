@@ -145,9 +145,12 @@ class TemplateModule(torch.nn.Module):
         batch: dict[str, torch.Tensor],
         z: torch.Tensor,
         mask: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
+        kernel_backend: str = "torch",
     ) -> torch.Tensor:
-        """Return a template-derived update."""
+        """Return a template-derived update.
+
+        kernel_backend must be "torch" or "cuequiv" and defaults to "torch".
+        """
         _add = partial(add, inplace=not self.training)
 
         required = (
@@ -225,7 +228,7 @@ class TemplateModule(torch.nn.Module):
         for i in range(T):
             a_i = a[i]
             v = self.linear_template(a_i) + z
-            _, v = self.stack(None, v, mask, use_cuequiv_kernels=use_cuequiv_kernels)
+            _, v = self.stack(None, v, mask, kernel_backend=kernel_backend)
             v = self.layernorm_out(v)
             v = v * template_mask[:, i, None, None, None].float()
             u = _add(u, v)

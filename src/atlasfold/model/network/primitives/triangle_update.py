@@ -142,7 +142,7 @@ class TriangleMultiplicationOutgoing(nn.Module):
         self,
         z: torch.Tensor,
         mask: torch.Tensor,
-        use_kernels: bool = False,
+        kernel_backend: str = "torch",
     ) -> torch.Tensor:
         """Perform a forward pass.
 
@@ -152,8 +152,9 @@ class TriangleMultiplicationOutgoing(nn.Module):
             The input data of shape (*, L, L, C)
         mask: torch.Tensor
             The input mask of shape (*, L, L)
-        use_kernels: bool
-            Whether to use the kernel
+        kernel_backend: str
+            Triangle operation backend: "torch" or "cuequiv".
+            Defaults to "torch".
 
         Returns
         -------
@@ -161,7 +162,10 @@ class TriangleMultiplicationOutgoing(nn.Module):
             The output data of shape (*, L, L, C)
 
         """
-        if use_kernels and _cueq_triangle_multiplicative_update is not None:
+        if (
+            kernel_backend == "cuequiv"
+            and _cueq_triangle_multiplicative_update is not None
+        ):
             return cueq_tri_mul_outgoing(
                 z,
                 mask=mask,
@@ -225,7 +229,7 @@ class TriangleMultiplicationIncoming(nn.Module):
         self,
         z: torch.Tensor,
         mask: torch.Tensor,
-        use_kernels: bool = False,
+        kernel_backend: str = "torch",
     ) -> torch.Tensor:
         """Perform a forward pass.
 
@@ -235,8 +239,9 @@ class TriangleMultiplicationIncoming(nn.Module):
             The input data of shape (*, L, L, C)
         mask: torch.Tensor
             The input mask of shape (*, L, L)
-        use_kernels: bool
-            Whether to use the kernel
+        kernel_backend: str
+            Triangle operation backend: "torch" or "cuequiv".
+            Defaults to "torch".
 
         Returns
         -------
@@ -244,7 +249,10 @@ class TriangleMultiplicationIncoming(nn.Module):
             The output data of shape (*, L, L, C)
 
         """
-        if use_kernels and _cueq_triangle_multiplicative_update is not None:
+        if (
+            kernel_backend == "cuequiv"
+            and _cueq_triangle_multiplicative_update is not None
+        ):
             return cueq_tri_mul_incoming(
                 z,
                 mask=mask,
@@ -307,7 +315,7 @@ class TriangleAttentionStartingNode(nn.Module):
         self,
         z: torch.Tensor,
         mask: torch.Tensor,
-        use_kernels: bool = False,
+        kernel_backend: str = "torch",
     ) -> torch.Tensor:
         """Compute triangle attention.
 
@@ -317,8 +325,9 @@ class TriangleAttentionStartingNode(nn.Module):
             Input tensor of shape (*, L, L, C)
         mask : torch.Tensor
             Attention mask of shape (*, L, L)
-        use_kernels : bool, default=False
-            Whether to use optimized CUDA kernels
+        kernel_backend : str
+            Triangle operation backend: "torch" or "cuequiv".
+            Defaults to "torch".
 
         Returns
         -------
@@ -357,7 +366,7 @@ class TriangleAttentionStartingNode(nn.Module):
 
         # Line 5-6: Attention
         # (*, L, H, L, L)
-        if use_kernels and _cueq_triangle_attention is not None:
+        if kernel_backend == "cuequiv" and _cueq_triangle_attention is not None:
             out = cueq_tri_attn(
                 q,
                 k,
@@ -417,7 +426,7 @@ class TriangleAttentionEndingNode(nn.Module):
         self,
         z: torch.Tensor,
         mask: torch.Tensor,
-        use_kernels: bool = False,
+        kernel_backend: str = "torch",
     ) -> torch.Tensor:
         """Compute triangle attention.
 
@@ -427,8 +436,9 @@ class TriangleAttentionEndingNode(nn.Module):
             Input tensor of shape (*, L, L, C)
         mask : torch.Tensor
             Attention mask of shape (*, L, L)
-        use_kernels : bool, default=False
-            Whether to use optimized CUDA kernels
+        kernel_backend : str
+            Triangle operation backend: "torch" or "cuequiv".
+            Defaults to "torch".
 
         Returns
         -------
@@ -470,7 +480,7 @@ class TriangleAttentionEndingNode(nn.Module):
 
         # Line 5-6: Attention
         # (*, L, H, L, L)
-        if use_kernels and _cueq_triangle_attention is not None:
+        if kernel_backend == "cuequiv" and _cueq_triangle_attention is not None:
             out = cueq_tri_attn(
                 q,
                 k,

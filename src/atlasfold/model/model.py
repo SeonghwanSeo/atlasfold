@@ -3,6 +3,7 @@
 import dataclasses
 from functools import partial
 from pathlib import Path
+from typing import Literal
 
 import torch
 
@@ -15,6 +16,7 @@ from atlasfold.model.network.rel_pos_encoding import (
 )
 from atlasfold.model.utils import confidence_metrics
 from atlasfold.utils import torch_utils
+from atlasfold.utils.kernel import select_kernel_backend
 from atlaslm.model import Alphabet, AtlasLM
 
 
@@ -203,20 +205,20 @@ class AtlasFold(torch.nn.Module):
             **dataclasses.asdict(cfg.confidence_head),
         )
 
-        # Kernel option
-        self.use_kernel: bool = True
+        # Triangle kernel backend.
+        self.kernel_backend = "torch"
 
     @property
     def device(self) -> torch.device:
         return next(self.parameters()).device
 
-    def set_forward_flags(
+    def set_kernel_backend(
         self,
-        use_cuequiv_kernels: bool | None = None,
-    ) -> None:
-        """Set the flags for the forward pass."""
-        if use_cuequiv_kernels is not None:
-            self.use_kernel = use_cuequiv_kernels
+        backend: Literal["auto", "torch", "cuequiv"],
+    ) -> str:
+        """Select the "auto", "torch", or "cuequiv" kernel backend."""
+        self.kernel_backend = select_kernel_backend(backend, self.device.type)
+        return self.kernel_backend
 
     # ==================================================
     # Inference
@@ -318,7 +320,9 @@ class AtlasFold(torch.nn.Module):
         out["sample_coords"] = sample_coords
 
         # Run confidence head
-        confidence_out = self.confidence_head(batch, s, z, sample_coords, self.use_kernel)
+        confidence_out = self.confidence_head(
+            batch, s, z, sample_coords, self.kernel_backend
+        )
         del s, z
 
         # Compute confidence metrics
@@ -390,7 +394,7 @@ class AtlasFold(torch.nn.Module):
             z += self.proj_z_lm(z_lm)
 
             # Run main trunk
-            s, z = self.main_stack(s, z, mask, self.use_kernel)
+            s, z = self.main_stack(s, z, mask, self.kernel_backend)
             s_prev, z_prev = s, z
         return s, z
 
@@ -476,7 +480,7 @@ class AtlasFold(torch.nn.Module):
 
         # Run LM stack
         mask = batch["seq_mask"]  # [B, L]
-        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.use_kernel)
+        s_lm, z_lm = self.lm_stack(s_lm, z_lm, mask, self.kernel_backend)
         return s_lm, z_lm
 
     # TODO: current implementation is for development.

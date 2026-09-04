@@ -52,7 +52,7 @@ Measured GPU memory and runtime across sequence lengths are available in the [pe
 ```python
 from atlasfold.pretrained import get_runner, load_model
 
-model = load_model("atlasfold", device="cuda")
+model = load_model("atlasfold", device="cuda", kernel="auto")
 runner = get_runner(model)
 ```
 
@@ -60,11 +60,25 @@ If `device` is omitted, AtlasFold uses CPU. Use `cache_dir` to choose the downlo
 
 The CLI chooses CUDA automatically when available, whereas the Python `load_model()` API defaults to CPU. Pass `device="cuda"` explicitly for GPU inference.
 
-Fine-tuned models can be passed directly without going through `load_model()` again:
+Pass `kernel="auto"`, `kernel="cuequiv"`, or `kernel="torch"` to `load_model()` to select the triangle operation backend.
+The default is `auto`, which uses cuEquivariance when it is installed and the model is loaded on CUDA, and otherwise uses native Torch.
+The CLI provides the same selection through `--kernel`.
+
+`AtlasFold.from_pretrained()` and `AtlasFold_Multimer.from_pretrained()` only construct and load a model; they do not perform automatic kernel selection.
+Prefer `load_model()` for inference.
+If a model is constructed directly or loaded through `from_pretrained()`, it uses the Torch backend unless `set_kernel_backend()` is called explicitly:
 
 ```python
-finetuned_model.eval()
-runner = get_runner(finetuned_model)
+model = AtlasFold.from_pretrained("atlasfold", device="cuda")
+model.set_kernel_backend("cuequiv") # auto | cuequiv | torch
+```
+
+
+Custom models can be passed directly without going through `load_model()` again:
+
+```python
+custom_model.eval()
+runner = get_runner(custom_model)
 ```
 
 ## Single-target prediction

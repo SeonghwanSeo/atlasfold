@@ -75,6 +75,7 @@ def load_model(
     model_name: str = ATLASFOLD_260703,
     device: torch.device | str = "cpu",
     *,
+    kernel: str = "auto",
     cache_dir: str | Path | None = None,
     lm: AtlasLM | None = None,
     lm_path: str | Path | None = None,
@@ -90,6 +91,9 @@ def load_model(
             - "atlasfold-m" or "atlasfold-m-260725"
     device : str | torch.device, optional
         The device to load the model onto.
+    kernel : str, optional
+        Triangle operation backend: auto, torch, or cuequiv. Auto selects
+        cuequiv when available and otherwise uses torch.
     cache_dir : str, optional
         Directory used to cache downloaded model weights.
     lm : AtlasLM, optional
@@ -118,23 +122,26 @@ def load_model(
         model_path = download_model_weights(model_name, cache_dir)
 
     if isinstance(cfg, AtlasFoldMultimerConfig):
-        return AtlasFold_Multimer.from_pretrained(
+        model = AtlasFold_Multimer.from_pretrained(
             model_path,
             config=cfg,
             lm=lm,
             device=device,
             cache_dir=cache_dir,
         )
-    if isinstance(cfg, AtlasFoldConfig):
-        return AtlasFold.from_pretrained(
+    elif isinstance(cfg, AtlasFoldConfig):
+        model = AtlasFold.from_pretrained(
             model_path,
             config=cfg,
             lm=lm,
             device=device,
             cache_dir=cache_dir,
         )
+    else:
+        raise TypeError(f"Unsupported AtlasFold config type: {type(cfg)!r}.")
 
-    raise TypeError(f"Unsupported AtlasFold config type: {type(cfg)!r}.")
+    model.set_kernel_backend(kernel)
+    return model
 
 
 def get_runner(

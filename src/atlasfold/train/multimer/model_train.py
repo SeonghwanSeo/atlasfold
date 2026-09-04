@@ -201,10 +201,10 @@ class AtlasFoldForTrain(AtlasFold_Multimer):
         s = s + self.proj_s_lm(s_lm)
         z = z + self.proj_z_lm(z_lm)
 
-        z = z + self.template_module(batch, z, mask, self.use_kernel)
+        z = z + self.template_module(batch, z, mask, self.kernel_backend)
 
         # Run main trunk
-        s, z = self.main_stack(s, z, mask, self.use_kernel)
+        s, z = self.main_stack(s, z, mask, self.kernel_backend)
         return s, z
 
     def sample_mlm_mask(
@@ -366,4 +366,4 @@ class AtlasFoldForTrain(AtlasFold_Multimer):
         z: torch.Tensor,
         sample_coords: torch.Tensor,
     ) -> dict[str, dict[str, torch.Tensor]]:
-        return self.confidence_head(batch, s, z, sample_coords, self.use_kernel)
+        return self.confidence_head(batch, s, z, sample_coords, self.kernel_backend)
