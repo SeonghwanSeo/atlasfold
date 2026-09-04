@@ -1,15 +1,13 @@
 # AtlasFold
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![PyPI version](https://badge.fury.io/py/atlasfold.svg)](https://pypi.org/project/atlasfold/)
+[\[Paper\]](docs/atlasfold.pdf)
 
-The **Atlas family** is a collection of open protein models for sequence representation and structure prediction. It includes AtlasLM, a protein language model; AtlasFold, a monomer structure predictor; and AtlasFold-M, a protein-complex structure predictor.
-
-AtlasFold achieves state-of-the-art accuracy among protein language model-based folding methods. AtlasFold and AtlasFold-M predict structures without an MSA search at inference time.
+The **Atlas family** is a collection of open protein models for sequence representation and structure prediction.
+AtlasLM is a protein language model (PLM), while AtlasFold and AtlasFold-M are trainable PLM-based models for protein folding and co-folding, respectively.
 
 ![AtlasFold predictions (blue) overlaid with experimental structures (gray) for CASP15 target T1183 (8IFX_B) and complex 8OI4.](docs/images/atlasfold-predictions.png)
 
+AtlasFold achieves state-of-the-art accuracy among protein language model-based folding methods. AtlasFold and AtlasFold-M predict structures without an MSA search.
 This repository provides pretrained models, training and inference code, staged training configurations, and preprocessing workflows for monomer and multimer folding.
 
 ## Installation
@@ -93,6 +91,13 @@ Peak GPU memory grows with total residue length when generating five diffusion s
 | 1,024 | 15.02 GiB | 16.05 GiB |
 | 1,536 | 25.36 GiB | 27.63 GiB |
 | 2,048 | 39.81 GiB | 43.83 GiB |
+
+For multi-target workloads, batched inference substantially increases throughput. With five diffusion samples and up to 4,096 residues processed per batch:
+
+| Workload | Unbatched | Batched | Throughput gain |
+| --- | ---: | ---: | ---: |
+| AtlasFold, 64-residue monomers | 0.775 sequences/s | 9.663 sequences/s | 12.5× |
+| AtlasFold-M, 256-residue complexes | 0.149 complexes/s | 0.314 complexes/s | 2.1× |
 
 Measurements were collected on a single NVIDIA B200 using PyTorch 2.10.0, CUDA 12.8, and cuEquivariance 0.10.0. See the [performance guide](docs/performance.md) for the complete memory and runtime measurements.
 
