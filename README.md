@@ -78,6 +78,15 @@ python run_atlasfold.py multimer --input-fasta multimer.fasta --out-dir predicti
 
 Both AtlasFold and AtlasFold-M support batched inference with multiple FASTA records, enabling high-throughput structure prediction.
 
+To distribute FASTA targets across multiple GPUs on one machine, pass `--gpu-ids`:
+
+```bash
+atlasfold monomer --input-fasta monomer.fasta --out-dir predictions/monomer/ --gpu-ids 0 1
+atlasfold multimer --input-fasta multimer.fasta --out-dir predictions/multimer/ --gpu-ids 0 1
+```
+
+See [Multi-GPU inference](docs/inference.md#multi-gpu-inference) for GPU selection and per-GPU batching.
+
 Run `atlasfold monomer --help` or `atlasfold multimer --help` for all options, and see the [inference guide](docs/inference.md) for batching, sampling, confidence values, and output formats.
 
 ## Performance and GPU memory

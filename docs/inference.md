@@ -1,6 +1,6 @@
 # AtlasFold inference
 
-AtlasFold provides separate monomer and multimer runners for single-target folding, streaming and batched inference, diffusion sampling, confidence-based ranking, and structure serialization.
+AtlasFold provides separate monomer and multimer runners for single-target folding, streaming and batched inference.
 
 Install Python 3.10 or later. A CUDA GPU is strongly recommended:
 
@@ -39,6 +39,20 @@ The ranked files duplicate the highest-confidence sample for convenient access. 
 See [Running your first prediction](../README.md#running-your-first-prediction) for the basic FASTA examples, and use `atlasfold monomer --help` or `atlasfold multimer --help` for the complete current option list.
 
 Measured GPU memory and runtime across sequence lengths are available in the [performance guide](performance.md).
+
+## Multi-GPU inference
+
+Use `--gpu-ids` with either CLI subcommand to process multiple FASTA targets across GPUs on one machine:
+
+```bash
+atlasfold monomer --input-fasta monomers.fasta --out-dir predictions/monomers --gpu-ids 0 1
+atlasfold multimer --input-fasta multimers.fasta --out-dir predictions/multimers --gpu-ids 0 1
+```
+
+- Without `--gpu-ids`, inference uses one GPU when CUDA is available, otherwise CPU.
+- `--gpu-ids` cannot be combined with `--device`.
+- GPU IDs are indices within `CUDA_VISIBLE_DEVICES` when it is set; for example, `CUDA_VISIBLE_DEVICES=2,3` maps `--gpu-ids 0 1` to physical GPUs 2 and 3.
+- Targets are distributed across GPUs, with each target processed entirely on one GPU. `--max-tokens-per-batch` applies per GPU.
 
 ## Loading a model and runner
 
