@@ -1,6 +1,6 @@
 # AtlasFold
 
-[\[Paper\]](docs/atlasfold.pdf)
+[\[Paper\]](https://www.biorxiv.org/content/10.64898/2026.09.04.749352v2), [\[PDF\]](docs/atlasfold.pdf)
 
 The **Atlas family** is a collection of open protein models for sequence representation and structure prediction.
 AtlasLM is a protein language model (PLM), while AtlasFold and AtlasFold-M are trainable PLM-based models for protein folding and co-folding, respectively.
@@ -177,16 +177,15 @@ Install the training dependencies with `pip install -e ".[fold,train,cuequiv]"`.
 ## Citation
 
 ```bibtex
-@misc{seo2026atlasfold,
-  title = {AtlasFold: Protein Structure Prediction with Metagenomic-Scale Language Models},
-  author = {Seo, Seonghwan and Kim, Hyeongwoo and Moon, Seokhyun and Kim, Woo Youn},
+@article{seo2026atlasfold,
+  author = {Seo, Seonghwan and Kim, Hyeongwoo and Moon, Seokhyun and Kim, Woo Youn and {Team KAIST}},
+  title = {AtlasFold: Protein structure prediction with metagenomic-scale language models},
   year = {2026},
-  note = {Preprint},
-  url = {https://github.com/SeonghwanSeo/atlasfold}
+  doi = {10.64898/2026.09.04.749352},
+  URL = {https://www.biorxiv.org/content/10.64898/2026.09.04.749352v2},
+  journal = {bioRxiv}
 }
 ```
-
-The citation will be updated with the public preprint identifier when it becomes available.
 
 ## Acknowledgements
 
