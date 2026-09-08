@@ -9,6 +9,8 @@ from timeit import default_timer as timer
 
 import numpy as np
 
+from atlasfold.cli import multigpu
+
 
 def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -95,6 +97,13 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Torch device. Defaults to cuda when available, otherwise cpu.",
     )
     runtime.add_argument(
+        "--gpu-ids",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Visible CUDA indices for target-parallel inference; excludes --device.",
+    )
+    runtime.add_argument(
         "--kernel",
         choices=["auto", "torch", "cuequiv"],
         default="auto",
@@ -147,7 +156,8 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
     return parser
 
 
-def run(args: argparse.Namespace) -> None:
+def run(args: argparse.Namespace, inputs=None) -> None:
+    multigpu.validate_args(args)
     if args.num_recycles < 0:
         raise ValueError(f"num_recycles must be non-negative, got {args.num_recycles}.")
     if not 0.0 < args.mlm_prob <= 1.0:
@@ -390,7 +400,7 @@ def run(args: argparse.Namespace) -> None:
 
     # Set torch matmul precision to highest for better performance.
     torch.set_float32_matmul_precision("highest")
-    inputs = load_inputs(args)
+    inputs = load_inputs(args) if inputs is None else list(inputs)
     num_residues = [item.length for item in inputs]
     logger.info(
         "Loaded %d multimer target(s). Residue range: %d-%d.",
@@ -414,6 +424,10 @@ def run(args: argparse.Namespace) -> None:
 
     if len(inputs) == 0:
         logger.info("All targets are complete. Nothing to do.")
+        return
+
+    if getattr(args, "gpu_ids", None) is not None:
+        multigpu.run(args, inputs, "multimer", logger)
         return
 
     # Load the model

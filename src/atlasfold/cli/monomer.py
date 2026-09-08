@@ -9,6 +9,8 @@ from timeit import default_timer as timer
 
 import numpy as np
 
+from atlasfold.cli import multigpu
+
 
 def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -92,6 +94,13 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Torch device. Defaults to cuda when available, otherwise cpu.",
     )
     runtime.add_argument(
+        "--gpu-ids",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Visible CUDA indices for target-parallel inference; excludes --device.",
+    )
+    runtime.add_argument(
         "--kernel",
         choices=["auto", "torch", "cuequiv"],
         default="auto",
@@ -144,7 +153,8 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
     return parser
 
 
-def run(args: argparse.Namespace) -> None:
+def run(args: argparse.Namespace, inputs=None) -> None:
+    multigpu.validate_args(args)
     if args.num_recycles < 0:
         raise ValueError(f"num_recycles must be non-negative, got {args.num_recycles}.")
     if not 0.0 < args.mlm_prob <= 1.0:
@@ -357,7 +367,7 @@ def run(args: argparse.Namespace) -> None:
     torch.set_float32_matmul_precision("highest")
 
     # Load sequences from the input FASTA file.
-    sequences = load_sequences(args.input_fasta)
+    sequences = load_sequences(args.input_fasta) if inputs is None else list(inputs)
     logger.info(
         "Loaded %d sequences from %s. Length range: %d-%d.",
         len(sequences),
@@ -381,6 +391,10 @@ def run(args: argparse.Namespace) -> None:
 
     if len(sequences) == 0:
         logger.info("All targets are complete. Nothing to do.")
+        return
+
+    if getattr(args, "gpu_ids", None) is not None:
+        multigpu.run(args, sequences, "monomer", logger)
         return
 
     model = load_model(
