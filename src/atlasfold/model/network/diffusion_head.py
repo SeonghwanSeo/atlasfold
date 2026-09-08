@@ -435,7 +435,9 @@ class DiffusionHead(nn.Module):
             for st in range(0, r_noisy.shape[1], chunk_size):
                 end = min(st + chunk_size, r_noisy.shape[1])
                 _r_noisy = r_noisy[:, st:end]
-                _single_cond = single_cond[:, st:end]
+                _single_cond = (
+                    single_cond if single_cond.shape[1] == 1 else single_cond[:, st:end]
+                )
                 r_update[:, st:end] = self.score_model(
                     batch, _r_noisy, _single_cond, pair_bias
                 )

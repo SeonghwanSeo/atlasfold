@@ -9,6 +9,7 @@ from torchmetrics import MeanMetric, MetricCollection
 
 from atlasfold.model.model_multimer import AtlasFoldMultimerConfig
 from atlasfold.model.network.diffusion_head import SamplingConfig
+from atlasfold.train import losses
 from atlasfold.train.monomer import train_module as monomer_train_module
 from atlasfold.train.multimer import train_alignment, validation_metrics
 from atlasfold.train.multimer.model_train import AtlasFoldForTrain
@@ -70,6 +71,15 @@ class TrainingModule(monomer_train_module.TrainingModule):
             0, self.training_config.num_recycles + 1, size=1000_000
         )
         self.last_lr_step: int = -1
+
+    def freeze_submodules(self):
+        additional_groups = ("pde_head",) if self.train_pde_head is False else ()
+        super().freeze_submodules(additional_groups)
+
+    def setup_losses(self):
+        super().setup_losses()
+        confidence_loss_config = self.loss_config.confidence_loss
+        self.pde_loss = losses.confidence.PDELoss(**confidence_loss_config["pde_loss"])
 
     def transfer_batch_to_device(
         self,
@@ -210,6 +220,33 @@ class TrainingModule(monomer_train_module.TrainingModule):
 
         metrics["loss"] = loss.detach()
         return loss, metrics
+
+    def compute_confidence_loss(
+        self,
+        pred: dict[str, Any],
+        batch: dict[str, torch.Tensor],
+        label: dict[str, torch.Tensor],
+        loss_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        L_confidence, metrics = super().compute_confidence_loss(
+            pred, batch, label, loss_mask
+        )
+        if self.train_pde_head:
+            w = loss_mask.float()
+            n_valid_samples = w.sum().clamp(1)
+            L_pde = self.pde_loss(
+                logits=pred["pde"]["logits"],
+                bin_centers=pred["pde"]["bin_centers"],
+                x_pred=pred["mini_rollout"]["sample_coords"],
+                x_gt=label["coordinates"],
+                mask=label["resolved_mask"],
+                cbeta_idx=batch["pseudo_beta"],
+            )
+            L_pde = (L_pde * w).sum() / n_valid_samples
+            metrics["pde_loss"] = L_pde.detach()
+            L_confidence = L_confidence + L_pde
+        metrics["loss"] = L_confidence.detach()
+        return L_confidence, metrics
 
     def validation_step(
         self,

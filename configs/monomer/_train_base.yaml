@@ -54,7 +54,6 @@ training:
   train_diffusion_head: true
   train_confidence_head: true
   train_pae_head: true
-  train_pde_head: false
 
   num_recycles: 3
 
@@ -109,7 +108,6 @@ loss:
   confidence_loss:
     plddt_loss: {}
     pae_loss: {}
-    pde_loss: {}
     experimentally_resolved_loss: {}
 
 wandb:

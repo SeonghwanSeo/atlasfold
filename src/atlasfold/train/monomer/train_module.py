@@ -73,7 +73,6 @@ class TrainingConfig:
     train_trunk: bool = True
     train_diffusion_head: bool = True
     train_confidence_head: bool = True
-    train_pde_head: bool = False
     train_pae_head: bool = False
 
     # trunk recycling
@@ -133,7 +132,6 @@ class TrainingModule(pl.LightningModule):
         self.train_trunk: bool = self.training_config.train_trunk
         self.train_diffusion_head: bool = self.training_config.train_diffusion_head
         self.train_confidence_head: bool = self.training_config.train_confidence_head
-        self.train_pde_head: bool = self.training_config.train_pde_head
         self.train_pae_head: bool = self.training_config.train_pae_head
 
         # Initialize model here
@@ -175,7 +173,7 @@ class TrainingModule(pl.LightningModule):
 
         self.last_lr_step: int = -1
 
-    def freeze_submodules(self):
+    def freeze_submodules(self, additional_groups: tuple[str, ...] = ()):
         """Freeze submodules based on the training configuration."""
         modules_to_freeze: list[str] = []
         modules_to_freeze.append("lm")  # Always freeze the language model
@@ -186,10 +184,9 @@ class TrainingModule(pl.LightningModule):
             modules_to_freeze.append("diffusion_head")
         if self.train_confidence_head is False:
             modules_to_freeze.append("confidence_head")
-        if self.train_pde_head is False:
-            modules_to_freeze.append("pde_head")
         if self.train_pae_head is False:
             modules_to_freeze.append("pae_head")
+        modules_to_freeze.extend(additional_groups)
         print(f"Freezing modules: {modules_to_freeze}")
         self.modules_to_freeze: list[str] = modules_to_freeze
 
@@ -233,8 +230,6 @@ class TrainingModule(pl.LightningModule):
         )
         # PAE loss
         self.pae_loss = losses.confidence.PAELoss(**confidence_loss_config["pae_loss"])
-        # PDE loss
-        self.pde_loss = losses.confidence.PDELoss(**confidence_loss_config["pde_loss"])
 
     def setup_metrics(self):
         """Setup metrics for validation"""
@@ -561,20 +556,6 @@ class TrainingModule(pl.LightningModule):
         L_resolved = (L_resolved * w).sum() / n_valid_samples
         metrics["resolved_loss"] = L_resolved.detach()
 
-        if self.train_pde_head:
-            L_pde = self.pde_loss(
-                logits=pred["pde"]["logits"],
-                bin_centers=pred["pde"]["bin_centers"],
-                x_pred=x_pred,
-                x_gt=x_gt,
-                mask=resolved_mask,
-                cbeta_idx=batch["pseudo_beta"],
-            )
-            L_pde = (L_pde * w).sum() / n_valid_samples
-            metrics["pde_loss"] = L_pde.detach()
-        else:
-            L_pde = 0.0
-
         if self.train_pae_head:
             L_pae = self.pae_loss(
                 logits=pred["pae"]["logits"],
@@ -589,7 +570,7 @@ class TrainingModule(pl.LightningModule):
             L_pae = 0.0
 
         w_pae = self.loss_weights["pae"]
-        L_confidence = L_plddt + L_resolved + L_pde + w_pae * L_pae
+        L_confidence = L_plddt + L_resolved + w_pae * L_pae
         metrics["loss"] = L_confidence.detach()
         return L_confidence, metrics
 
