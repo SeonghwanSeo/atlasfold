@@ -456,7 +456,8 @@ class MultimerFoldingRunner:
             )
             for complex_input in complexes
         ]
-        lm_length = max(feat["lm.input_ids"].shape[0] for feat in feats)
+        # Keep MLM random draws independent of batch composition (up to 16 chains).
+        lm_length = bucket_length + 32
         feats = [
             cls._pad_to_lengths(feat, residue_length=bucket_length, lm_length=lm_length)
             for feat in feats
