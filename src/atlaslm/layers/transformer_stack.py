@@ -3,6 +3,7 @@ import math
 import torch
 
 from .attention import MultiHeadAttention
+from .rotary import RotaryEmbedding
 
 
 class SwiGLU(torch.nn.Module):
@@ -34,10 +35,11 @@ class TransformerBlock(torch.nn.Module):
         expansion_ratio: float = 4.0,
         residue_scaling_factor: float = 1.0,
         qk_layernorm: bool = True,
+        rotary: RotaryEmbedding | None = None,
     ):
         super().__init__()
         hidden_dim = int(((expansion_ratio * d_model) + 255) // 256 * 256)
-        self.attn = MultiHeadAttention(d_model, n_heads, bias, qk_layernorm)
+        self.attn = MultiHeadAttention(d_model, n_heads, bias, qk_layernorm, rotary)
         self.ffn = torch.nn.Sequential(
             torch.nn.LayerNorm(d_model),
             torch.nn.Linear(d_model, hidden_dim * 2, bias=bias),
@@ -97,6 +99,8 @@ class TransformerStack(torch.nn.Module):
         self.n_heads: int = n_heads
         self.n_layers: int = n_layers
 
+        # Identical RoPE settings across layers: share one fixed-size cache.
+        rotary = RotaryEmbedding(d_model // n_heads)
         self.blocks = torch.nn.ModuleList(
             [
                 TransformerBlock(
@@ -108,6 +112,7 @@ class TransformerStack(torch.nn.Module):
                     expansion_ratio=expansion_ratio,
                     bias=bias,
                     qk_layernorm=qk_layernorm,
+                    rotary=rotary,
                 )
                 for _ in range(n_layers)
             ]

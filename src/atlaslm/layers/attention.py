@@ -14,6 +14,7 @@ class MultiHeadAttention(nn.Module):
         n_heads: int,
         bias: bool = False,
         qk_layernorm: bool = True,
+        rotary: RotaryEmbedding | None = None,
     ):
         super().__init__()
 
@@ -34,7 +35,9 @@ class MultiHeadAttention(nn.Module):
             self.q_ln = nn.Identity()
             self.k_ln = nn.Identity()
 
-        self.rotary = RotaryEmbedding(d_model // n_heads, max_seqlen=20000)
+        self.rotary = (
+            rotary if rotary is not None else RotaryEmbedding(d_model // n_heads)
+        )
 
     def forward(
         self,

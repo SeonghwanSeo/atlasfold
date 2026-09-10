@@ -84,6 +84,11 @@ class RotaryEmbedding(torch.nn.Module):
         """
         if pos_id is None:
             seqlen = q.shape[-3]
+            if seqlen > self._cos_cached.shape[0]:
+                raise ValueError(
+                    f"Sequence length {seqlen} exceeds RoPE cache capacity "
+                    f"{self._cos_cached.shape[0]}."
+                )
             cos = self._cos_cached[:seqlen]  # [seqlen, dim]
             sin = self._sin_cached[:seqlen]  # [seqlen, dim]
         else:

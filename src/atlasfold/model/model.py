@@ -525,10 +525,7 @@ class AtlasFold(torch.nn.Module):
                 Path(config.lm_path) if config.lm_path is not None else config.lm_name
             )
             lm = AtlasLM.from_pretrained(
-                lm_source,
-                device=device,
-                dtype=dtype,
-                cache_dir=cache_dir,
+                lm_source, device=device, dtype=dtype, cache_dir=cache_dir
             )
 
         # Create the model on meta device
@@ -537,20 +534,19 @@ class AtlasFold(torch.nn.Module):
             # Remove the LM, which will be loaded separately
             del model.lm
 
-        # Load the state dict onto the target device
-        model = model.to_empty(device=device)
+        if dtype == torch.bfloat16:
+            model.lm_stack.bfloat16()
+            model.main_stack.bfloat16()
+        model.to_empty(device=device)
 
-        # Load the state dict with the specified strictness
-        state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+        state_dict = torch.load(
+            model_path, map_location="cpu", weights_only=True, mmap=True
+        )
         model.load_state_dict(state_dict, strict=True)
+        del state_dict
 
         # Finally, attach the LM
         model.lm = lm.to(device=device, dtype=dtype)
-
-        if dtype == torch.bfloat16:
-            model.lm = model.lm.bfloat16()
-            model.lm_stack = model.lm_stack.bfloat16()
-            model.main_stack = model.main_stack.bfloat16()
 
         # Freeze the model parameters and set to eval mode
         model.requires_grad_(False)

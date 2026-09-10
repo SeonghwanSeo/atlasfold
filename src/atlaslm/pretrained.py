@@ -138,11 +138,12 @@ def load_model(
     # Initialize the model architecture
     with torch.device("meta"):
         model = AtlasLM(config.d_model, config.n_heads, config.n_layers).to(dtype)
+    model.to_empty(device=device)
 
     # Load the model weights
-    model = model.to_empty(device=device)
-    state_dict = torch.load(model_path, map_location=device, weights_only=True)
-    model.load_state_dict(state_dict)
+    state_dict = torch.load(model_path, map_location="cpu", weights_only=True, mmap=True)
+    model.load_state_dict(state_dict, strict=True)
+    del state_dict
     model.eval()
 
     for module in model.modules():
