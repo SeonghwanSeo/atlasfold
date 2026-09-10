@@ -154,6 +154,7 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
 
 
 def run(args: argparse.Namespace, inputs=None) -> None:
+    # NOTE: `inputs` is an internal argument for multi-gpu worker assignments.
     multigpu.validate_args(args)
     if args.num_recycles < 0:
         raise ValueError(f"num_recycles must be non-negative, got {args.num_recycles}.")
@@ -231,7 +232,7 @@ def run(args: argparse.Namespace, inputs=None) -> None:
                 f"Duplicates: {sorted(set(duplicates))}"
             )
 
-        return sorted(sequences, key=lambda item: (len(item.sequence), item.name))
+        return sequences
 
     def load_model(
         model_path: str | Path | None = None,
@@ -368,12 +369,13 @@ def run(args: argparse.Namespace, inputs=None) -> None:
 
     # Load sequences from the input FASTA file.
     sequences = load_sequences(args.input_fasta) if inputs is None else list(inputs)
+    sequences.sort(key=lambda item: (len(item.sequence), item.name))
     logger.info(
         "Loaded %d sequences from %s. Length range: %d-%d.",
         len(sequences),
         args.input_fasta,
-        len(sequences[0].sequence),
-        len(sequences[-1].sequence),
+        min(len(item.sequence) for item in sequences),
+        max(len(item.sequence) for item in sequences),
     )
 
     out_dir = Path(args.out_dir)

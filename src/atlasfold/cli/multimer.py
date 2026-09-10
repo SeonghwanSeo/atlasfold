@@ -157,6 +157,7 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
 
 
 def run(args: argparse.Namespace, inputs=None) -> None:
+    # NOTE: `inputs` is an internal argument for multi-gpu worker assignments.
     multigpu.validate_args(args)
     if args.num_recycles < 0:
         raise ValueError(f"num_recycles must be non-negative, got {args.num_recycles}.")
@@ -401,6 +402,7 @@ def run(args: argparse.Namespace, inputs=None) -> None:
     # Set torch matmul precision to highest for better performance.
     torch.set_float32_matmul_precision("highest")
     inputs = load_inputs(args) if inputs is None else list(inputs)
+    inputs.sort(key=lambda item: (item.length, item.name))
     num_residues = [item.length for item in inputs]
     logger.info(
         "Loaded %d multimer target(s). Residue range: %d-%d.",
