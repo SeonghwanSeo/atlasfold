@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlasfold"
-version = "1.0.1"
+version = "1.0.2"
 description = "Protein language model-based protein folding and co-folding"
 authors = [
   { name = "SeonghwanSeo", email = "shwan0106@gmail.com" }

@@ -128,10 +128,13 @@ RAW_PDB_HEADER = """
 HEADER
 TITLE     %s
 REMARK   1 REFERENCE 1
-REMARK   1  AUTH   SEONGHWAN SEO, HYEONGWOO KIM, SEOKHYUN MOON, WOO YOUN KIM
-REMARK   1  TITL   ATLASFOLD: PROTEIN STRUCTURE PREDICTION WITH METAGENOMIC-
-REMARK   1  TITL 2 SCALE LANGUAGE MODELS
-REMARK   1  REF    TO BE PUBLISHED
+REMARK   1  AUTH   SEONGHWAN SEO, HYEONGWOO KIM, SEOKHYUN MOON, WOO YOUN KIM,
+REMARK   1  AUTH 2 TEAM KAIST
+REMARK   1  TITL   ATLASFOLD: PROTEIN STRUCTURE PREDICTION WITH
+REMARK   1  TITL 2 METAGENOMIC-SCALE LANGUAGE MODELS
+REMARK   1  REF    BIORXIV                                    2026
+REMARK   1  REFN                   ISSN 2692-8205
+REMARK   1  DOI    10.64898/2026.09.04.749352
 """
 
 
@@ -155,6 +158,31 @@ def to_mmcif(struct: gemmi.Structure, model: str | None = None) -> str:
     # Add metadata
     cif_block.set_pair("_entry.id", struct.name)
 
+    citation_loop = cif_block.init_loop(
+        "_citation.",
+        [
+            "id",
+            "title",
+            "journal_full",
+            "year",
+            "journal_id_ISSN",
+            "pdbx_database_id_DOI",
+        ],
+    )
+    citation_loop.add_row(
+        [
+            "primary",
+            gemmi.cif.quote(
+                "AtlasFold: Protein structure prediction with metagenomic-scale "
+                "language models"
+            ),
+            "bioRxiv",
+            "2026",
+            "2692-8205",
+            "10.64898/2026.09.04.749352",
+        ]
+    )
+
     author_loop: gemmi.cif.Loop = cif_block.init_loop(
         "_citation_author.", ["citation_id", "ordinal", "name"]
     )
@@ -162,6 +190,7 @@ def to_mmcif(struct: gemmi.Structure, model: str | None = None) -> str:
     author_loop.add_row(["primary", "2", '"Kim, Hyeongwoo"'])
     author_loop.add_row(["primary", "3", '"Moon, Seokhyun"'])
     author_loop.add_row(["primary", "4", '"Kim, Woo Youn"'])
+    author_loop.add_row(["primary", "5", '"Team KAIST"'])
 
     software_loop = cif_block.init_loop(
         "_software.",
