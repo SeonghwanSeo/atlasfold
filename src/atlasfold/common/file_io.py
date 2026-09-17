@@ -5,6 +5,7 @@ import functools
 import gemmi
 import numpy as np
 
+from atlasfold import __version__
 from atlasfold.common import residue_constants
 
 
@@ -206,7 +207,13 @@ def to_mmcif(struct: gemmi.Structure, model: str | None = None) -> str:
     else:
         raise ValueError(f"Unknown model type: {model}")
     software_loop.add_row(
-        ["1", "AtlasFold", "model", gemmi.cif.quote(description), "1.0.0"]
+        [
+            "1",
+            "AtlasFold",
+            "model",
+            gemmi.cif.quote(description),
+            gemmi.cif.quote(__version__),
+        ]
     )
 
     # Add structure data

@@ -92,8 +92,8 @@ def load_model(
     device : str | torch.device, optional
         The device to load the model onto.
     kernel : str, optional
-        Triangle operation backend: auto, torch, or cuequiv. Auto selects
-        cuequiv when available and otherwise uses torch.
+        Triangle operation backend: auto, torch, cuequiv, or triton. Auto selects
+        triton, then cuequiv, then torch according to device and availability.
     cache_dir : str, optional
         Directory used to cache downloaded model weights.
     lm : AtlasLM, optional

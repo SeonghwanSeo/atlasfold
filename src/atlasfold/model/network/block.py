@@ -117,7 +117,7 @@ class PairStack(torch.nn.Module):
         mask : torch.Tensor
             The token mask of shape (B, L)
         kernel_backend : str
-            Triangle operation backend: "torch" or "cuequiv".
+            Triangle operation backend: "torch", "cuequiv", or "triton".
             Defaults to "torch".
 
         Returns
@@ -229,7 +229,7 @@ class PairBlock(torch.nn.Module):
         pair_mask : torch.Tensor
             The pair mask of shape (B, L, L)
         kernel_backend : str
-            Triangle operation backend: "torch" or "cuequiv".
+            Triangle operation backend: "torch", "cuequiv", or "triton".
             Defaults to "torch".
 
         Returns

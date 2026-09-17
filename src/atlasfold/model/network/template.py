@@ -161,7 +161,7 @@ class TemplateModule(torch.nn.Module):
     ) -> torch.Tensor:
         """Return a template-derived update.
 
-        kernel_backend must be "torch" or "cuequiv" and defaults to "torch".
+        kernel_backend must be "torch", "cuequiv", or "triton" and defaults to "torch".
         """
         _add = partial(add, inplace=not self.training)
 

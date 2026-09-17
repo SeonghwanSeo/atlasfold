@@ -4,11 +4,13 @@ This guide covers AtlasFold monomer training and AtlasFold-M fine-tuning. AtlasL
 
 ## Requirements
 
-Install the repository with folding, training, and optional cuEquivariance dependencies:
+Install the repository with folding and training dependencies:
 
 ```bash
-pip install -e ".[fold,train,cuequiv]"
+pip install -e ".[fold,train]"
 ```
+
+The training entry points use cuEquivariance when installed and otherwise native Torch. See the [inference guide](inference.md) for optional cuEquivariance installation. The Triton backend is inference-only.
 
 Training requires Python 3.10 or later, CUDA GPUs, and enough aggregate devices to divide the configured global batch size exactly. The released configurations use mixed BF16 precision, per-device batch size 1, and global batch size 256.
 

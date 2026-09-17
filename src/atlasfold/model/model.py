@@ -214,9 +214,9 @@ class AtlasFold(torch.nn.Module):
 
     def set_kernel_backend(
         self,
-        backend: Literal["auto", "torch", "cuequiv"],
+        backend: Literal["auto", "torch", "cuequiv", "triton"],
     ) -> str:
-        """Select the "auto", "torch", or "cuequiv" kernel backend."""
+        """Select the "auto", "torch", "cuequiv", or "triton" kernel backend."""
         self.kernel_backend = select_kernel_backend(backend, self.device.type)
         return self.kernel_backend
 

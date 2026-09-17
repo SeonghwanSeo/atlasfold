@@ -2,10 +2,16 @@
 
 AtlasFold provides separate monomer and multimer runners for single-target folding, streaming and batched inference.
 
-Install Python 3.10 or later. A CUDA GPU is strongly recommended:
+Install Python 3.10 or later:
 
 ```bash
-pip install "atlasfold[fold,cuequiv]"
+pip install "atlasfold[fold]"
+```
+
+To install the optional cuEquivariance triangle kernels for a CUDA 12 PyTorch build, use:
+
+```bash
+pip install cuequivariance_torch cuequivariance_ops_cu12 cuequivariance_ops_torch_cu12
 ```
 
 ## Command-line inference
@@ -74,17 +80,21 @@ If `device` is omitted, AtlasFold uses CPU. Use `cache_dir` to choose the downlo
 
 The CLI chooses CUDA automatically when available, whereas the Python `load_model()` API defaults to CPU. Pass `device="cuda"` explicitly for GPU inference.
 
-Pass `kernel="auto"`, `kernel="cuequiv"`, or `kernel="torch"` to `load_model()` to select the triangle operation backend.
-The default is `auto`, which uses cuEquivariance when it is installed and the model is loaded on CUDA, and otherwise uses native Torch.
-The CLI provides the same selection through `--kernel`.
+Pass `kernel="auto"`, `kernel="triton"`, `kernel="cuequiv"`, or `kernel="torch"` to `load_model()` to select the triangle operation backend.
+The default is `auto`, which selects the first installed backend on CUDA in this order: Triton, cuEquivariance, then native Torch. Other devices use Torch.
+Triton is the preferred inference backend and requires CUDA with BF16/FP16 inputs or autocast; it does not support training. The runners enable BF16 autocast on CUDA. The CLI provides the same selection through `--kernel`, for example `--kernel triton`.
+
+To use cuEquivariance explicitly after installing the optional packages above, select `kernel="cuequiv"` or `--kernel cuequiv`.
 
 `AtlasFold.from_pretrained()` and `AtlasFold_Multimer.from_pretrained()` only construct and load a model; they do not perform automatic kernel selection.
 Prefer `load_model()` for inference.
 If a model is constructed directly or loaded through `from_pretrained()`, it uses the Torch backend unless `set_kernel_backend()` is called explicitly:
 
 ```python
+from atlasfold.model import AtlasFold
+
 model = AtlasFold.from_pretrained("atlasfold", device="cuda")
-model.set_kernel_backend("cuequiv") # auto | cuequiv | torch
+model.set_kernel_backend("auto")  # auto | triton | cuequiv | torch
 ```
 
 
