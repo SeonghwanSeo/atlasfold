@@ -242,7 +242,7 @@ class ConfidenceHead_Monomer(nn.Module):
         x_pred: torch.Tensor
             The predicted coordinates, shape (B, N, L, 14, 3).
         kernel_backend : str
-            Triangle operation backend: "torch" or "cuequiv".
+            Triangle operation backend: "torch", "cuequiv", or "triton".
             Defaults to "torch".
 
         Returns
@@ -416,7 +416,7 @@ class ConfidenceHead_Multimer(nn.Module):
         x_pred: torch.Tensor
             The predicted coordinates, shape (B, N, L, 14, 3).
         kernel_backend : str
-            Triangle operation backend: "torch" or "cuequiv".
+            Triangle operation backend: "torch", "cuequiv", or "triton".
             Defaults to "torch".
 
         Returns

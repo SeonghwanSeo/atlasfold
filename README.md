@@ -10,6 +10,8 @@ AtlasLM is a protein language model (PLM), while AtlasFold and AtlasFold-M are t
 AtlasFold achieves state-of-the-art accuracy among protein language model-based folding methods. AtlasFold and AtlasFold-M predict structures without an MSA search.
 This repository provides pretrained models, training and inference code, staged training configurations, and preprocessing workflows for monomer and multimer folding.
 
+If you are interested in general biomolecular complex prediction, please check out [**K-Fold**](https://github.com/SeonghwanSeo/kfold).
+
 ## Installation
 
 AtlasFold requires Python 3.10 or later. A CUDA GPU is recommended for structure prediction.
@@ -17,7 +19,7 @@ AtlasFold requires Python 3.10 or later. A CUDA GPU is recommended for structure
 Install the inference dependencies from PyPI:
 
 ```bash
-pip install "atlasfold[fold,cuequiv]"
+pip install "atlasfold[fold]"
 ```
 
 To use AtlasLM as a standalone protein language model:
@@ -31,10 +33,12 @@ To install the latest development version from GitHub:
 ```bash
 git clone https://github.com/SeonghwanSeo/atlasfold.git
 cd atlasfold
-pip install -e ".[fold,cuequiv]"
+pip install -e ".[fold]"
 ```
 
-AtlasFold supports [cuEquivariance](https://docs.nvidia.com/cuda/cuequivariance/) kernels for faster inference. For systems without compatible NVIDIA CUDA hardware, install `atlasfold[fold]` instead.
+For CUDA inference, the default `--kernel auto` prefers Triton when installed, then optional [cuEquivariance](https://docs.nvidia.com/cuda/cuequivariance/), then native Torch.
+Other devices use Torch.
+See the [inference guide](docs/inference.md#loading-a-model-and-runner) for backend selection and optional cuEquivariance installation.
 
 ## Running your first prediction
 
@@ -181,7 +185,7 @@ Large release artifacts are hosted in the [AtlasFold Google Drive folder](https:
 
 ## Training
 
-Install the training dependencies with `pip install -e ".[fold,train,cuequiv]"`. AtlasFold monomer training uses four progressively longer crop stages, and AtlasFold-M fine-tuning uses three stages initialized from the monomer model. See the [training guide](docs/training.md) for data setup, released intermediate checkpoints, complete commands, and configuration overrides, and the [data guide](docs/data.md) for the released dataset layout and provenance.
+Install the training dependencies with `pip install -e ".[fold,train]"`. AtlasFold monomer training uses four progressively longer crop stages, and AtlasFold-M fine-tuning uses three stages initialized from the monomer model. See the [training guide](docs/training.md) for optional cuEquivariance installation, data setup, released intermediate checkpoints, complete commands, and configuration overrides, and the [data guide](docs/data.md) for the released dataset layout and provenance.
 
 ## Citation
 
@@ -198,7 +202,7 @@ Install the training dependencies with `pip install -e ".[fold,train,cuequiv]"`.
 
 ## Acknowledgements
 
-This project was developed as part of the **K-Fold** initiative supported by the Ministry of Science and ICT (MSIT) of the Republic of Korea. The K-Fold project for biomolecular complex prediction is currently under active development with numerous contributors at KAIST and will be released soon!
+This project was developed as part of the K-Fold initiative supported by the Ministry of Science and ICT (MSIT) of the Republic of Korea.
 
 ---
 

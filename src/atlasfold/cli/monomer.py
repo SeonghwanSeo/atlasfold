@@ -102,11 +102,11 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     runtime.add_argument(
         "--kernel",
-        choices=["auto", "torch", "cuequiv"],
+        choices=["auto", "torch", "cuequiv", "triton"],
         default="auto",
         help=(
-            "Triangle kernel backend. By default, selects cuequiv when available, "
-            "otherwise torch."
+            "Triangle kernel backend. Auto selects triton, then cuequiv, "
+            "then torch, according to availability on the selected device."
         ),
     )
     runtime.add_argument(

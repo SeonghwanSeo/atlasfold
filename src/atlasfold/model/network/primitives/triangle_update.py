@@ -17,6 +17,7 @@ except ImportError:
 
 from .linear import LinearNoBias
 from .normalization import LayerNorm
+from .triton_triangle import triton_triangle
 
 
 @torch.compiler.disable
@@ -153,7 +154,7 @@ class TriangleMultiplicationOutgoing(nn.Module):
         mask: torch.Tensor
             The input mask of shape (*, L, L)
         kernel_backend: str
-            Triangle operation backend: "torch" or "cuequiv".
+            Triangle operation backend: "torch", "cuequiv", or "triton".
             Defaults to "torch".
 
         Returns
@@ -162,6 +163,9 @@ class TriangleMultiplicationOutgoing(nn.Module):
             The output data of shape (*, L, L, C)
 
         """
+        if kernel_backend == "triton":
+            return triton_triangle(self, z, mask, direction="outgoing")
+
         if (
             kernel_backend == "cuequiv"
             and _cueq_triangle_multiplicative_update is not None
@@ -240,7 +244,7 @@ class TriangleMultiplicationIncoming(nn.Module):
         mask: torch.Tensor
             The input mask of shape (*, L, L)
         kernel_backend: str
-            Triangle operation backend: "torch" or "cuequiv".
+            Triangle operation backend: "torch", "cuequiv", or "triton".
             Defaults to "torch".
 
         Returns
@@ -249,6 +253,9 @@ class TriangleMultiplicationIncoming(nn.Module):
             The output data of shape (*, L, L, C)
 
         """
+        if kernel_backend == "triton":
+            return triton_triangle(self, z, mask, direction="incoming")
+
         if (
             kernel_backend == "cuequiv"
             and _cueq_triangle_multiplicative_update is not None
@@ -326,7 +333,7 @@ class TriangleAttentionStartingNode(nn.Module):
         mask : torch.Tensor
             Attention mask of shape (*, L, L)
         kernel_backend : str
-            Triangle operation backend: "torch" or "cuequiv".
+            Triangle operation backend: "torch", "cuequiv", or "triton".
             Defaults to "torch".
 
         Returns
@@ -335,6 +342,9 @@ class TriangleAttentionStartingNode(nn.Module):
             Output tensor of shape (*, L, L, C)
 
         """
+        if kernel_backend == "triton":
+            return triton_triangle(self, z, mask)
+
         # Line 1: Initial layer norm
         z = self.layernorm(z)
 
@@ -437,7 +447,7 @@ class TriangleAttentionEndingNode(nn.Module):
         mask : torch.Tensor
             Attention mask of shape (*, L, L)
         kernel_backend : str
-            Triangle operation backend: "torch" or "cuequiv".
+            Triangle operation backend: "torch", "cuequiv", or "triton".
             Defaults to "torch".
 
         Returns
@@ -448,6 +458,9 @@ class TriangleAttentionEndingNode(nn.Module):
         """
         z = z.transpose(-2, -3)
         mask = mask.transpose(-1, -2)
+
+        if kernel_backend == "triton":
+            return triton_triangle(self, z, mask).transpose(-2, -3)
 
         # Line 1: Initial layer norm
         z = self.layernorm(z)

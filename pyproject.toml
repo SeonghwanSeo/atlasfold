@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlasfold"
-version = "1.0.2"
+dynamic = ["version"]
 description = "Protein language model-based protein folding and co-folding"
 authors = [
   { name = "SeonghwanSeo", email = "shwan0106@gmail.com" }
@@ -28,6 +28,9 @@ Issues = "https://github.com/SeonghwanSeo/atlasfold/issues"
 [project.scripts]
 atlasfold = "atlasfold.cli:main"
 
+[tool.setuptools.dynamic]
+version = { attr = "atlasfold.__version__" }
+
 [project.optional-dependencies]
 fold = [
   "scipy",
@@ -35,11 +38,6 @@ fold = [
   "gemmi",
   "omegaconf",
   "numba", # for SASA computation
-]
-cuequiv = [
-  "cuequivariance_torch>=0.6.0",
-  "cuequivariance_ops_cu12>=0.6.0",
-  "cuequivariance_ops_torch_cu12>=0.6.0",
 ]
 train = [
   "msgpack",
