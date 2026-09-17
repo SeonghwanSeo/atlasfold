@@ -10,6 +10,8 @@ AtlasLM is a protein language model (PLM), while AtlasFold and AtlasFold-M are t
 AtlasFold achieves state-of-the-art accuracy among protein language model-based folding methods. AtlasFold and AtlasFold-M predict structures without an MSA search.
 This repository provides pretrained models, training and inference code, staged training configurations, and preprocessing workflows for monomer and multimer folding.
 
+If you are interested in general biomolecular complex prediction, please check out [**K-Fold**](https://github.com/SeonghwanSeo/kfold).
+
 ## Installation
 
 AtlasFold requires Python 3.10 or later. A CUDA GPU is recommended for structure prediction.
@@ -200,7 +202,7 @@ Install the training dependencies with `pip install -e ".[fold,train]"`. AtlasFo
 
 ## Acknowledgements
 
-This project was developed as part of the **K-Fold** initiative supported by the Ministry of Science and ICT (MSIT) of the Republic of Korea. The K-Fold project for biomolecular complex prediction is currently under active development with numerous contributors at KAIST and will be released soon!
+This project was developed as part of the K-Fold initiative supported by the Ministry of Science and ICT (MSIT) of the Republic of Korea.
 
 ---
 
