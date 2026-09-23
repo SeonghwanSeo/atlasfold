@@ -10,9 +10,9 @@ AtlasFold is evaluated on 183 CAMEO22, 70 CASP14, and 56 CASP15 targets.
 Generate the released AtlasFold predictions with:
 
 ```bash
-atlasfold monomer -i assets/benchmarks/cameo22.fasta -o predictions/cameo22 --num-samples 1 --seed 1 2 3 4 5
-atlasfold monomer -i assets/benchmarks/casp14.fasta -o predictions/casp14 --num-samples 1 --seed 1 2 3 4 5
-atlasfold monomer -i assets/benchmarks/casp15.fasta -o predictions/casp15 --num-samples 1 --seed 1 2 3 4 5
+atlasfold monomer -i assets/benchmarks/cameo22.fasta -o predictions/cameo22 --num-samples 1 --seeds 1 2 3 4 5
+atlasfold monomer -i assets/benchmarks/casp14.fasta -o predictions/casp14 --num-samples 1 --seeds 1 2 3 4 5
+atlasfold monomer -i assets/benchmarks/casp15.fasta -o predictions/casp15 --num-samples 1 --seeds 1 2 3 4 5
 ```
 
 ### CAMEO22
@@ -71,8 +71,8 @@ To reduce seed-to-seed variation, we generate predictions for ten seeds (`1`–`
 Generate the released AtlasFold-M predictions with:
 
 ```bash
-atlasfold multimer -i assets/benchmarks/foldbench_abag.fasta -o predictions/foldbench_abag --num-samples 5 --seed 1 2 3 4 5 6 7 8 9 10
-atlasfold multimer -i assets/benchmarks/foldbench_pp.fasta -o predictions/foldbench_pp --num-samples 5 --seed 1 2 3 4 5 6 7 8 9 10
+atlasfold multimer -i assets/benchmarks/foldbench_abag.fasta -o predictions/foldbench_abag --num-samples 5 --seeds 1 2 3 4 5 6 7 8 9 10
+atlasfold multimer -i assets/benchmarks/foldbench_pp.fasta -o predictions/foldbench_pp --num-samples 5 --seeds 1 2 3 4 5 6 7 8 9 10
 ```
 
 ### Antibody–antigen

@@ -56,11 +56,11 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Number of diffusion samples to generate per input sequence.",
     )
     inference.add_argument(
-        "--seed",
+        "--seeds",
         type=int,
         nargs="+",
         default=[1],
-        help="Random seed(s) for inference. Example: --seed 1 2 3.",
+        help="Random seed(s) for inference. Example: --seeds 1 2 3.",
     )
     inference.add_argument(
         "--num-steps",
@@ -423,7 +423,7 @@ def run(args: argparse.Namespace, inputs=None) -> None:
     logger.info(
         "Starting monomer inference: seeds=%s, num_samples=%d, "
         "num_recycles=%d, mlm_prob=%s, num_steps=%s, format=%s",
-        args.seed,
+        args.seeds,
         args.num_samples,
         args.num_recycles,
         args.mlm_prob,
@@ -439,7 +439,7 @@ def run(args: argparse.Namespace, inputs=None) -> None:
         for outputs in runner.fold_iter_batch(
             sequences,
             num_samples=args.num_samples,
-            seeds=args.seed,
+            seeds=args.seeds,
             num_recycles=args.num_recycles,
             mlm_prob=args.mlm_prob,
             sampling_config=sampling_config,
