@@ -240,6 +240,17 @@ These are Python runner defaults. The CLI generates five diffusion samples per s
 
 ### Seeds and samples
 
+Use `--seeds` to specify one or more seeds. Both commands default to
+`--seeds 1 --num-samples 5`.
+
+```bash
+atlasfold monomer -i monomers.fasta -o predictions/monomers --seeds 1 2 3 --num-samples 5
+atlasfold multimer -i multimers.fasta -o predictions/multimers --seeds 1 2 3 --num-samples 5
+```
+
+Each command above produces 15 structures per target. In Python, the equivalent
+options are `seeds=[1, 2, 3], num_samples=5`.
+
 Each target produces `len(seeds) * num_samples` structures. Outputs are keyed by `(seed, sample_index)`, so the two sampling axes remain explicit rather than being flattened into one model number.
 
 Inference runs inside a forked Torch RNG context. Reusing the same model, input, seed, and options reproduces the same random choices without advancing the caller's Torch RNG state.

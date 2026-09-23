@@ -96,9 +96,9 @@ def forward(
         pre["W_ln"].float(),
         pre["B_ln"].float() if pre["B_ln"] is not None else None,
         eps,
-    ).to(X.dtype)
+    ).to(X.dtype).to(pre["WQ_c"].dtype)
 
-    O_attn = torch.empty(B, N, N, H * D, device=X.device, dtype=X.dtype)
+    O_attn = torch.empty(B, N, N, H * D, device=X.device, dtype=X_ln.dtype)
     triangle_attn_forward(
         X_ln,
         pre["WQ_c"],

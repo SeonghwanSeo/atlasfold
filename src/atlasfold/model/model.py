@@ -534,9 +534,6 @@ class AtlasFold(torch.nn.Module):
             # Remove the LM, which will be loaded separately
             del model.lm
 
-        if dtype == torch.bfloat16:
-            model.lm_stack.bfloat16()
-            model.main_stack.bfloat16()
         model.to_empty(device=device)
 
         state_dict = torch.load(

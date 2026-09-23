@@ -70,7 +70,9 @@ def triton_triangle(module, x, mask, *, direction=None):
                 module._triton_cache = (key, pre)
         else:
             pre = cached[1]
-        flat_x = x.to(dtype).reshape(-1, length, length, channel)
+        # LayerNorm must see the original input: autocast rounds the normalized
+        # projection operands, not the unnormalized residual stream.
+        flat_x = x.reshape(-1, length, length, channel)
         flat_mask = torch.broadcast_to(mask.bool(), x.shape[:-1]).reshape(
             -1, length, length
         )

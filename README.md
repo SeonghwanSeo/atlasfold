@@ -71,6 +71,10 @@ YYTHGVTEDLETGQTIIGVWHLTQGDDICHNGEAEILAGPLEPPI
 atlasfold multimer --input-fasta multimer.fasta --out-dir predictions/multimer/
 ```
 
+Both commands default to `--seeds 1 --num-samples 5`. Use `--seeds 1 2 3`
+to run three seeds; with five diffusion samples per seed, this produces 15
+structures per target. See [Seeds and samples](docs/inference.md#seeds-and-samples).
+
 Template-assisted inference for AtlasFold-M is not supported by the current runner or CLI.
 
 The repository entry point provides the same interface:
