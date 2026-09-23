@@ -7,14 +7,16 @@ AtlasLM is a protein language model (PLM), while AtlasFold and AtlasFold-M are t
 
 ![AtlasFold predictions (blue) overlaid with experimental structures (gray) for CASP15 target T1183 (8IFX_B) and complex 8OI4.](docs/images/atlasfold-predictions.png)
 
-AtlasFold achieves state-of-the-art accuracy among protein language model-based folding methods. AtlasFold and AtlasFold-M predict structures without an MSA search.
+AtlasFold achieves state-of-the-art accuracy among protein language model-based folding methods.
+AtlasFold and AtlasFold-M predict structures without an MSA search.
 This repository provides pretrained models, training and inference code, staged training configurations, and preprocessing workflows for monomer and multimer folding.
 
 If you are interested in general biomolecular complex prediction, please check out [**K-Fold**](https://github.com/SeonghwanSeo/kfold).
 
 ## Installation
 
-AtlasFold requires Python 3.10 or later. A CUDA GPU is recommended for structure prediction.
+AtlasFold requires Python 3.10 or later.
+A CUDA GPU is recommended for structure prediction.
 
 Install the inference dependencies from PyPI:
 
@@ -38,7 +40,7 @@ pip install -e ".[fold]"
 
 For CUDA inference, the default `--kernel auto` prefers Triton when installed, then optional [cuEquivariance](https://docs.nvidia.com/cuda/cuequivariance/), then native Torch.
 Other devices use Torch.
-See the [inference guide](docs/inference.md#loading-a-model-and-runner) for backend selection and optional cuEquivariance installation.
+See the [Python API](docs/python_api.md#loading-a-model-and-runner) for backend selection and the [inference guide](docs/inference.md#installation) for optional cuEquivariance installation.
 
 ## Running your first prediction
 
@@ -71,9 +73,8 @@ YYTHGVTEDLETGQTIIGVWHLTQGDDICHNGEAEILAGPLEPPI
 atlasfold multimer --input-fasta multimer.fasta --out-dir predictions/multimer/
 ```
 
-Both commands default to `--seeds 1 --num-samples 5`. Use `--seeds 1 2 3`
-to run three seeds; with five diffusion samples per seed, this produces 15
-structures per target. See [Seeds and samples](docs/inference.md#seeds-and-samples).
+Both commands default to `--seeds 1 --num-samples 5`.
+Use `--seeds 1 2 3` to run three seeds; with five diffusion samples per seed, this produces 15 structures per target.
 
 Template-assisted inference for AtlasFold-M is not supported by the current runner or CLI.
 
@@ -96,6 +97,7 @@ atlasfold multimer --input-fasta multimer.fasta --out-dir predictions/multimer/ 
 See [Multi-GPU inference](docs/inference.md#multi-gpu-inference) for GPU selection and per-GPU batching.
 
 Run `atlasfold monomer --help` or `atlasfold multimer --help` for all options, and see the [inference guide](docs/inference.md) for batching, sampling, confidence values, and output formats.
+For model loading and runner examples, see the [Python API](docs/python_api.md).
 
 ## Performance and GPU memory
 
@@ -109,14 +111,16 @@ Peak GPU memory grows with total residue length when generating five diffusion s
 | 1,536 | 25.36 GiB | 27.63 GiB |
 | 2,048 | 39.81 GiB | 43.83 GiB |
 
-For multi-target workloads, batched inference substantially increases throughput. With five diffusion samples and up to 4,096 residues processed per batch:
+For multi-target workloads, batched inference substantially increases throughput.
+With five diffusion samples and up to 4,096 residues processed per batch:
 
 | Workload | Unbatched | Batched | Throughput gain |
 | --- | ---: | ---: | ---: |
 | AtlasFold, 64-residue monomers | 0.775 sequences/s | 9.663 sequences/s | 12.5× |
 | AtlasFold-M, 256-residue complexes | 0.149 complexes/s | 0.314 complexes/s | 2.1× |
 
-Measurements were collected on a single NVIDIA B200 using PyTorch 2.10.0, CUDA 12.8, and cuEquivariance 0.10.0. See the [performance guide](docs/performance.md) for the complete memory and runtime measurements.
+Measurements were collected on a single NVIDIA B200 using PyTorch 2.10.0, CUDA 12.8, and cuEquivariance 0.10.0.
+See the [performance guide](docs/performance.md) for the complete memory and runtime measurements.
 
 ## Python API
 
@@ -140,7 +144,8 @@ with open("protein_a.cif", "w") as handle:
     handle.write(result.best.to_mmcif())
 ```
 
-Use `load_model("atlasfold-m", device="cuda")` for a complex and pass a list of chain sequences to `runner.fold()`. The Python API defaults to CPU if `device` is omitted; the CLI selects CUDA automatically when available.
+Use `load_model("atlasfold-m", device="cuda")` for a complex and pass a list of chain sequences to `runner.fold()`.
+The Python API defaults to CPU if `device` is omitted; the CLI selects CUDA automatically when available.
 
 ### Protein language model
 
@@ -159,7 +164,8 @@ print(output.embeddings.shape)
 print(len(output.hidden_states))
 ```
 
-Pass `return_attentions=True` to return attention maps. Attention tensors grow quadratically with sequence length and can require substantially more memory.
+Pass `return_attentions=True` to return attention maps.
+Attention tensors grow quadratically with sequence length and can require substantially more memory.
 
 ## Available models
 
@@ -170,11 +176,13 @@ Pass `return_attentions=True` to return attention maps. Attention tensors grow q
 | AtlasFold | 215M + AtlasLM-3B | 0.80 GiB + AtlasLM-3B | Monomer structure prediction | [`SeonghwanSeo/atlasfold-260703`](https://huggingface.co/SeonghwanSeo/atlasfold-260703) |
 | AtlasFold-M | 220M + AtlasLM-3B | 0.82 GiB + AtlasLM-3B | Protein-complex structure prediction | [`SeonghwanSeo/atlasfold-m-260725`](https://huggingface.co/SeonghwanSeo/atlasfold-m-260725) |
 
-AtlasLM-600M is deprecated now that ESMC-600M is available for commercial use. AtlasLM-3B is the recommended AtlasLM checkpoint.
+AtlasLM-600M is deprecated now that ESMC-600M is available for commercial use.
+AtlasLM-3B is the recommended AtlasLM checkpoint.
 
 ## Evaluation
 
-Evaluation protocols and results for AtlasFold and AtlasFold-M are provided in the [benchmark documentation](docs/benchmarks.md). The associated prediction structures and evaluation artifacts are available from the release folder below.
+Evaluation protocols and results for AtlasFold and AtlasFold-M are provided in the [benchmark documentation](docs/benchmarks.md).
+The associated prediction structures and evaluation artifacts are available from the release folder below.
 
 ## Checkpoints, data, and benchmark artifacts
 
@@ -189,7 +197,9 @@ Large release artifacts are hosted in the [AtlasFold Google Drive folder](https:
 
 ## Training
 
-Install the training dependencies with `pip install -e ".[fold,train]"`. AtlasFold monomer training uses four progressively longer crop stages, and AtlasFold-M fine-tuning uses three stages initialized from the monomer model. See the [training guide](docs/training.md) for optional cuEquivariance installation, data setup, released intermediate checkpoints, complete commands, and configuration overrides, and the [data guide](docs/data.md) for the released dataset layout and provenance.
+Install the training dependencies with `pip install -e ".[fold,train]"`.
+AtlasFold monomer training uses four progressively longer crop stages, and AtlasFold-M fine-tuning uses three stages initialized from the monomer model.
+See the [training guide](docs/training.md) for optional cuEquivariance installation, data setup, released intermediate checkpoints, complete commands, and configuration overrides, and the [data guide](docs/data.md) for the released dataset layout and provenance.
 
 ## Citation
 
@@ -212,7 +222,8 @@ This project was developed as part of the K-Fold initiative supported by the Min
 
 I would like to thank [Dr. Hyeongwoo Kim](https://scholar.google.com/citations?user=YpiY1q8AAAAJ&hl=en&oi=ao), [Dr. Seokhyun Moon](https://scholar.google.com/citations?hl=en&user=U1j8Ip8AAAAJ), and [Prof. Woo Youn Kim](https://scholar.google.com/citations?user=elJ5KrcAAAAJ&hl=en) for their guidance and support during the development of AtlasFold.
 
-This project is built upon the pioneering works of Google DeepMind, Meta AI, OpenFold Consortium, and EvolutionaryScale in the fields of biomolecular language modeling and structure prediction. I am deeply grateful to the open-source community for advancing the fields of biomolecular language modeling and structure prediction.
+This project is built upon the pioneering works of Google DeepMind, Meta AI, OpenFold Consortium, and EvolutionaryScale in the fields of biomolecular language modeling and structure prediction.
+I am deeply grateful to the open-source community for advancing the fields of biomolecular language modeling and structure prediction.
 
 **Foundations of AtlasLM:**
 

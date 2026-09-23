@@ -105,7 +105,7 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     runtime.add_argument(
         "--kernel",
-        choices=["auto", "torch", "cuequiv", "triton"],
+        choices=["auto", "torch", "triton", "cuequiv"],
         default="auto",
         help=(
             "Triangle kernel backend. Auto selects triton, then cuequiv, "
@@ -139,7 +139,7 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Structure file format for sample and ranked outputs.",
     )
     output.add_argument(
-        "--save-confidence-arrays",
+        "--save-confidence",
         action="store_true",
         help="Save raw pLDDT, PAE, and PDE arrays for each sample as NPZ files.",
     )
@@ -302,7 +302,7 @@ def run(args: argparse.Namespace, inputs=None) -> None:
         out_dir: Path,
         output: MultimerFoldingOutput,
         format: str,
-        save_confidence_arrays: bool = False,
+        save_confidence: bool = False,
         save_distogram: bool = False,
     ) -> dict:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -329,7 +329,7 @@ def run(args: argparse.Namespace, inputs=None) -> None:
                 f.write(sample_text)
             with open(out_dir / f"{sample_name}_confidence.json", "w") as f:
                 json.dump(confidence_scores, f, indent=2)
-            if save_confidence_arrays:
+            if save_confidence:
                 np.savez(
                     out_dir / f"{sample_name}_confidence.npz",
                     plddt=sample.plddt,
@@ -481,7 +481,7 @@ def run(args: argparse.Namespace, inputs=None) -> None:
                 target_dir,
                 output,
                 args.format,
-                save_confidence_arrays=args.save_confidence_arrays,
+                save_confidence=args.save_confidence,
                 save_distogram=args.save_distogram,
             )
             num_finished += 1
