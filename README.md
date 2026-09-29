@@ -16,7 +16,7 @@ If you are interested in general biomolecular complex prediction, please check o
 ## Installation
 
 AtlasFold requires Python 3.10 or later.
-A CUDA GPU is recommended for structure prediction.
+Use `--device cuda` for NVIDIA GPUs or `--device mps` for Apple Silicon.
 
 Install the inference dependencies from PyPI:
 
@@ -145,7 +145,7 @@ with open("protein_a.cif", "w") as handle:
 ```
 
 Use `load_model("atlasfold-m", device="cuda")` for a complex and pass a list of chain sequences to `runner.fold()`.
-The Python API defaults to CPU if `device` is omitted; the CLI selects CUDA automatically when available.
+The Python API defaults to CPU if `device` is omitted; the CLI selects CUDA, then MPS, then CPU according to availability.
 
 ### Protein language model
 

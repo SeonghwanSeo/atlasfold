@@ -63,7 +63,6 @@ atlasfold monomer --input-fasta monomers.fasta --out-dir predictions/monomers --
 atlasfold multimer --input-fasta multimers.fasta --out-dir predictions/multimers --gpu-ids 0 1
 ```
 
-- Without `--gpu-ids`, inference uses one GPU when CUDA is available, otherwise CPU.
 - `--gpu-ids` cannot be combined with `--device`.
 - GPU IDs are indices within `CUDA_VISIBLE_DEVICES` when it is set; for example, `CUDA_VISIBLE_DEVICES=2,3` maps `--gpu-ids 0 1` to physical GPUs 2 and 3.
 - Targets are distributed across GPUs, with each target processed entirely on one GPU.
@@ -85,7 +84,7 @@ Defaults are shared unless shown as monomer / multimer.
 | `--num-steps` | Automatic / `200` | Diffusion steps; monomer uses the length-dependent [diffusion schedule](#diffusion-configuration). |
 | `--mlm-prob` | `0.15` / `0.20` | LM masking probability during recycling; greater than 0 and at most 1. |
 | `--kernel` | `auto` | Triangle backend: `auto`, `torch`, `triton`, or `cuequiv`; `auto` prefers Triton, then cuEquivariance, then Torch on CUDA; other devices use Torch. |
-| `--device` | CUDA if available, otherwise CPU | Torch device, such as `cuda:0` or `cpu`; excludes `--gpu-ids`. |
+| `--device` | CUDA → MPS → CPU, according to availability | Torch device: `cuda`, `mps`, or `cpu`; excludes `--gpu-ids`. |
 | `--gpu-ids` | Not set | Distribute targets across unique non-negative visible CUDA device IDs; excludes `--device`. |
 | `--max-tokens-per-batch` | `1024` | Bucketed-residue budget per model call, per GPU; controls batching rather than maximum sequence length. |
 | `--length-buckets` | Automatic | One or more positive residue-length buckets; the largest must fit every target, including all chains for multimer inputs. |

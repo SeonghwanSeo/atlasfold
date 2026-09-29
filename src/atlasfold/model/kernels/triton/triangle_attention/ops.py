@@ -90,13 +90,17 @@ def forward(
     if mask is not None and mask.shape != (B, N, N):
         raise ValueError(f"mask must have shape {(B, N, N)}, got {mask.shape}")
     # x̃ = LN(x) computed once and shared by the kernels and the gate.
-    X_ln = torch.nn.functional.layer_norm(
-        X.float(),
-        (C_in,),
-        pre["W_ln"].float(),
-        pre["B_ln"].float() if pre["B_ln"] is not None else None,
-        eps,
-    ).to(X.dtype).to(pre["WQ_c"].dtype)
+    X_ln = (
+        torch.nn.functional.layer_norm(
+            X.float(),
+            (C_in,),
+            pre["W_ln"].float(),
+            pre["B_ln"].float() if pre["B_ln"] is not None else None,
+            eps,
+        )
+        .to(X.dtype)
+        .to(pre["WQ_c"].dtype)
+    )
 
     O_attn = torch.empty(B, N, N, H * D, device=X.device, dtype=X_ln.dtype)
     triangle_attn_forward(

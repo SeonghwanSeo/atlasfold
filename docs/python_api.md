@@ -24,8 +24,7 @@ If `device` is omitted, AtlasFold uses CPU.
 Use `cache_dir` to choose the download cache, `model_path` to load local AtlasFold weights, and `lm_path` to load local AtlasLM weights.
 A local `model_path` must match the architecture selected by `model_name`.
 
-The CLI chooses CUDA automatically when available, whereas the Python `load_model()` API defaults to CPU.
-Pass `device="cuda"` explicitly for GPU inference.
+Pass `device="cuda"` for CUDA or `device="mps"` for Apple Silicon.
 
 Set `kernel` to one of `"auto"`, `"torch"`, `"triton"`, or `"cuequiv"` when calling `load_model()` to select the triangle operation backend.
 The default is `auto`, which selects the first installed backend on CUDA in this order: Triton, cuEquivariance, then native Torch.

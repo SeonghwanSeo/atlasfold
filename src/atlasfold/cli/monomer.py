@@ -91,7 +91,10 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
         "--device",
         type=str,
         default=None,
-        help="Torch device. Defaults to cuda when available, otherwise cpu.",
+        help=(
+            "Torch device: cuda, mps, or cpu. "
+            "Defaults to CUDA, then MPS, then CPU, according to availability."
+        ),
     )
     runtime.add_argument(
         "--gpu-ids",
@@ -115,7 +118,7 @@ def create_parser(prog: str | None = None) -> argparse.ArgumentParser:
         default=1024,
         help=(
             "Maximum bucketed residue tokens per model call. Lower this if "
-            "CUDA runs out of memory."
+            "the selected device runs out of memory."
         ),
     )
     runtime.add_argument(
@@ -184,6 +187,7 @@ def run(args: argparse.Namespace, inputs=None) -> None:
     from atlasfold.model import AtlasFold, SamplingConfig
     from atlasfold.pretrained import load_model as load_pretrained_model
     from atlasfold.runner import FoldingInput, FoldingOutput, FoldingRunner
+    from atlasfold.utils.torch_utils import resolve_device
 
     def setup_logger() -> logging.Logger:
         logger = logging.getLogger("atlasfold.monomer")
@@ -241,9 +245,8 @@ def run(args: argparse.Namespace, inputs=None) -> None:
         cache_dir: str | Path | None = None,
         kernel: str = "auto",
     ) -> AtlasFold:
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        device = torch.device(device)
+        device = resolve_device(device)
+        logger.info("Using device: %s", device)
 
         if model_path is not None:
             model_path = Path(model_path)
